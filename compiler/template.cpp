@@ -1,3 +1,8 @@
+#ifndef BUILD_IIR
+#define VEC_TYPE float
+#define BUILD_IIR IIR2<float, float>(1.8f, -0.9f)
+#endif
+
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -9,10 +14,10 @@ typedef float float_vec4 __attribute__((ext_vector_type(4)));
 typedef float float_vec8 __attribute__((ext_vector_type(8)));
 typedef float float_vec16 __attribute__((ext_vector_type(16)));
 
-constexpr int vec_lanes(float) { return 1; }
-constexpr int vec_lanes(float_vec4) { return 4; }
-constexpr int vec_lanes(float_vec8) { return 8; }
-constexpr int vec_lanes(float_vec16) { return 16; }
+constexpr int vec_lanes_of(float) { return 1; }
+constexpr int vec_lanes_of(float_vec4) { return 4; }
+constexpr int vec_lanes_of(float_vec8) { return 8; }
+constexpr int vec_lanes_of(float_vec16) { return 16; }
 
 inline float_vec4 extract_slice(float_vec4 a, float_vec4 b, int offset) {
     switch (offset) {
@@ -101,15 +106,15 @@ template <int stride, int taps, bool first_tap_is_one, typename float_vec, typen
 struct FIR {
     float coeff[taps] = {};
 
-    constexpr static int vec_lanes = vec_lanes(internal_float_vec{});
+    constexpr static int vec_lanes = vec_lanes_of(internal_float_vec{});
     // How many vectors of input does it take to produce one vector of output (rounded up)
     constexpr static int buffer_size = ((taps - 1) * stride + vec_lanes - 1) / vec_lanes + 1;
 
-    float_vec prev_input[buffer_size] = {};
+    internal_float_vec prev_input[buffer_size] = {};
 
     void run(const float_vec *__restrict__ input, float_vec *__restrict__ output) {
-        static_assert(vec_lanes(internal_float_vec{}) <= vec_lanes(float_vec{}));
-        constexpr int k = vec_lanes(float_vec{}) / vec_lanes(internal_float_vec{});
+        static_assert(vec_lanes_of(internal_float_vec{}) <= vec_lanes_of(float_vec{}));
+        constexpr int k = vec_lanes_of(float_vec{}) / vec_lanes_of(internal_float_vec{});
 
         internal_float_vec acc{};
 
@@ -129,8 +134,12 @@ struct FIR {
 #pragma unroll
             for (int i = 0; i < taps; i++) {
                 // Note all the ifs in here resolve statically, because the loop is unrolled
-                if (i == 0 && first_tap_is_one) {
-                    acc = *in_ptr++;
+                if (i == 0) {
+                    if (first_tap_is_one) {
+                        acc = *in_ptr++;
+                    } else {
+                        acc = *in_ptr++ * coeff[0];
+                    }
                 } else {
                     internal_float_vec v;
                     if (idx % vec_lanes == 0) {
@@ -168,17 +177,16 @@ template <
     // TODO: add stride and taps later to support order other than 2
     // int stride, int taps,
     typename float_vec,
-    typename internal_float_vec
-    >
+    typename internal_float_vec>
 struct IIR2 {
-    float_vec prev_output[2] = {};
+    internal_float_vec prev_output[2] = {};
 
     const float alpha = 0.f;
     const float beta = 0.f;
 
     void run(const float_vec *__restrict__ input, float_vec *__restrict__ output) {
-        static_assert(vec_lanes(internal_float_vec{}) <= vec_lanes(float_vec{}));
-        constexpr int k = vec_lanes(float_vec{}) / vec_lanes(internal_float_vec{});
+        static_assert(vec_lanes_of(internal_float_vec{}) <= vec_lanes_of(float_vec{}));
+        constexpr int k = vec_lanes_of(float_vec{}) / vec_lanes_of(internal_float_vec{});
 
         internal_float_vec *in_ptr = (internal_float_vec *)input;
         internal_float_vec *out_ptr = (internal_float_vec *)output;
@@ -202,7 +210,7 @@ struct IIR2 {
     }
 };
 
-template <typename A, typename B, typename float_vec>
+template <typename A, typename B, typename float_vec = VEC_TYPE>
 struct Cascade {
     A a;
     B b;
@@ -223,18 +231,12 @@ struct Cascade {
     }
 };
 
-
-#ifndef BUILD_IIR
-#define VEC_TYPE float
-#define BUILD_IIR(coeff) IIR2<float>({coeff[0], coeff[1]})
-#endif
-
 int main(int argc, char **argv) {
     constexpr int taps = 2;
     float coeff[taps] = {1.8, -0.9};
-    auto iir = BUILD_IIR(coeff);
+    auto iir = BUILD_IIR;
 
-    const size_t size = 1024 * 16;
+    const size_t size = 1024 * 16 * 4;
     const int iters = 1024 * 16;
 
     float *input = (float *)aligned_alloc(64, size * sizeof(float));
@@ -253,27 +255,40 @@ int main(int argc, char **argv) {
         iir.reset();
         const VEC_TYPE *in_ptr = (const VEC_TYPE *)(input);
         VEC_TYPE *out_ptr = (VEC_TYPE *)(output);
-        for (size_t i = 0; i < size; i += vec_lanes(VEC_TYPE{})) {
+        for (size_t i = 0; i < size; i += vec_lanes_of(VEC_TYPE{})) {
             iir.run(in_ptr++, out_ptr++);
         }
     }
     auto t2 = std::chrono::high_resolution_clock::now();
-#pragma unroll 4
+// #pragma unroll 16
+//     for (int t = 0; t < iters; t++) {
+//         const float *in_ptr = input;
+//         float *out_ptr = reference_output;
+//         float prev[taps] = {};
+//         for (size_t i = 0; i < size; i++) {
+//             float next = *in_ptr++;
+// #pragma unroll
+//             for (int j = 0; j < taps; j++) {
+//                 next += coeff[j] * prev[j];
+//             }
+// #pragma unroll
+//             for (int j = 0; j < taps - 1; j++) {
+//                 prev[j + 1] = prev[j];
+//             }
+//             *out_ptr++ = prev[0] = next;
+//         }
+//     }
+#pragma unroll 16
     for (int t = 0; t < iters; t++) {
         const float *in_ptr = input;
         float *out_ptr = reference_output;
-        float prev[taps] = {};
+        float prev0 = 0.f;
+        float prev1 = 0.f;
         for (size_t i = 0; i < size; i++) {
-            float next = *in_ptr++;
-#pragma unroll
-            for (int j = 0; j < taps; j++) {
-                next += coeff[j] * prev[j];
-            }
-#pragma unroll
-            for (int j = 0; j < taps - 1; j++) {
-                prev[j + 1] = prev[j];
-            }
-            *out_ptr++ = prev[0] = next;
+            float next = coeff[0] * prev0 + coeff[1] * prev1 + *in_ptr++;
+            prev1 = prev0;
+            prev0 = next;
+            *out_ptr++ = next;
         }
     }
 

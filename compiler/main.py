@@ -1,4 +1,6 @@
 from __future__ import annotations
+import math
+from functools import reduce
 import random
 from typing import List, Optional, Tuple
 import numpy as np
@@ -66,7 +68,6 @@ class FIR:
         self.b = b
 
     def __repr__(self) -> str:
-        self.b.compress()
         return f"FIR(b={self.b})"
     
     def run(self, x: List[float]) -> List[float]:
@@ -79,11 +80,17 @@ class FIR:
                     res += self.b[j] * x[i - j]
             y.append(res)
         return y
+    
+    def max_feedback(self) -> int:
+        """Return the maximum feedback distance of the filter."""
+        return len(self.b) - 1
 
-    def num_taps(self) -> int:
-        """Return the number of taps in the filter."""
-        self.b.compress()
-        return len(self.b)
+    def stride(self) -> int:
+        """
+        Return the stride of the filter.
+        """
+        non_empty_pos = [i for i in range(1, len(self.b)) if not np.isclose(self.b[i], 0.)]
+        return math.gcd(*non_empty_pos) if non_empty_pos else 1
 
 class IIR:
     def __init__(self, a: Kernel):
@@ -102,7 +109,6 @@ class IIR:
         self.a = a
 
     def __repr__(self) -> str:
-        self.a.compress()
         return f"IIR(a={self.a})"
     
     def reformulated(self, mask: List[bool] | str) -> Optional[Tuple[FIR, 'IIR']]:
@@ -115,7 +121,6 @@ class IIR:
         if isinstance(mask, str):
             mask = [c == '1' for c in mask]
 
-        self.a.compress()
         _mask = np.array(mask, dtype=bool)
 
         assert len(_mask) >= len(self.a), "Mask must be longer than a coefficients"
@@ -214,9 +219,18 @@ class IIR:
     
     def feedback_delay(self) -> int:
         for i in range(1, len(self.a)):
-            if self.a[i] != 0.:
+            if not np.isclose(self.a[i], 0.):
                 return i
         raise ValueError("The filter is not recursive")
+
+    def max_feedback(self) -> int:
+        """Return the maximum feedback distance of the filter."""
+        return len(self.a) - 1
+
+    def stride(self) -> int:
+        """Return the stride of the filter."""
+        non_empty_pos = [i for i in range(1, len(self.a)) if not np.isclose(self.a[i], 0.)]
+        return math.gcd(*non_empty_pos) if non_empty_pos else 1
 
 class IIRCompiler:
     filter: List[FIR | IIR]
@@ -273,9 +287,38 @@ class IIRCompiler:
             y = f.run(x)
             x = y
         return y
+    
+    def to_cpp(self) -> str:
+        """Generate C++ code for the filter."""
+        filter_exprs = []
+        float_vecs = {1: 'float', 4: 'float_vec4', 8: 'float_vec8', 16: 'float_vec16'}
+        for f in self.filter:
+            stride = f.stride()
+            taps = f.max_feedback() // stride
+            if isinstance(f, FIR):
+                taps += 1 # include b0
+                first_tap_is_one = 'true' if f.b[0] == 0. else 'false'
+                args = [f.b[i * stride] for i in range(taps)]
+                args_str = ", ".join([f"{arg:.8f}f" for arg in args])
+                filter_exprs.append(f"FIR<{stride}, {taps}, {first_tap_is_one}, float_vec16, float_vec16>({{{args_str}}})")
+            else:
+                assert taps == 2, "Only support 2 taps for IIR for now"
+                args = [f.a[stride], f.a[2 * stride]]
+                args_str = ", ".join([f"{arg:.8f}f" for arg in args])
+                filter_exprs.append(f"IIR2<float_vec16, {float_vecs[stride]}>({args_str})")
+        # print(filter_exprs)
+        filter_stmt = reduce(lambda stmt, expr: "Cascade(" + stmt + "," + expr + ")", filter_exprs)
+
+        
+        with open('template.cpp', 'r') as file:
+            file_content = file.read()
+        file_content = f"#define BUILD_IIR {filter_stmt}\n#define VEC_TYPE float_vec16\n" + file_content
+        return file_content
 
 
 def main():
+    VALIDATE = False
+
     np.set_printoptions(precision=8)
     # filter = IIR(
     #     b=Kernel([1]),
@@ -290,16 +333,23 @@ def main():
 
     # f(x)= 1.0*g(x) + 1.0*g(x-1) + 1.0*g(x-2) + 1.8*f(x-1) - 0.9*f(x-2)
 
-    input = np.random.randint(0, 100, 20).tolist()
-
     compiler = IIRCompiler(
         filter=[filter]
     )
-    print("Cost before dilation:", compiler.cost(16))
 
-    expected = np.array(compiler.run(input))
+    if VALIDATE:
+        input = np.random.randint(0, 100, 20).tolist()
+        print("Cost before dilation:", compiler.cost(16))
+        expected = np.array(compiler.run(input))
 
-    # compiler.dilate(0, 2)
+    # dilation by 16 recovers so-iir.cpp
+    # However, with ffastmath, it is actually slower than so-iir.cpp
+    # With ffastmath disabled we get about the same performance
+    # compiler.dilate(0, 16)
+
+    # In this case however, fastmath does make the code faster
+    # This is the fastest setup so far.
+    compiler.dilate(0, 8)
 
     # manual dilation
     # mask = [False] * 8
@@ -307,20 +357,23 @@ def main():
     # mask[6] = True
     # compiler.reformulate(0, mask)
 
+    # Optimal in terms of cost but requires shuffles
     # compiler.dilate(0, 8)
     # compiler.delay(-1, 8)
     # compiler.delay(-1, 16)
 
-    compiler.reformulate(0, '00011111')
-    compiler.reformulate(1, '00000111111')
-    compiler.reformulate(2, '00000000011111111')
+    # compiler.reformulate(0, '00011111')
+    # compiler.reformulate(1, '00000111111')
+    # compiler.reformulate(2, '00000000011111111')
 
-    print(compiler.filter)
-    print("Cost after dilation:", compiler.cost(16))
+    # print(compiler.filter)
+    # print("Cost after dilation:", compiler.cost(16))
 
-    actual = np.array(compiler.run(input))
-    
-    print(np.vstack((expected, actual)).T)
+    if VALIDATE:
+        actual = np.array(compiler.run(input))
+        print(np.vstack((expected, actual)).T)
+
+    print(compiler.to_cpp())
 
 if __name__ == "__main__":
     main()
