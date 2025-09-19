@@ -297,7 +297,7 @@ class IIRCompiler:
             taps = f.max_feedback() // stride
             if isinstance(f, FIR):
                 taps += 1 # include b0
-                first_tap_is_one = 'true' if f.b[0] == 0. else 'false'
+                first_tap_is_one = 'true' if f.b[0] == 1. else 'false'
                 args = [f.b[i * stride] for i in range(taps)]
                 args_str = ", ".join([f"{arg:.8f}f" for arg in args])
                 filter_exprs.append(f"FIR<{stride}, {taps}, {first_tap_is_one}, float_vec16, float_vec16>({{{args_str}}})")
@@ -345,11 +345,11 @@ def main():
     # dilation by 16 recovers so-iir.cpp
     # However, with ffastmath, it is actually slower than so-iir.cpp
     # With ffastmath disabled we get about the same performance
-    # compiler.dilate(0, 16)
+    compiler.dilate(0, 16)
 
     # In this case however, fastmath does make the code faster
     # This is the fastest setup so far.
-    compiler.dilate(0, 8)
+    # compiler.dilate(0, 8)
 
     # manual dilation
     # mask = [False] * 8
