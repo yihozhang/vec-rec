@@ -294,18 +294,17 @@ class IIRCompiler:
         float_vecs = {1: 'float', 4: 'float_vec4', 8: 'float_vec8', 16: 'float_vec16'}
         for f in self.filter:
             stride = f.stride()
-            taps = f.max_feedback() // stride
+            taps = f.max_feedback() // stride + 1
             if isinstance(f, FIR):
-                taps += 1 # include b0
                 first_tap_is_one = 'true' if f.b[0] == 1. else 'false'
                 args = [f.b[i * stride] for i in range(taps)]
                 args_str = ", ".join([f"{arg:.8f}f" for arg in args])
                 filter_exprs.append(f"FIR<{stride}, {taps}, {first_tap_is_one}, float_vec16, float_vec16>({{{args_str}}})")
             else:
-                assert taps == 2, "Only support 2 taps for IIR for now"
-                args = [f.a[stride], f.a[2 * stride]]
+                input_coeff_is_one = 'true'
+                args = [1] + [f.a[i * stride] for i in range(1, taps)]
                 args_str = ", ".join([f"{arg:.8f}f" for arg in args])
-                filter_exprs.append(f"IIR2<float_vec16, {float_vecs[stride]}>({args_str})")
+                filter_exprs.append(f"IIR<{stride}, {taps}, {input_coeff_is_one}, float_vec16, {float_vecs[stride]}>({args_str})")
         # print(filter_exprs)
         filter_stmt = reduce(lambda stmt, expr: "Cascade(" + stmt + "," + expr + ")", filter_exprs)
 
@@ -345,7 +344,7 @@ def main():
     # dilation by 16 recovers so-iir.cpp
     # However, with ffastmath, it is actually slower than so-iir.cpp
     # With ffastmath disabled we get about the same performance
-    compiler.dilate(0, 16)
+    # compiler.dilate(0, 16)
 
     # In this case however, fastmath does make the code faster
     # This is the fastest setup so far.
@@ -358,9 +357,9 @@ def main():
     # compiler.reformulate(0, mask)
 
     # Optimal in terms of cost but requires shuffles
-    # compiler.dilate(0, 8)
-    # compiler.delay(-1, 8)
-    # compiler.delay(-1, 16)
+    compiler.dilate(0, 4)
+    compiler.delay(-1, 4)
+    compiler.delay(-1, 8)
 
     # compiler.reformulate(0, '00011111')
     # compiler.reformulate(1, '00000111111')

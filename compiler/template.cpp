@@ -174,29 +174,62 @@ struct FIR {
 };
 
 template <
-    // TODO: add stride and taps later to support order other than 2
-    // int stride, int taps,
+    int stride, int taps,
+    bool input_coeff_is_one,
     typename float_vec,
     typename internal_float_vec>
-struct IIR2 {
-    internal_float_vec prev_output[2] = {};
+struct IIR {
+    float coeff[taps] = {};
 
-    const float alpha = 0.f;
-    const float beta = 0.f;
+    constexpr static int vec_lanes = vec_lanes_of(internal_float_vec{});
+    // How many vectors of input does it take to produce one vector of output (rounded up)
+    constexpr static int buffer_size = ((taps - 1) * stride + vec_lanes - 1) / vec_lanes + 1;
+
+    internal_float_vec prev_output[buffer_size] = {};
 
     void run(const float_vec *__restrict__ input, float_vec *__restrict__ output) {
         static_assert(vec_lanes_of(internal_float_vec{}) <= vec_lanes_of(float_vec{}));
         constexpr int k = vec_lanes_of(float_vec{}) / vec_lanes_of(internal_float_vec{});
 
+        internal_float_vec acc{};
+
         internal_float_vec *in_ptr = (internal_float_vec *)input;
         internal_float_vec *out_ptr = (internal_float_vec *)output;
 #pragma unroll
         for (int b = 0; b < k; b++) {
-            auto v = *in_ptr++;
-            v += alpha * prev_output[0];
-            v += beta * prev_output[1];
-            prev_output[1] = prev_output[0];
-            *out_ptr++ = prev_output[0] = v;
+
+            // Use vector shuffles to extract previous outputs. Faster than unaligned
+            // loads from the stack.
+            size_t idx = (buffer_size - 1) * vec_lanes;
+#pragma unroll
+            for (int i = 0; i < taps; i++) {
+                // Note all the ifs in here resolve statically, because the loop is unrolled
+                if (i == 0) {
+                    if (input_coeff_is_one) {
+                        acc = *in_ptr++;
+                    } else {
+                        acc = *in_ptr++ * coeff[0];
+                    }
+                } else {
+                    internal_float_vec v;
+                    if (idx % vec_lanes == 0) {
+                        // No shuffle required
+                        v = prev_output[idx / vec_lanes];
+                    } else {
+                        internal_float_vec va = prev_output[idx / vec_lanes];
+                        internal_float_vec vb = prev_output[idx / vec_lanes + 1];
+                        v = extract_slice(va, vb, idx % vec_lanes);
+                    }
+                    acc += v * coeff[i];
+                }
+                idx -= stride;
+            }
+            *out_ptr++ = acc;
+#pragma unroll
+            for (int i = 0; i + 1 < buffer_size; i++) {
+                prev_output[i] = prev_output[i + 1];
+            }
+            prev_output[buffer_size - 1] = acc;
         }
     }
 
@@ -204,9 +237,13 @@ struct IIR2 {
         std::memset(prev_output, 0, sizeof(prev_output));
     }
 
-    IIR2(float c0, float c1)
-        : alpha(c0), beta(c1) {
-        std::memset(prev_output, 0, sizeof(prev_output));
+    IIR(const std::vector<float> coeffs) {
+        int i = 0;
+        for (float c : coeffs) {
+            coeff[i++] = c;
+        }
+        memset(prev_output, 0, sizeof(prev_output));
+        assert(!input_coeff_is_one || coeffs[0] == 1.f);
     }
 };
 
