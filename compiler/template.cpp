@@ -175,7 +175,6 @@ struct FIR {
 
 template <
     int stride, int taps,
-    bool input_coeff_is_one,
     typename float_vec,
     typename internal_float_vec>
 struct IIR {
@@ -197,6 +196,7 @@ struct IIR {
         internal_float_vec *out_ptr = (internal_float_vec *)output;
 #pragma unroll
         for (int b = 0; b < k; b++) {
+            acc = *in_ptr++;
 
             // Use vector shuffles to extract previous outputs. Faster than unaligned
             // loads from the stack.
@@ -204,27 +204,22 @@ struct IIR {
 #pragma unroll
             for (int i = 0; i < taps; i++) {
                 // Note all the ifs in here resolve statically, because the loop is unrolled
-                if (i == 0) {
-                    if (input_coeff_is_one) {
-                        acc = *in_ptr++;
-                    } else {
-                        acc = *in_ptr++ * coeff[0];
-                    }
+                internal_float_vec v;
+                if (idx % vec_lanes == 0) {
+                    // No shuffle required
+                    v = prev_output[idx / vec_lanes];
                 } else {
-                    internal_float_vec v;
-                    if (idx % vec_lanes == 0) {
-                        // No shuffle required
-                        v = prev_output[idx / vec_lanes];
-                    } else {
-                        internal_float_vec va = prev_output[idx / vec_lanes];
-                        internal_float_vec vb = prev_output[idx / vec_lanes + 1];
-                        v = extract_slice(va, vb, idx % vec_lanes);
-                    }
-                    acc += v * coeff[i];
+                    internal_float_vec va = prev_output[idx / vec_lanes];
+                    internal_float_vec vb = prev_output[idx / vec_lanes + 1];
+                    v = extract_slice(va, vb, idx % vec_lanes);
                 }
+                acc += v * coeff[i];
+
                 idx -= stride;
             }
             *out_ptr++ = acc;
+
+            // TODO: do the shuffle once outside the loop
 #pragma unroll
             for (int i = 0; i + 1 < buffer_size; i++) {
                 prev_output[i] = prev_output[i + 1];
@@ -243,7 +238,6 @@ struct IIR {
             coeff[i++] = c;
         }
         memset(prev_output, 0, sizeof(prev_output));
-        assert(!input_coeff_is_one || coeffs[0] == 1.f);
     }
 };
 

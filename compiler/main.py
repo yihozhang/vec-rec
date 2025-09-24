@@ -91,6 +91,12 @@ class FIR:
         """
         non_empty_pos = [i for i in range(1, len(self.b)) if not np.isclose(self.b[i], 0.)]
         return math.gcd(*non_empty_pos) if non_empty_pos else 1
+    
+    def fir_params(self) -> Tuple[int, int]:
+        """Return the stride and number of taps for IIR implementation."""
+        stride = self.stride()
+        taps = self.max_feedback() // stride + 1
+        return stride, taps
 
 class IIR:
     def __init__(self, a: Kernel):
@@ -230,7 +236,15 @@ class IIR:
     def stride(self) -> int:
         """Return the stride of the filter."""
         non_empty_pos = [i for i in range(1, len(self.a)) if not np.isclose(self.a[i], 0.)]
+        non_empty_pos = list(map(lambda x: x - non_empty_pos[0], non_empty_pos[1:]))
         return math.gcd(*non_empty_pos) if non_empty_pos else 1
+
+    def iir_params(self) -> Tuple[int, int, int]:
+        """Return the stride, number of taps, and feedback delay for IIR implementation."""
+        stride = self.stride()
+        delay = self.feedback_delay()
+        taps = (self.max_feedback() - delay) // stride + 1
+        return stride, taps, delay
 
 class IIRCompiler:
     filter: List[FIR | IIR]
@@ -293,25 +307,25 @@ class IIRCompiler:
         filter_exprs = []
         float_vecs = {1: 'float', 4: 'float_vec4', 8: 'float_vec8', 16: 'float_vec16'}
         for f in self.filter:
-            stride = f.stride()
-            taps = f.max_feedback() // stride + 1
             if isinstance(f, FIR):
+                stride, taps = f.fir_params()
                 first_tap_is_one = 'true' if f.b[0] == 1. else 'false'
                 args = [f.b[i * stride] for i in range(taps)]
                 args_str = ", ".join([f"{arg:.8f}f" for arg in args])
-                filter_exprs.append(f"FIR<{stride}, {taps}, {first_tap_is_one}, float_vec16, float_vec16>({{{args_str}}})")
+                filter_exprs.append(f"FIR<{stride}, {taps}, {first_tap_is_one}, float_vec8, float_vec8>({{{args_str}}})")
             else:
+                stride, taps, delay = f.iir_params()
                 input_coeff_is_one = 'true'
-                args = [1] + [f.a[i * stride] for i in range(1, taps)]
+                args = [f.a[delay + i * stride] for i in range(0, taps)]
                 args_str = ", ".join([f"{arg:.8f}f" for arg in args])
-                filter_exprs.append(f"IIR<{stride}, {taps}, {input_coeff_is_one}, float_vec16, {float_vecs[stride]}>({args_str})")
+                filter_exprs.append(f"IIR<{stride}, {taps}, float_vec8, {float_vecs[delay]}>({{{args_str}}})")
         # print(filter_exprs)
         filter_stmt = reduce(lambda stmt, expr: "Cascade(" + stmt + "," + expr + ")", filter_exprs)
 
         
         with open('template.cpp', 'r') as file:
             file_content = file.read()
-        file_content = f"#define BUILD_IIR {filter_stmt}\n#define VEC_TYPE float_vec16\n" + file_content
+        file_content = f"#define BUILD_IIR {filter_stmt}\n#define VEC_TYPE float_vec8\n" + file_content
         return file_content
 
 
@@ -372,6 +386,7 @@ def main():
         actual = np.array(compiler.run(input))
         print(np.vstack((expected, actual)).T)
 
+    # print(compiler.filter)
     print(compiler.to_cpp())
 
 if __name__ == "__main__":
