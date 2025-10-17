@@ -1,21 +1,39 @@
 from __future__ import annotations
 from functools import reduce
-from typing import List, Optional, Dict, Sequence, Tuple
+from typing import List, Optional, Dict, Sequence, Tuple, overload
 import numpy as np
 
-__all__ = ["RecLang", "TIKernel", "Convolve", "Recurse", "Var", "Add", "Sub", "Neg", "TVKernel", "Num", "PointwiseMul", "Kernel"]
+__all__ = [
+    "RecLang",
+    "SignalExpr",
+    "KernelExpr",
+    "KernelConstant",
+    "TIKernel",
+    "TVKernel",
+    "KAdd",
+    "KSub",
+    "KNeg",
+    "KConvolve",
+    "Num",
+    "SAdd",
+    "SSub",
+    "PointwiseMul",
+    "SNeg",
+    "Convolve",
+    "Recurse",
+    "Var",
+]
 
 class RecLang:
     pass
 
-class Num(RecLang):
-    value: float
-    __match_args__ = ("value",)
-    def __init__(self, value: float) -> None:
-        super().__init__()
-        self.value = value
+class SignalExpr(RecLang):
+    pass
 
-class TIKernel(RecLang):
+class KernelExpr(RecLang):
+    pass
+
+class TIKernel(KernelExpr):
     @staticmethod
     def z(n: int = -1) -> TIKernel:
         """Return the delay kernel z^n."""
@@ -70,7 +88,15 @@ class TIKernel(RecLang):
         """Return the number of non-zero terms in the signal."""
         return int(np.count_nonzero(self.data))
     
-    def __mul__(self, other: TIKernel | float) -> Kernel:
+    @overload
+    def __mul__(self, other: TIKernel | float) -> TIKernel:
+        ...
+    
+    @overload
+    def __mul__(self, other: TVKernel) -> TVKernel:
+        ...    
+    
+    def __mul__(self, other):
         if isinstance(other, TVKernel):
             return self.promote() * other
         elif isinstance(other, TIKernel):
@@ -82,7 +108,15 @@ class TIKernel(RecLang):
     
     __rmul__ = __mul__
     
-    def __add__(self, other: TIKernel | TVKernel) -> Kernel:
+    @overload
+    def __add__(self, other: TIKernel) -> TIKernel:
+        ...
+    
+    @overload
+    def __add__(self, other: TVKernel) -> TVKernel:
+        ...
+    
+    def __add__(self, other):
         if isinstance(other, TVKernel):
             return self.promote() + other
         max_len = max(len(self), len(other))
@@ -90,7 +124,15 @@ class TIKernel(RecLang):
         b_data = np.pad(other.data, (0, max_len - len(other)), 'constant')
         return TIKernel(a_data + b_data)
     
-    def __sub__(self, other: TIKernel) -> Kernel:
+    @overload
+    def __sub__(self, other: TIKernel) -> TIKernel:
+        ...
+    
+    @overload
+    def __sub__(self, other: TVKernel) -> TVKernel:
+        ...
+    
+    def __sub__(self, other):
         if isinstance(other, TVKernel):
             return self.promote() - other
         max_len = max(len(self), len(other))
@@ -101,10 +143,10 @@ class TIKernel(RecLang):
     def __neg__(self) -> TIKernel:
         return TIKernel(-self.data)
 
-class TVKernel(RecLang):
-    data: Sequence[RecLang]
+class TVKernel(KernelExpr):
+    data: Sequence[SignalExpr]
     __match_args__ = ("data",)
-    def __init__(self, data: Sequence[RecLang]):
+    def __init__(self, data: Sequence[SignalExpr]):
         super().__init__()
         self.data = data
     
@@ -116,14 +158,14 @@ class TVKernel(RecLang):
         for i in range(max_len):
             a = self.data[i] if i < len(self.data) else Num(0.0)
             b = other.data[i] if i < len(other.data) else Num(0.0)
-            data.append(Add(a, b))
+            data.append(SAdd(a, b))
         return TVKernel(data)
     
     def __sub__(self, other: TIKernel | TVKernel) -> TVKernel:
         return self + (-other)
     
     def __neg__(self) -> TVKernel:
-        data = [Neg(x) for x in self.data]
+        data = [SNeg(x) for x in self.data]
         return TVKernel(data)
     
     def __mul__(self, other: TIKernel | TVKernel | float) -> TVKernel:
@@ -137,9 +179,9 @@ class TVKernel(RecLang):
                 for j in range(len(self.data)):
                     if 0 <= i - j < len(other.data):
                         terms.append(PointwiseMul(self.data[j], Convolve(TIKernel.z(-j), other.data[i - j])))
-                terms_seq: Sequence[RecLang] = terms
+                terms_seq: Sequence[SignalExpr] = terms
                 if terms:
-                    term = reduce(lambda x, y: Add(x, y), terms_seq)
+                    term = reduce(lambda x, y: SAdd(x, y), terms_seq)
                 else:
                     term = Num(0.0)
                 data.append(term)
@@ -150,64 +192,106 @@ class TVKernel(RecLang):
     
     def __rmul__(self, other: float) -> TVKernel:
         return self * other
-    
-    
 
-Kernel = TIKernel | TVKernel
+KernelConstant = TIKernel | TVKernel
 
-class Add(RecLang):
-    a: RecLang
-    b: RecLang
+class KAdd(KernelExpr):
+    a: KernelExpr
+    b: KernelExpr
     __match_args__ = ("a", "b")
-    def __init__(self, a: RecLang, b: RecLang) -> None:
+    def __init__(self, a: KernelExpr, b: KernelExpr) -> None:
         super().__init__()
         self.a = a
         self.b = b
 
-class Sub(RecLang):
-    a: RecLang
-    b: RecLang
+class KSub(KernelExpr):
+    a: KernelExpr
+    b: KernelExpr
     __match_args__ = ("a", "b")
-    def __init__(self, a: RecLang, b: RecLang) -> None:
+    def __init__(self, a: KernelExpr, b: KernelExpr) -> None:
         super().__init__()
         self.a = a
         self.b = b
 
-class PointwiseMul(RecLang):
-    a: RecLang
-    b: RecLang
-    __match_args__ = ("a", "b")
-    def __init__(self, a: RecLang, b: RecLang) -> None:
-        super().__init__()
-        self.a = a
-        self.b = b
-
-class Neg(RecLang):
-    a: RecLang
+class KNeg(KernelExpr):
+    a: KernelExpr
     __match_args__ = ("a",)
-    def __init__(self, a: RecLang) -> None:
+    def __init__(self, a: KernelExpr) -> None:
         super().__init__()
         self.a = a
 
-class Convolve(RecLang):
-    a: RecLang
-    b: RecLang
+class KConvolve(KernelExpr):
+    a: KernelExpr
+    b: KernelExpr
     __match_args__ = ("a", "b")
-    def __init__(self, a: RecLang, b: RecLang) -> None:
+    def __init__(self, a: KernelExpr, b: KernelExpr) -> None:
+        super().__init__()
+        self.a = a
+        self.b = b    
+
+# SignalExpr
+
+class Num(SignalExpr):
+    value: float
+    __match_args__ = ("value",)
+    def __init__(self, value: float) -> None:
+        super().__init__()
+        self.value = value
+
+class SAdd(SignalExpr):
+    a: SignalExpr
+    b: SignalExpr
+    __match_args__ = ("a", "b")
+    def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
+        super().__init__()
+        self.a = a
+        self.b = b
+        
+class SSub(SignalExpr):
+    a: SignalExpr
+    b: SignalExpr
+    __match_args__ = ("a", "b")
+    def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
         super().__init__()
         self.a = a
         self.b = b
 
-class Recurse(RecLang):
-    a: RecLang
-    g: RecLang
+class PointwiseMul(SignalExpr):
+    a: SignalExpr
+    b: SignalExpr
+    __match_args__ = ("a", "b")
+    def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
+        super().__init__()
+        self.a = a
+        self.b = b
+
+class SNeg(SignalExpr):
+    a: SignalExpr
+    __match_args__ = ("a",)
+    def __init__(self, a: SignalExpr) -> None:
+        super().__init__()
+        self.a = a
+
+class Convolve(SignalExpr):
+    a: KernelExpr
+    b: SignalExpr
+    __match_args__ = ("a", "b")
+    def __init__(self, a: KernelExpr, b: SignalExpr) -> None:
+        super().__init__()
+        self.a = a
+        self.b = b
+    
+
+class Recurse(SignalExpr):
+    a: KernelExpr
+    g: SignalExpr
     __match_args__ = ("a", "g")
-    def __init__(self, a: RecLang, g: RecLang) -> None:
+    def __init__(self, a: KernelExpr, g: SignalExpr) -> None:
         super().__init__()
         self.a = a
         self.g = g
 
-class Var(RecLang):
+class Var(SignalExpr):
     name: str
     __match_args__ = ("name",)
     def __init__(self, name: str) -> None:

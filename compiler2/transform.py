@@ -16,7 +16,7 @@ class Transform:
 class ConstantFoldAdd(Transform):
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Add(a, b) if isinstance(a, Kernel) and isinstance(b, Kernel):
+            case KAdd(a, b) if isinstance(a, KernelConstant) and isinstance(b, KernelConstant):
                 return [a + b]
             case _:
                 return []
@@ -26,19 +26,16 @@ class ConstantFoldConvolve(Transform):
     
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Convolve(a, b) if isinstance(a, Kernel) and isinstance(b, Kernel):
+            case KConvolve(a, b) if isinstance(a, KernelConstant) and isinstance(b, KernelConstant):
                 return [a * b]
             case _:
                 return []
 
 class ConstantFoldNegate(Transform):
-    def negate_ti(self, a: TIKernel) -> TIKernel:
-        return TIKernel(-a.data)
-
     """Constant fold negation of time invariant kernels."""
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Neg(a) if isinstance(a, TIKernel):
+            case KNeg(a) if isinstance(a, TIKernel):
                 return [-a]
             case _:
                 return []
@@ -51,7 +48,7 @@ class FuseRecurse(Transform):
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
             case Recurse(a, Recurse(b, g)):
-                return [Recurse(Sub(Add(a, b), Convolve(a, b)), g)]
+                return [Recurse(KSub(KAdd(a, b), KConvolve(a, b)), g)]
             case _:
                 return []
 
@@ -89,7 +86,7 @@ class Delay(Transform):
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
             case Recurse(a, g):
-                return [Recurse(Convolve(a, a), Convolve(Add(TIKernel.i(), a), g))]
+                return [Recurse(KConvolve(a, a), Convolve(KAdd(TIKernel.i(), a), g))]
             case _:
                 return []
 
@@ -97,9 +94,9 @@ class ComposeRecurse(Transform):
     """Compose two IIRs R(a, g) + R(b, h)"""
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Add(Recurse(a, g), Recurse(b, h)):
-                c = Sub(Add(a, b), Convolve(a, b))
-                w = Add(Convolve(Sub(TIKernel.i(), b), g), Convolve(Sub(TIKernel.i(), a), h))
+            case SAdd(Recurse(a, g), Recurse(b, h)):
+                c = KSub(KAdd(a, b), KConvolve(a, b))
+                w = SAdd(Convolve(KSub(TIKernel.i(), b), g), Convolve(KSub(TIKernel.i(), a), h))
                 return [Recurse(c, w)]
             case _:
                 return []
@@ -110,9 +107,9 @@ class Factorize(Transform):
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
             case TIKernel(a):
-                factors: Sequence[RecLang] = factorize_polynomial(a)
+                factors: Sequence[KernelExpr] = factorize_polynomial(a)
                 assert len(factors) > 0
-                e = reduce(lambda acc, factor: Convolve(factor, acc), factors)
+                e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
                 return [e]
             case _:
                 return []
