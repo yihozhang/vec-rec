@@ -1,19 +1,26 @@
 from __future__ import annotations
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Sequence, Tuple
 import numpy as np
 
-__all__ = ["RecLang", "TIKernel", "Convolve", "Recurse", "Var", "Add", "Sub", "Neg"]
+__all__ = ["RecLang", "TIKernel", "Convolve", "Recurse", "Var", "Add", "Sub", "Neg", "TVKernel", "Num", "PointwiseMul", "Kernel"]
 
 class RecLang:
     pass
 
+class Num(RecLang):
+    value: float
+    __match_args__ = ("value",)
+    def __init__(self, value: float) -> None:
+        super().__init__()
+        self.value = value
+
 class TIKernel(RecLang):
     @staticmethod
-    def z(n: int = 1) -> TIKernel:
+    def z(n: int = -1) -> TIKernel:
         """Return the delay kernel z^n."""
-        if n < 0:
-            raise ValueError("n must be non-negative")
-        return TIKernel([0.0] * n + [1.0])
+        if n >= 0:
+            raise ValueError("n must be negative")
+        return TIKernel([0.0] * (-n) + [1.0])
     
     @staticmethod
     def i() -> TIKernel:
@@ -31,6 +38,9 @@ class TIKernel(RecLang):
         data[mask] = 0.0
         data = np.trim_zeros(data, 'b')
         self.data = data
+        
+    def promote(self) -> TVKernel:
+        return TVKernel([Num(x) for x in self.data])
     
     def __getitem__(self, index: int) -> float:
         if len(self.data) <= index:
@@ -59,30 +69,39 @@ class TIKernel(RecLang):
         """Return the number of non-zero terms in the signal."""
         return int(np.count_nonzero(self.data))
     
-    # def __mul__(self, other: TIKernel | float) -> TIKernel:
-    #     if isinstance(other, TIKernel):
-    #         if len(self) == 0 or len(other) == 0:
-    #             return TIKernel([])
-    #         return TIKernel(np.convolve(self.data, other.data))
-    #     else:
-    #         return TIKernel(self.data * other)
+    def __mul__(self, other: TIKernel | float) -> TIKernel:
+        if isinstance(other, TIKernel):
+            if len(self) == 0 or len(other) == 0:
+                return TIKernel([])
+            return TIKernel(np.convolve(self.data, other.data))
+        else:
+            return TIKernel(self.data * other)
     
-    # __rmul__ = __mul__
+    __rmul__ = __mul__
     
-    # def __add__(self, other: TIKernel) -> TIKernel:
-    #     max_len = max(len(self), len(other))
-    #     a_data = np.pad(self.data, (0, max_len - len(self)), 'constant')
-    #     b_data = np.pad(other.data, (0, max_len - len(other)), 'constant')
-    #     return TIKernel(a_data + b_data)
+    def __add__(self, other: TIKernel) -> TIKernel:
+        max_len = max(len(self), len(other))
+        a_data = np.pad(self.data, (0, max_len - len(self)), 'constant')
+        b_data = np.pad(other.data, (0, max_len - len(other)), 'constant')
+        return TIKernel(a_data + b_data)
     
-    # def __sub__(self, other: TIKernel) -> TIKernel:
-    #     max_len = max(len(self), len(other))
-    #     a_data = np.pad(self.data, (0, max_len - len(self)), 'constant')
-    #     b_data = np.pad(other.data, (0, max_len - len(other)), 'constant')
-    #     return TIKernel(a_data - b_data)
+    def __sub__(self, other: TIKernel) -> TIKernel:
+        max_len = max(len(self), len(other))
+        a_data = np.pad(self.data, (0, max_len - len(self)), 'constant')
+        b_data = np.pad(other.data, (0, max_len - len(other)), 'constant')
+        return TIKernel(a_data - b_data)
     
-    # def __neg__(self) -> TIKernel:
-    #     return TIKernel(-self.data)
+    def __neg__(self) -> TIKernel:
+        return TIKernel(-self.data)
+
+class TVKernel(RecLang):
+    data: Sequence[RecLang]
+    __match_args__ = ("data",)
+    def __init__(self, data: Sequence[RecLang]):
+        super().__init__()
+        self.data = data
+
+Kernel = TIKernel | TVKernel
 
 class Add(RecLang):
     a: RecLang
@@ -94,6 +113,15 @@ class Add(RecLang):
         self.b = b
 
 class Sub(RecLang):
+    a: RecLang
+    b: RecLang
+    __match_args__ = ("a", "b")
+    def __init__(self, a: RecLang, b: RecLang) -> None:
+        super().__init__()
+        self.a = a
+        self.b = b
+
+class PointwiseMul(RecLang):
     a: RecLang
     b: RecLang
     __match_args__ = ("a", "b")

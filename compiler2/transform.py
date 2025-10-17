@@ -1,7 +1,7 @@
 from __future__ import annotations
 from functools import reduce
 import numpy as np
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Sequence, Tuple
 from abc import abstractmethod
 from compiler2.expr import *
 from compiler2.factorize import factorize_polynomial
@@ -12,42 +12,88 @@ class Transform:
     def apply(self, expr: RecLang) -> List[RecLang]:
         pass
 
+def is_kernel(k: RecLang) -> bool:
+    match k:
+        case TIKernel(_):
+            return True
+        case TVKernel(_):
+            return True
+        case _:
+            return False
+
 class ConstantFoldAdd(Transform):
-    def op(self, a: TIKernel, b: TIKernel) -> TIKernel:
-        max_len = max(len(a), len(b))
-        a_data = np.pad(a.data, (0, max_len - len(a)), 'constant')
-        b_data = np.pad(b.data, (0, max_len - len(b)), 'constant')
-        return TIKernel(a_data + b_data)
+    """Constant fold addition of kernels."""
+    def add_tv(self, a: TVKernel, b: TVKernel) -> TVKernel:
+        max_len = max(len(a.data), len(b.data))
+        data = []
+        for i in range(max_len):
+            data.append(Add(
+                a.data[i] if i < len(a.data) else TIKernel([]),
+                b.data[i] if i < len(b.data) else TIKernel([])
+            ))
+        return TVKernel(data)
 
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Add(TIKernel(a), TIKernel(b)):
-                return [self.add(TIKernel(a), TIKernel(b))]
+            case Add(a, b) if isinstance(a, TIKernel) and isinstance(b, TIKernel):
+                return [a + b]
+            case Add(a, b) if isinstance(a, Kernel) and isinstance(b, Kernel):
+                a_tv = a.promote() if isinstance(a, TIKernel) else a
+                b_tv = b.promote() if isinstance(b, TIKernel) else b
+                return [self.add_tv(a_tv, b_tv)]
             case _:
                 return []
 
 class ConstantFoldConvolve(Transform):
-    def op(self, a: TIKernel, b: TIKernel) -> TIKernel:
+    """Constant fold convolution of kernels."""
+    
+    def convolve_ti(self, a: TIKernel, b: TIKernel) -> TIKernel:
         if len(a) == 0 or len(b) == 0:
             return TIKernel([])
         return TIKernel(np.convolve(a.data, b.data))
 
+    def convolve_tv(self, a: TVKernel, b: TVKernel) -> TVKernel:
+        max_len = len(a.data) + len(b.data) - 1
+        data = []
+        for i in range(max_len):
+            terms = []
+            for j in range(len(a.data)):
+                if 0 <= i - j < len(b.data):
+                    terms.append(PointwiseMul(a.data[j], Convolve(TIKernel.z(-j), b.data[i - j])))
+            terms_seq: Sequence[RecLang] = terms
+            if terms:
+                term = reduce(lambda x, y: Add(x, y), terms_seq)
+            else:
+                term = TIKernel([])
+            data.append(term)
+        return TVKernel(data)
+
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Convolve(TIKernel(a), TIKernel(b)):
-                return [self.convolve(TIKernel(a), TIKernel(b))]
+            case Convolve(a, b) if isinstance(a, TIKernel) and isinstance(b, TIKernel):
+                return [a * b]
+            case Convolve(a, b) if isinstance(a, Kernel) and isinstance(b, Kernel):
+                a_tv = a.promote() if isinstance(a, TIKernel) else a
+                b_tv = b.promote() if isinstance(b, TIKernel) else b
+                return [self.convolve_tv(a_tv, b_tv)]
             case _:
                 return []
 
 class ConstantFoldNegate(Transform):
+    def negate_ti(self, a: TIKernel) -> TIKernel:
+        return TIKernel(-a.data)
+
+    """Constant fold negation of time invariant kernels."""
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Neg(TIKernel(a)):
-                return [TIKernel(-a)]
+            case Neg(a) if isinstance(a, TIKernel):
+                return [-a]
             case _:
                 return []
 
 class FuseRecurse(Transform):
+    """Fuse nested IIRs"""
+    
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
             case Recurse(a, Recurse(b, g)):
@@ -56,6 +102,8 @@ class FuseRecurse(Transform):
                 return []
 
 class Dilate(Transform):
+    """Dilate an IIR"""
+
     def op(self, k: TIKernel) -> Tuple[TIKernel, TIKernel]:
         stride = 2
         while True:
@@ -63,26 +111,27 @@ class Dilate(Transform):
             even[0::stride] = k.data[0::stride]
             odd = k.data - even
 
-            even = TIKernel(even)
-            odd = TIKernel(odd)
+            even_k = TIKernel(even)
+            odd_k = TIKernel(odd)
 
-            if len(odd) == 0:
+            if len(odd_k) == 0:
                 stride *= 2
                 continue
 
-            f = even - odd
-            i = -even * even + 2 * even + odd * odd
+            f = even_k - odd_k
+            i = -even_k * even_k + 2 * even_k + odd_k * odd_k
             return f, i
 
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Recurse(a, g):
+            case Recurse(a, g) if isinstance(a, TIKernel):
                 f, i = self.op(a)
                 return [Recurse(f, Convolve(i, g))]
             case _:
                 return []
 
 class Delay(Transform):
+    """Delay an IIR"""
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
             case Recurse(a, g):
@@ -91,6 +140,7 @@ class Delay(Transform):
                 return []
 
 class ComposeRecurse(Transform):
+    """Compose two IIRs R(a, g) + R(b, h)"""
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
             case Add(Recurse(a, g), Recurse(b, h)):
@@ -101,12 +151,15 @@ class ComposeRecurse(Transform):
                 return []
 
 class Factorize(Transform):
+    """Factorize a TIKernel into products of first-order and second-order factors."""
+
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
             case TIKernel(a):
-                factors = factorize_polynomial(a)
+                factors: Sequence[RecLang] = factorize_polynomial(a)
                 assert len(factors) > 0
-                e = reduce(lambda acc, factor: Convolve(TIKernel(factor), acc), factors)
-                return e
+                e = reduce(lambda acc, factor: Convolve(factor, acc), factors)
+                return [e]
             case _:
                 return []
+

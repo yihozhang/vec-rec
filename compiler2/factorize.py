@@ -2,10 +2,10 @@ import numpy as np
 from compiler2.expr import TIKernel
 import pytest
 from typing import List, Tuple
-
+import numpy.typing as npt
 __all__ = ["factorize_polynomial"]
 
-def factorize_polynomial(coefficients: List[float] | np.ndarray, tolerance: float = 1e-10) -> List[TIKernel]:
+def factorize_polynomial(coefficients: List[float] | npt.NDArray[npt._FloatType], tolerance: float = 1e-10) -> List[TIKernel]:
     """
     Factorize a polynomial into products of first-order and second-order factors.
     
@@ -88,12 +88,9 @@ def factorize_polynomial(coefficients: List[float] | np.ndarray, tolerance: floa
     if len(first_order) > 0:
         first_order[-1][0] *= leading_coef
     elif len(second_order) > 0:
-        second_order[-1] *= leading_coef
+        second_order[-1][0] *= leading_coef
     
-    first_order = [TIKernel(f) for f in first_order]
-    second_order = [TIKernel(f) for f in second_order]
-    
-    return first_order + second_order
+    return [TIKernel(f) for f in first_order] + [TIKernel(f) for f in second_order]
 
 
 def test_example_1():
