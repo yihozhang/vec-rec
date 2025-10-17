@@ -136,7 +136,7 @@ class TVKernel(RecLang):
                 terms = []
                 for j in range(len(self.data)):
                     if 0 <= i - j < len(other.data):
-                        terms.append(PointwiseMul(self.data[j], other.data[i - j]))
+                        terms.append(PointwiseMul(self.data[j], Convolve(TIKernel.z(-j), other.data[i - j])))
                 terms_seq: Sequence[RecLang] = terms
                 if terms:
                     term = reduce(lambda x, y: Add(x, y), terms_seq)
@@ -148,7 +148,8 @@ class TVKernel(RecLang):
             data = [PointwiseMul(Num(other), x) for x in self.data]
             return TVKernel(data)
     
-    __rmul__ = __mul__
+    def __rmul__(self, other: float) -> TVKernel:
+        return self * other
     
     
 
