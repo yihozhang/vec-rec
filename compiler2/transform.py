@@ -12,70 +12,22 @@ class Transform:
     def apply(self, expr: RecLang) -> List[RecLang]:
         pass
 
-def is_kernel(k: RecLang) -> bool:
-    match k:
-        case TIKernel(_):
-            return True
-        case TVKernel(_):
-            return True
-        case _:
-            return False
-
+# Constant folding
 class ConstantFoldAdd(Transform):
-    """Constant fold addition of kernels."""
-    def add_tv(self, a: TVKernel, b: TVKernel) -> TVKernel:
-        max_len = max(len(a.data), len(b.data))
-        data = []
-        for i in range(max_len):
-            data.append(Add(
-                a.data[i] if i < len(a.data) else TIKernel([]),
-                b.data[i] if i < len(b.data) else TIKernel([])
-            ))
-        return TVKernel(data)
-
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Add(a, b) if isinstance(a, TIKernel) and isinstance(b, TIKernel):
-                return [a + b]
             case Add(a, b) if isinstance(a, Kernel) and isinstance(b, Kernel):
-                a_tv = a.promote() if isinstance(a, TIKernel) else a
-                b_tv = b.promote() if isinstance(b, TIKernel) else b
-                return [self.add_tv(a_tv, b_tv)]
+                return [a + b]
             case _:
                 return []
 
 class ConstantFoldConvolve(Transform):
     """Constant fold convolution of kernels."""
     
-    def convolve_ti(self, a: TIKernel, b: TIKernel) -> TIKernel:
-        if len(a) == 0 or len(b) == 0:
-            return TIKernel([])
-        return TIKernel(np.convolve(a.data, b.data))
-
-    def convolve_tv(self, a: TVKernel, b: TVKernel) -> TVKernel:
-        max_len = len(a.data) + len(b.data) - 1
-        data = []
-        for i in range(max_len):
-            terms = []
-            for j in range(len(a.data)):
-                if 0 <= i - j < len(b.data):
-                    terms.append(PointwiseMul(a.data[j], Convolve(TIKernel.z(-j), b.data[i - j])))
-            terms_seq: Sequence[RecLang] = terms
-            if terms:
-                term = reduce(lambda x, y: Add(x, y), terms_seq)
-            else:
-                term = TIKernel([])
-            data.append(term)
-        return TVKernel(data)
-
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
-            case Convolve(a, b) if isinstance(a, TIKernel) and isinstance(b, TIKernel):
-                return [a * b]
             case Convolve(a, b) if isinstance(a, Kernel) and isinstance(b, Kernel):
-                a_tv = a.promote() if isinstance(a, TIKernel) else a
-                b_tv = b.promote() if isinstance(b, TIKernel) else b
-                return [self.convolve_tv(a_tv, b_tv)]
+                return [a * b]
             case _:
                 return []
 
@@ -90,6 +42,8 @@ class ConstantFoldNegate(Transform):
                 return [-a]
             case _:
                 return []
+
+# IIRs
 
 class FuseRecurse(Transform):
     """Fuse nested IIRs"""
