@@ -82,7 +82,7 @@ class Dilate(Transform):
                 return []
 
 class Delay(Transform):
-    """Delay an IIR"""
+    """Delay an IIR. One particular usage of this is time varying convolution"""
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
             case Recurse(a, g):
@@ -114,3 +114,43 @@ class Factorize(Transform):
             case _:
                 return []
 
+## Time-varying kernels
+
+class DilateTVWithSingleOddOrder(Transform):
+    def all_nonzeros(self, a: Sequence[SignalExpr]) -> List[int]:
+        inzs = []
+        for i, v in enumerate(a):
+            if v != Num(0):
+                inzs.append(i)
+        return inzs
+
+    def apply(self, expr: RecLang) -> List[RecLang]:
+        match expr:
+            case Recurse(TVKernel(a), g):
+                even: List[SignalExpr] = [Num(0)] * len(a)
+                odd: List[SignalExpr] = [Num(0)] * len(a)
+                even[0::2] = a[0::2]
+                odd[1::2] = a[1::2]
+                inzs = self.all_nonzeros(odd)
+                if len(inzs) == 1:
+                    inz = inzs[0]
+                    A = TVKernel(odd)
+                    B = TVKernel(even)
+                    C = KConvolve(
+                        TVKernel([Num(0)] * (inz - 1) + [PointwiseDiv(odd[inz], Convolve(TIKernel.z(-inz), odd[inz]))]),
+                        B
+                    )
+                    exprs = [B, C, KConvolve(A, A), KNeg(KConvolve(C, B))]
+                    expr = Recurse(KAdd.of(exprs), Convolve(KAdd.of([TIKernel.i(), A, KNeg(C)]), g))
+                    return [expr]
+                elif len(inzs) == 0:
+                    pass
+                    return []
+                else:
+                    return []
+
+
+            case _:
+                return []
+
+# TODO: test dilate single odd order

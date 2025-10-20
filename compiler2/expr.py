@@ -18,6 +18,7 @@ __all__ = [
     "SAdd",
     "SSub",
     "PointwiseMul",
+    "PointwiseDiv",
     "SNeg",
     "Convolve",
     "Recurse",
@@ -25,7 +26,14 @@ __all__ = [
 ]
 
 class RecLang:
-    pass
+    def __eq__(self, other):
+        if type(self) is not type(other):
+            return False
+        
+        return self.__dict__ == other.__dict__
+
+    def __hash__(self):
+        return hash((type(self), tuple(sorted(self.__dict__.items()))))
 
 class SignalExpr(RecLang):
     pass
@@ -195,7 +203,7 @@ class TVKernel(KernelExpr):
 
 KernelConstant = TIKernel | TVKernel
 
-class KAdd(KernelExpr):
+class KernelExprBinOp(KernelExpr):
     a: KernelExpr
     b: KernelExpr
     __match_args__ = ("a", "b")
@@ -203,15 +211,19 @@ class KAdd(KernelExpr):
         super().__init__()
         self.a = a
         self.b = b
+    
+    @classmethod
+    def of(cls, exprs: List[KernelExpr]):
+        return reduce(lambda a, b: cls(a, b), exprs)    
 
-class KSub(KernelExpr):
-    a: KernelExpr
-    b: KernelExpr
-    __match_args__ = ("a", "b")
-    def __init__(self, a: KernelExpr, b: KernelExpr) -> None:
-        super().__init__()
-        self.a = a
-        self.b = b
+class KAdd(KernelExprBinOp):
+    pass
+
+class KSub(KernelExprBinOp):
+    pass
+
+class KConvolve(KernelExprBinOp):
+    pass
 
 class KNeg(KernelExpr):
     a: KernelExpr
@@ -219,15 +231,6 @@ class KNeg(KernelExpr):
     def __init__(self, a: KernelExpr) -> None:
         super().__init__()
         self.a = a
-
-class KConvolve(KernelExpr):
-    a: KernelExpr
-    b: KernelExpr
-    __match_args__ = ("a", "b")
-    def __init__(self, a: KernelExpr, b: KernelExpr) -> None:
-        super().__init__()
-        self.a = a
-        self.b = b    
 
 # SignalExpr
 
@@ -238,7 +241,7 @@ class Num(SignalExpr):
         super().__init__()
         self.value = value
 
-class SAdd(SignalExpr):
+class SignalExprBinOp(SignalExpr):
     a: SignalExpr
     b: SignalExpr
     __match_args__ = ("a", "b")
@@ -246,24 +249,22 @@ class SAdd(SignalExpr):
         super().__init__()
         self.a = a
         self.b = b
-        
-class SSub(SignalExpr):
-    a: SignalExpr
-    b: SignalExpr
-    __match_args__ = ("a", "b")
-    def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
-        super().__init__()
-        self.a = a
-        self.b = b
+    
+    @classmethod
+    def of(cls, exprs: List[SignalExpr]):
+        return reduce(lambda a, b: cls(a, b), exprs)    
 
-class PointwiseMul(SignalExpr):
-    a: SignalExpr
-    b: SignalExpr
-    __match_args__ = ("a", "b")
-    def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
-        super().__init__()
-        self.a = a
-        self.b = b
+class SAdd(SignalExprBinOp):
+    pass
+        
+class SSub(SignalExprBinOp):
+    pass
+
+class PointwiseMul(SignalExprBinOp):
+    pass
+
+class PointwiseDiv(SignalExprBinOp):
+    pass
 
 class SNeg(SignalExpr):
     a: SignalExpr
