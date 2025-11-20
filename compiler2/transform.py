@@ -94,6 +94,8 @@ class ComposeRecurse(Transform):
     """Compose two IIRs R(a, g) + R(b, h)"""
     def apply(self, expr: RecLang) -> List[RecLang]:
         match expr:
+            # TODO: this transformation is wrong for time-varying kernels
+            # TODO: look at other transformations
             case SAdd(Recurse(a, g), Recurse(b, h)):
                 c = KSub(KAdd(a, b), KConvolve(a, b))
                 w = SAdd(Convolve(KSub(TIKernel.i(), b), g), Convolve(KSub(TIKernel.i(), a), h))
@@ -144,8 +146,8 @@ class DilateTVWithSingleOddOrder(Transform):
                     expr = Recurse(KAdd.of(exprs), Convolve(KAdd.of([TIKernel.i(), A, KNeg(C)]), g))
                     return [expr]
                 elif len(inzs) == 0:
-                    pass
-                    return []
+                    # TODO: dilate with stride greater than two
+                    raise NotImplementedError
                 else:
                     return []
 
@@ -153,4 +155,3 @@ class DilateTVWithSingleOddOrder(Transform):
             case _:
                 return []
 
-# TODO: test dilate single odd order
