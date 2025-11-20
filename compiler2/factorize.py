@@ -5,7 +5,7 @@ from typing import List, Tuple
 import numpy.typing as npt
 __all__ = ["factorize_polynomial"]
 
-def factorize_polynomial(coefficients: List[float] | npt.NDArray[npt._FloatType], tolerance: float = 1e-10) -> List[TIKernel]:
+def factorize_polynomial(coefficients: List[float] | npt.NDArray[np.float64], tolerance: float = 1e-10) -> List[TIKernel]:
     """
     Factorize a polynomial into products of first-order and second-order factors.
     

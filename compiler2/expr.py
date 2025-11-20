@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import dataclass
 from functools import reduce
 from typing import List, Optional, Dict, Sequence, Tuple, overload
 import numpy as np
@@ -40,7 +41,7 @@ class SignalExpr(RecLang):
     pass
 
 class KernelExpr(RecLang):
-    pass
+    def time_delay(self) -> int: ...
 
 class TIKernel(KernelExpr):
     @staticmethod
@@ -70,6 +71,13 @@ class TIKernel(KernelExpr):
     def promote(self) -> TVKernel:
         return TVKernel([Num(x) for x in self.data])
     
+    def time_delay(self) -> int:
+        """Return the time delay of the kernel."""
+        for i, v in enumerate(self.data):
+            if not np.isclose(v, 0.0):
+                return i
+        return 0
+
     def __getitem__(self, index: int) -> float:
         if len(self.data) <= index:
             return 0.0
@@ -159,6 +167,16 @@ class TVKernel(KernelExpr):
         super().__init__()
         self.data = data
     
+    def time_delay(self) -> int:
+        """Return the time delay of the kernel."""
+        for i, v in enumerate(self.data):
+            match v:
+                case Num(value) if np.isclose(value, 0.0):
+                    continue
+                case _:
+                    return i
+        return 0
+
     def __add__(self, other: TIKernel | TVKernel) -> TVKernel:
         if isinstance(other, TIKernel):
             return self + other.promote()
@@ -201,9 +219,14 @@ class TVKernel(KernelExpr):
     
     def __rmul__(self, other: float) -> TVKernel:
         return self * other
+    
+    def __repr__(self) -> str:
+        data = ", ".join([str(x) for x in self.data])
+        return f"TVKernel([ {data} ])"
 
 KernelConstant = TIKernel | TVKernel
 
+@dataclass
 class KernelExprBinOp(KernelExpr):
     a: KernelExpr
     b: KernelExpr
@@ -213,8 +236,13 @@ class KernelExprBinOp(KernelExpr):
         self.a = a
         self.b = b
     
+    def time_delay(self) -> int:
+        """Return the time delay of the kernel."""
+        return min(self.a.time_delay(), self.b.time_delay())
+
     @classmethod
     def of(cls, exprs: List[KernelExpr]):
+        """Combine a list of KernelExpr into a single KernelExpr using the binary operation."""
         return reduce(lambda a, b: cls(a, b), exprs)    
 
 class KAdd(KernelExprBinOp):
@@ -224,7 +252,9 @@ class KSub(KernelExprBinOp):
     pass
 
 class KConvolve(KernelExprBinOp):
-    pass
+    def time_delay(self) -> int:
+        """Return the time delay of the kernel."""
+        return self.a.time_delay() + self.b.time_delay()
 
 class KNeg(KernelExpr):
     a: KernelExpr
@@ -232,6 +262,10 @@ class KNeg(KernelExpr):
     def __init__(self, a: KernelExpr) -> None:
         super().__init__()
         self.a = a
+    
+    def time_delay(self) -> int:
+        """Return the time delay of the kernel."""
+        return self.a.time_delay()
 
 # SignalExpr
 
@@ -267,6 +301,7 @@ class PointwiseMul(SignalExprBinOp):
 class PointwiseDiv(SignalExprBinOp):
     pass
 
+@dataclass
 class SNeg(SignalExpr):
     a: SignalExpr
     __match_args__ = ("a",)
@@ -274,6 +309,7 @@ class SNeg(SignalExpr):
         super().__init__()
         self.a = a
 
+@dataclass
 class Convolve(SignalExpr):
     a: KernelExpr
     b: SignalExpr
@@ -284,6 +320,7 @@ class Convolve(SignalExpr):
         self.b = b
     
 
+@dataclass
 class Recurse(SignalExpr):
     a: KernelExpr
     g: SignalExpr
@@ -293,6 +330,7 @@ class Recurse(SignalExpr):
         self.a = a
         self.g = g
 
+@dataclass
 class Var(SignalExpr):
     name: str
     __match_args__ = ("name",)

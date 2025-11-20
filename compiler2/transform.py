@@ -1,20 +1,20 @@
 from __future__ import annotations
-from functools import reduce
+from functools import partial, reduce
+import itertools
 import numpy as np
-from typing import List, Optional, Dict, Sequence, Tuple
+from typing import Callable, List, Optional, Dict, Protocol, Sequence, Tuple, overload
 from abc import abstractmethod
 from compiler2.expr import *
 from compiler2.factorize import factorize_polynomial
-# from compiler2.expr import Add
 
 class Transform:
     @abstractmethod
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         pass
 
 # Constant folding
 class ConstantFoldAdd(Transform):
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             case KAdd(a, b) if isinstance(a, KernelConstant) and isinstance(b, KernelConstant):
                 return [a + b]
@@ -24,7 +24,7 @@ class ConstantFoldAdd(Transform):
 class ConstantFoldConvolve(Transform):
     """Constant fold convolution of kernels."""
     
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             case KConvolve(a, b) if isinstance(a, KernelConstant) and isinstance(b, KernelConstant):
                 return [a * b]
@@ -33,7 +33,7 @@ class ConstantFoldConvolve(Transform):
 
 class ConstantFoldNegate(Transform):
     """Constant fold negation of time invariant kernels."""
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             case KNeg(a) if isinstance(a, TIKernel):
                 return [-a]
@@ -45,7 +45,7 @@ class ConstantFoldNegate(Transform):
 class FuseRecurse(Transform):
     """Fuse nested IIRs"""
     
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             case Recurse(a, Recurse(b, g)):
                 return [Recurse(KSub(KAdd(a, b), KConvolve(a, b)), g)]
@@ -73,7 +73,7 @@ class Dilate(Transform):
             i = -even_k * even_k + 2 * even_k + odd_k * odd_k
             return f, i
 
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             case Recurse(a, g) if isinstance(a, TIKernel):
                 f, i = self.op(a)
@@ -83,7 +83,7 @@ class Dilate(Transform):
 
 class Delay(Transform):
     """Delay an IIR. One particular usage of this is time varying convolution"""
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             case Recurse(a, g):
                 return [Recurse(KConvolve(a, a), Convolve(KAdd(TIKernel.i(), a), g))]
@@ -92,7 +92,7 @@ class Delay(Transform):
 
 class ComposeRecurse(Transform):
     """Compose two IIRs R(a, g) + R(b, h)"""
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             # TODO: this transformation is wrong for time-varying kernels
             # TODO: look at other transformations
@@ -106,7 +106,7 @@ class ComposeRecurse(Transform):
 class Factorize(Transform):
     """Factorize a TIKernel into products of first-order and second-order factors."""
 
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             case TIKernel(a):
                 factors: Sequence[KernelExpr] = factorize_polynomial(a)
@@ -126,7 +126,7 @@ class DilateTVWithSingleOddOrder(Transform):
                 inzs.append(i)
         return inzs
 
-    def apply(self, expr: RecLang) -> List[RecLang]:
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
         match expr:
             case Recurse(TVKernel(a), g):
                 even: List[SignalExpr] = [Num(0)] * len(a)
@@ -155,3 +155,126 @@ class DilateTVWithSingleOddOrder(Transform):
             case _:
                 return []
 
+class ApplySequence(Transform):
+    def __init__(self, transforms: Sequence[Transform]) -> None:
+        self.transforms = transforms
+
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
+        results: List[RecLang] = [expr]
+        for transform in self.transforms:
+            results = [next for res in results for next in transform.apply(res)]
+        return results
+
+class Try(Transform):
+    def __init__(self, transform: Transform) -> None:
+        self.transform = transform
+
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
+        results = self.transform.apply(expr)
+        return results if len(results) > 0 else [expr]
+
+class ApplyParallel(Transform):
+    def __init__(self, transforms: Sequence[Transform]) -> None:
+        self.transforms = transforms
+
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
+        return [next for transform in self.transforms for next in transform.apply(expr)]
+
+ConstantFold = ApplyParallel([
+    ConstantFoldAdd(),
+    ConstantFoldConvolve(),
+    ConstantFoldNegate(),
+])
+
+class Preorder(Transform):
+    def __init__(self, transform: Transform) -> None:
+        self.transform = transform
+
+    def apply(self, expr: RecLang) -> Sequence[RecLang]:
+        def cartesian(constructor, lists: Sequence[Sequence[RecLang]]) -> Sequence[RecLang]:
+            return [constructor(*args) for args in itertools.product(*lists)]
+        
+        results = []
+        for expr in self.transform.apply(expr):
+            match expr:
+                case TIKernel(_) | TVKernel(_) | Var(_) | Num(_):
+                    results.append(expr)
+                case KAdd(a, b):
+                    results += cartesian(KAdd, [self.apply(a), self.apply(b)])
+                case KSub(a, b):
+                    results += cartesian(KSub, [self.apply(a), self.apply(b)])
+                case KNeg(a):
+                    results += cartesian(KNeg, [self.apply(a)])
+                case KConvolve(a, b):
+                    results += cartesian(KConvolve, [self.apply(a), self.apply(b)])
+                case SAdd(a, b):
+                    results += cartesian(SAdd, [self.apply(a), self.apply(b)])
+                case SSub(a, b):
+                    results += cartesian(SSub, [self.apply(a), self.apply(b)])
+                case PointwiseMul(a, b):
+                    results += cartesian(PointwiseMul, [self.apply(a), self.apply(b)])
+                case PointwiseDiv(a, b):
+                    results += cartesian(PointwiseDiv, [self.apply(a), self.apply(b)])
+                case SNeg(a):
+                    results += cartesian(SNeg, [self.apply(a)])
+                case Convolve(a, b):
+                    results += cartesian(Convolve, [self.apply(a), self.apply(b)])
+                case Recurse(a, g):
+                    results += cartesian(Recurse, [self.apply(a), self.apply(g)])
+                case _:
+                    raise NotImplementedError(f"Preorder traversal not implemented for {expr}")
+        return results
+
+
+# @overload
+# def preorder_traverse(func) -> Callable[SignalExpr, SignalExpr]:
+#     ...
+
+# @overload
+# def preorder_traverse(func), expr: KernelExpr) -> KernelExpr:
+#     ...
+
+class ExprMapping(Protocol):
+    @overload
+    def __call__(self, expr: SignalExpr) -> SignalExpr: ...
+    @overload
+    def __call__(self, expr: KernelExpr) -> KernelExpr: ...
+
+class ExprMappingAmb(Protocol):
+    @overload
+    def __call__(self, expr: SignalExpr) -> List[SignalExpr]: ...
+    @overload
+    def __call__(self, expr: KernelExpr) -> List[KernelExpr]: ...
+
+def preorder_traverse(func) -> ExprMapping:
+    @overload
+    def go(expr: SignalExpr) -> SignalExpr: ...
+    @overload
+    def go(expr: KernelExpr) -> KernelExpr: ...
+
+    def go(expr):
+        expr = func(expr)
+        match expr:
+            case KAdd(a, b):
+                return KAdd(go(a), go(b))
+            case KSub(a, b):
+                return KSub(go(a), go(b))
+            case KConvolve(a, b):
+                return KConvolve(go(a), go(b))
+            case KNeg(a):
+                return KNeg(go(a))
+            case SAdd(a, b):
+                return SAdd(go(a), go(b))
+            case SSub(a, b):
+                return SSub(go(a), go(b))
+            case Convolve(a, b):
+                return Convolve(go(a), go(b))
+            case SNeg(a):
+                return SNeg(go(a))
+            case Recurse(a, g):
+                return Recurse(go(a), go(g))
+            case Convolve(a, b):
+                return Convolve(go(a), go(b))
+            case _:
+                return expr
+    return go

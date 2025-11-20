@@ -221,6 +221,52 @@ struct SRecurse {
     }
 };
 
+template <typename vec_type_in, typename vec_type_out, typename Inner>
+struct ConvertN2One {
+    constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
+    constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
+    constexpr static int factor = lanes_in / lanes_out;
+    static_assert(lanes_in % lanes_out == 0, "lanes_in must be multiple of lanes_out");
+    
+    Inner inner;
+    
+    ConvertN2One(Inner inner) : inner(inner) {}
+    void run(vec_type_out __restrict__* out) __restrict__ {
+
+        vec_type_in *p = (vec_type_in *)out;
+#pragma unroll
+        for (int i = 0; i < factor; i++) {
+            vec_type_in in;
+            inner.run(&in);
+            *p++ = in;
+        }
+    }
+};
+
+template <typename vec_type_in, typename vec_type_out, typename Inner>
+struct ConvertOne2N {
+    constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
+    constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
+    constexpr static int factor = lanes_out / lanes_in;
+    static_assert(lanes_out % lanes_in == 0, "lanes_out must be multiple of lanes_in");
+    
+
+    Inner inner;
+    vec_type_in buffer;
+    int offset;
+
+    ConvertOne2N(Inner inner) : inner(inner), offset(0) {}
+
+    void run(vec_type_out __restrict__* out) __restrict__ {
+        if (offset == 0) {
+            inner.run(&buffer);
+        }
+
+        *out = (vec_type_out *)buffer + offset;
+        offset = (offset + 1) % factor;
+    }
+};
+
 #define BinOp(name, operator)                               \
     template <typename vec_type, typename S1, typename S2>  \
     struct name {                                           \

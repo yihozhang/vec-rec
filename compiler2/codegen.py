@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Optional
 from compiler2.expr import *
 
 
@@ -49,7 +50,23 @@ class CodeGen:
         match element_type:
             case ElementType.Float:
                 return f"float_vec{lanes}"
-            # TODO other types
+            case ElementType.I32:
+                raise NotImplementedError
+
+    def generate(self, expr: SignalExpr, name: str) -> Code:
+        code = self.generate_signal(expr)
+        vars = self.collect_variables(expr)
+        args = ", ".join(f"const {self.get_vec_type(ElementType.Float)}& {var}" for var in vars)
+        text = "\n".join([
+            f"auto make_{name}({args}) {{",
+            f"    return {code.text};",
+            "}",
+        ])
+        return Code(
+            text,
+            code.element_type,
+            code.lanes,
+        )
 
     def generate_signal(self, expr: SignalExpr) -> Code:
         match expr:
@@ -79,14 +96,41 @@ class CodeGen:
                 # Recurse that requires a smaller lanes
                 return Code(
                     f"Signal1D<{self.get_vec_type(ElementType.Float)}>({name})",
-                    program,
                     ElementType.Float,
                     self.max_lanes(ElementType.Float),
                 )
-            case Convolve(a, b):
-                pass
+            case Convolve(a, f):
+                code_a = self.generate_kernel(a)
+                code_f = self.generate_signal(f)
+
+                assert code_a.element_type == code_f.element_type
+                element_type = code_a.element_type
+
+                code_a = self.enforce_lanes(code_a)
+                code_f = self.enforce_lanes(code_f)
+                vec_type = self.get_vec_type(element_type)
+
+                program = f"SConvolve<{code_a.taps}, {vec_type}>({code_a.text}, {code_f.text})"
+                return Code(program, element_type, code_a.lanes)
             case Recurse(a, g):
-                pass
+                time_delay = a.time_delay()
+                code_a = self.generate_kernel(a)
+                code_g = self.generate_signal(g)
+
+                assert code_a.element_type == code_g.element_type
+                element_type = code_a.element_type
+
+                # Lanes of an IIR depends on its time delay (and hardware limit)
+                lanes = min(self.max_lanes(code_a.element_type), time_delay)
+
+                code_a = self.enforce_lanes(code_a, lanes)
+                code_g = self.enforce_lanes(code_g, lanes)
+                vec_type = self.get_vec_type(element_type, lanes)
+
+                program = f"SRecurse<{code_a.taps}, {vec_type}>({code_a.text}, {code_g.text})"
+                return Code(program, element_type, lanes)
+        
+        assert False
 
     def enforce_lanes(self, code: Code, lanes: int = -1) -> Code:
         """
@@ -96,11 +140,26 @@ class CodeGen:
         if lanes == -1:
             lanes = self.max_lanes(code.element_type)
 
-        if code.lanes == self.max_lanes(code.element_type):
+        if code.lanes == lanes:
             return code
-        assert code.lanes < self.max_lanes(code.element_type)
+        
+        vec_type_in = self.get_vec_type(code.element_type, code.lanes)
+        vec_type_out = self.get_vec_type(code.element_type, lanes)
 
-        pass
+        if code.lanes < lanes:
+            # upscale lanes
+            return Code(
+                f"ConvertN2One<{vec_type_in}, {vec_type_out}>({code.text})",
+                code.element_type,
+                lanes,
+            )
+        else: # code.lanes > lanes
+            # downscale lanes
+            return Code(
+                f"ConvertOne2N<{vec_type_in}, {vec_type_out}>({code.text})",
+                code.element_type,
+                lanes,
+            )
 
     def generate_kernel(self, expr: KernelExpr) -> Code:
         match expr:
@@ -111,7 +170,7 @@ class CodeGen:
                 Code(
                     f"TimeInvariantKernel<{taps}, {vec_type}>({{{arguments}}})",
                     ElementType.Float,
-                    self.max_lanes(ElementType),
+                    self.max_lanes(ElementType.Float),
                     taps=taps,
                 )
             case TVKernel(signals):
@@ -188,9 +247,40 @@ class CodeGen:
                 element_type = code_k1.element_type
                 vec_type = self.get_vec_type(element_type)
 
+                assert code_k1.taps and code_k2.taps
+
                 return Code(
                     f"KConvolve<{code_k1.taps}, {code_k2.taps}, {vec_type}>({code_k1.text}, {code_k2.text})",
                     element_type,
                     self.max_lanes(element_type),
                     taps=code_k1.taps + code_k2.taps - 1,
                 )
+        
+        assert False
+
+    def collect_variables(self, expr: RecLang, vars: Optional[set[str]]= None) -> set[str]:
+        if vars is None:
+            vars = set()
+
+        match expr:
+            case Var(name):
+                # TODO: variables need have type information
+                vars.add(name)
+            case SignalExprBinOp(a, b):
+                self.collect_variables(a, vars)
+                self.collect_variables(b, vars)
+            case Convolve(a, f):
+                self.collect_variables(a, vars)
+                self.collect_variables(f, vars)
+            case Recurse(a, g):
+                self.collect_variables(a, vars)
+                self.collect_variables(g, vars)
+            case KAdd(a, b) | KSub(a, b) | KConvolve(a, b):
+                self.collect_variables(a, vars)
+                self.collect_variables(b, vars)
+            case KNeg(a):
+                self.collect_variables(a, vars)
+            case TIKernel() | TVKernel() | Num():
+                pass
+
+        return vars
