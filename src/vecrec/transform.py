@@ -91,7 +91,7 @@ class Dilate(Transform):
         match expr:
             case Recurse(a, g) if isinstance(a, TIKernel):
                 f, i = self.op(a)
-                return [Recurse(f, Convolve(i, g))]
+                return [Recurse(i, Convolve(f, g))]
             case _:
                 return []
 

@@ -20,6 +20,7 @@ def main():
         Preorder(Try(ConstantFold)),
     ]
     results = ApplySequence(transforms).apply_signal(expr)
+    print(results[0])
     codegen = CodeGen(512)
     code = codegen.generate(results[0], "test")
     code.to_file("output.cpp")

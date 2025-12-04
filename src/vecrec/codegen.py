@@ -137,7 +137,7 @@ class CodeGen:
                 program = f"make_s_convolve<{code_a.taps}, {vec_type}>({code_a.text}, {code_f.text})"
                 return Code(program, element_type, code_a.lanes)
             case Recurse(a, g):
-                time_delay = a.time_delay()
+                time_delay, a = a.time_delay()
                 code_a = self.generate_kernel(a)
                 code_g = self.generate_signal(g)
 
@@ -155,6 +155,41 @@ class CodeGen:
                 return Code(program, element_type, lanes)
 
         assert False
+
+    def generate_kernel(self, expr: KernelExpr) -> Code:
+        match expr:
+            case TIKernel(_):
+                vec_type = self.get_vec_type(ElementType.Float)
+
+                taps, indices, values = expr.to_sparse_repr()
+                index_args = ", ".join(map(str, indices))
+                value_args = ", ".join(map(str, values))
+                return Code(
+                    f"TimeInvariantKernel<{taps}, {vec_type}>({{{index_args}}}, {{{value_args}}})",
+                    ElementType.Float,
+                    self.max_lanes(ElementType.Float),
+                    taps=taps,
+                )
+            case TVKernel(signals):
+                signal_codes = [self.generate_signal(signal) for signal in signals]
+                signal_codes = [self.enforce_lanes(code) for code in signal_codes]
+                element_type = signal_codes[0].element_type
+                vec_type = self.get_vec_type(element_type)
+                taps = len(signal_codes)
+
+                arguments = ", ".join(c.text for c in signal_codes)
+
+                return Code(
+                    f"TimeVaryingKernel<{taps}, {vec_type}>({arguments})",
+                    element_type,
+                    self.max_lanes(element_type),
+                    taps=taps,
+                )
+            case KAdd(_, _) | KSub(_, _) | KNeg(_) | KConvolve(_, _):
+                raise NotImplementedError("These apps should have been eliminated by constant folding")
+            case _:
+                assert False
+
 
     def enforce_lanes(self, code: Code, lanes: int = -1) -> Code:
         """
@@ -186,103 +221,6 @@ class CodeGen:
                 lanes,
                 taps=code.taps,
             )
-
-    def generate_kernel(self, expr: KernelExpr) -> Code:
-        match expr:
-            case TIKernel(_):
-                vec_type = self.get_vec_type(ElementType.Float)
-
-                taps, indices, values = expr.to_sparse_repr()
-                index_args = ", ".join(map(str, indices))
-                value_args = ", ".join(map(str, values))
-                return Code(
-                    f"TimeInvariantKernel<{taps}, {vec_type}>({{{index_args}}}, {{{value_args}}})",
-                    ElementType.Float,
-                    self.max_lanes(ElementType.Float),
-                    taps=taps,
-                )
-            case TVKernel(signals):
-                signal_codes = [self.generate_signal(signal) for signal in signals]
-                signal_codes = [self.enforce_lanes(code) for code in signal_codes]
-                element_type = signal_codes[0].element_type
-                vec_type = self.get_vec_type(element_type)
-                taps = len(signal_codes)
-
-                arguments = ", ".join(c.text for c in signal_codes)
-
-                return Code(
-                    f"TimeVaryingKernel<{taps}, {vec_type}>({arguments})",
-                    element_type,
-                    self.max_lanes(element_type),
-                    taps=taps,
-                )
-            case KAdd(a, b):
-                code_a = self.generate_kernel(a)
-                code_b = self.generate_kernel(b)
-
-                assert code_a.element_type == code_b.element_type
-                element_type = code_a.element_type
-                vec_type = self.get_vec_type(element_type)
-
-                assert code_a.taps and code_b.taps and code_a.taps == code_b.taps
-                taps = code_a.taps
-
-                return Code(
-                    f"KAdd<{taps}, {vec_type}>({code_a.text}, {code_b.text})",
-                    element_type,
-                    self.max_lanes(element_type),
-                    taps=taps,
-                )
-            case KSub(a, b):
-                code_a = self.generate_kernel(a)
-                code_b = self.generate_kernel(b)
-
-                assert code_a.element_type == code_b.element_type
-                element_type = code_a.element_type
-                vec_type = self.get_vec_type(element_type)
-
-                assert code_a.taps and code_b.taps and code_a.taps == code_b.taps
-                taps = code_a.taps
-
-                return Code(
-                    f"KSub<{taps}, {vec_type}>({code_a.text}, {code_b.text})",
-                    element_type,
-                    self.max_lanes(element_type),
-                    taps=taps,
-                )
-            case KNeg(a):
-                code_a = self.generate_kernel(a)
-
-                element_type = code_a.element_type
-                vec_type = self.get_vec_type(element_type)
-
-                assert code_a.taps
-                taps = code_a.taps
-
-                return Code(
-                    f"KNeg<{taps}, {vec_type}>({code_a.text})",
-                    element_type,
-                    self.max_lanes(element_type),
-                    taps=taps,
-                )
-            case KConvolve(k1, k2):
-                code_k1 = self.generate_kernel(k1)
-                code_k2 = self.generate_kernel(k2)
-
-                assert code_k1.element_type == code_k2.element_type
-                element_type = code_k1.element_type
-                vec_type = self.get_vec_type(element_type)
-
-                assert code_k1.taps and code_k2.taps
-
-                return Code(
-                    f"KConvolve<{code_k1.taps}, {code_k2.taps}, {vec_type}>({code_k1.text}, {code_k2.text})",
-                    element_type,
-                    self.max_lanes(element_type),
-                    taps=code_k1.taps + code_k2.taps - 1,
-                )
-            case _:
-                assert False
 
     def collect_variables(
         self, expr: RecLang, vars: Optional[set[str]] = None

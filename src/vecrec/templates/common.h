@@ -139,85 +139,17 @@ inline float_vec16 extract_slice(float_vec16 a, float_vec16 b, int offset) {
     return float_vec16{};
 }
 
-template <int taps, typename vec_type, typename K1, typename K2>
-struct KAdd {
-    K1 a;
-    K2 b;
-
-    KAdd(K1 a, K2 b) : a(a), b(b) {}
-
-    void run(vec_type *out) {
-        vec_type a_coeff[taps], b_coeff[taps];
-        a.run(&a_coeff);
-        b.run(&b_coeff);
-#pragma unroll
-        for (int i = 0; i < taps; i++) {
-            out[i] = a_coeff[i] + b_coeff[i];
-        }
-    }
-};
-
-template <int taps, typename vec_type, typename K1, typename K2>
-struct KSub {
-    K1 a;
-    K2 b;
-
-    KSub(K1 a, K2 b) : a(a), b(b) {}
-
-    void run(vec_type *out) {
-        vec_type a_coeff, b_coeff;
-        a.run(&a_coeff);
-        b.run(&b_coeff);
-#pragma unroll
-        for (int i = 0; i < taps; i++) {
-            out[i] = a_coeff[i] - b_coeff[i];
-        }
-    }
-};
-
-template <int taps1, int taps2, typename vec_type, typename K1, typename K2>
-struct KConvolve {
-    K1 a;
-    K2 b;
-
-    KConvolve(K1 a, K2 b) : a(a), b(b) {}
-
-    void run(vec_type *out) {
-        vec_type a_coeff[taps1], b_coeff[taps2];
-        a.run(a_coeff);
-        b.run(b_coeff);
-#pragma unroll
-        for (int i = 0; i < taps1 + taps2 - 1; i++) {
-            out[i] = 0;
-            for (int j = 0; j < taps1; j++) {
-                out[i] += a_coeff[j] * b_coeff[i - j];
-            }
-        }
-    }
-};
-
-template <int taps, typename vec_type>
+template <int taps, typename vec_type, const int indices[taps], const typename ElementType<vec_type>::type vals[taps]>
 struct TimeInvariantKernel {
     using elt_type = typename ElementType<vec_type>::type;
-    vec_type coeff[taps];
+    constexpr static int idxs[taps] = indices;
 
-    TimeInvariantKernel(std::initializer_list<elt_type> coeff) {
-        int i = 0;
-        for (auto c : coeff) {
-            this->coeff[i++] = c;
-        }
-    }
-
-    TimeInvariantKernel(const elt_type *coeff) {
-        for (int i = 0; i < taps; i++) {
-            this->coeff[i] = coeff[i];
-        }
-    }
+    TimeInvariantKernel() {}
 
     void run(vec_type *out) {
 #pragma unroll
         for (int i = 0; i < taps; i++) {
-            out[i] = coeff[i];
+            out[i] = vals[i];
         }
     }
 };
@@ -232,7 +164,7 @@ void write_coeff(vec_type *coeff, std::tuple<Args...> &args) {
     }
 }
 
-template <int taps, typename vec_type, typename... Args>
+template <int taps, typename vec_type, const int indices[taps], typename... Args>
 struct TimeVaryingKernel {
     std::tuple<Args...> args;
 
@@ -297,7 +229,7 @@ struct SConvolve {
             asm volatile("" :::);
             prev_input[i] = prev_input[i + 1];
         }
-        prev_input[buffer_size - 1] = *curr_input;
+        prev_input[buffer_size - 1] = curr_input;
 
         vec_type k;
         kernel.run(&k);
