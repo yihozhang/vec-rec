@@ -85,6 +85,17 @@ class TIKernel(KernelExpr):
                 return i
         return 0
 
+    def to_sparse_repr(self) -> Tuple[int, List[int], List[float]]:
+        """Returns a tuple of (num_nonzero, indices, values) representing the sparse form of the kernel."""
+        indices = []
+        values = []
+        for i, v in enumerate(self.data):
+            if not np.isclose(v, 0.0):
+                indices.append(i)
+                values.append(v)
+
+        return len(indices), indices, values
+
     def __getitem__(self, index: int) -> float:
         if len(self.data) <= index:
             return 0.0

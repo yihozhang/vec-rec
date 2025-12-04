@@ -1,6 +1,11 @@
 from enum import Enum
 from typing import Optional
 from vecrec.expr import *
+import numpy as np
+
+from importlib.resources import files
+
+TEMPLATE = files("vecrec.templates") / "common.h"
 
 
 class ElementType(Enum):
@@ -14,6 +19,13 @@ class ElementType(Enum):
             case ElementType.I32:
                 return 32
 
+    def to_str(self) -> str:
+        match self:
+            case ElementType.Float:
+                return "float"
+            case ElementType.I32:
+                return "int32_t"
+
 
 class Code:
     text: str
@@ -26,6 +38,15 @@ class Code:
         self.element_type = element_type
         self.lanes = lanes
         self.taps = taps
+
+    def to_str(self, path: str) -> str:
+        text = TEMPLATE.read_text() + "\n" + self.text
+        return text
+
+    def to_file(self, path: str):
+        text = self.to_str(path)
+        with open(path, "w") as f:
+            f.write(text)
 
 
 class CodeGen:
@@ -57,9 +78,7 @@ class CodeGen:
     def generate(self, expr: SignalExpr, name: str) -> Code:
         code = self.generate_signal(expr)
         vars = self.collect_variables(expr)
-        args = ", ".join(
-            f"const {self.get_vec_type(ElementType.Float)}& {var}" for var in vars
-        )
+        args = ", ".join(f"const {ElementType.Float.to_str()} *{var}" for var in vars)
         text = "\n".join(
             [
                 f"auto make_{name}({args}) {{",
@@ -115,7 +134,7 @@ class CodeGen:
                 code_f = self.enforce_lanes(code_f)
                 vec_type = self.get_vec_type(element_type)
 
-                program = f"SConvolve<{code_a.taps}, {vec_type}>({code_a.text}, {code_f.text})"
+                program = f"make_s_convolve<{code_a.taps}, {vec_type}>({code_a.text}, {code_f.text})"
                 return Code(program, element_type, code_a.lanes)
             case Recurse(a, g):
                 time_delay = a.time_delay()
@@ -132,9 +151,7 @@ class CodeGen:
                 code_g = self.enforce_lanes(code_g, lanes)
                 vec_type = self.get_vec_type(element_type, lanes)
 
-                program = (
-                    f"SRecurse<{code_a.taps}, {vec_type}>({code_a.text}, {code_g.text})"
-                )
+                program = f"make_s_recurse<{code_a.taps}, {vec_type}>({code_a.text}, {code_g.text})"
                 return Code(program, element_type, lanes)
 
         assert False
@@ -159,6 +176,7 @@ class CodeGen:
                 f"ConvertN2One<{vec_type_in}, {vec_type_out}>({code.text})",
                 code.element_type,
                 lanes,
+                taps=code.taps,
             )
         else:  # code.lanes > lanes
             # downscale lanes
@@ -166,16 +184,19 @@ class CodeGen:
                 f"ConvertOne2N<{vec_type_in}, {vec_type_out}>({code.text})",
                 code.element_type,
                 lanes,
+                taps=code.taps,
             )
 
     def generate_kernel(self, expr: KernelExpr) -> Code:
         match expr:
-            case TIKernel(data):
+            case TIKernel(_):
                 vec_type = self.get_vec_type(ElementType.Float)
-                taps = len(data)
-                arguments = ", ".join(map(str, data))
-                Code(
-                    f"TimeInvariantKernel<{taps}, {vec_type}>({{{arguments}}})",
+
+                taps, indices, values = expr.to_sparse_repr()
+                index_args = ", ".join(map(str, indices))
+                value_args = ", ".join(map(str, values))
+                return Code(
+                    f"TimeInvariantKernel<{taps}, {vec_type}>({{{index_args}}}, {{{value_args}}})",
                     ElementType.Float,
                     self.max_lanes(ElementType.Float),
                     taps=taps,
@@ -260,8 +281,8 @@ class CodeGen:
                     self.max_lanes(element_type),
                     taps=code_k1.taps + code_k2.taps - 1,
                 )
-
-        assert False
+            case _:
+                assert False
 
     def collect_variables(
         self, expr: RecLang, vars: Optional[set[str]] = None
