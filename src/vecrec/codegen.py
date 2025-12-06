@@ -52,10 +52,18 @@ class Code:
 class CodeGen:
     # Hardware-dependent maximum
     max_bits: int
+    counter: int
+    prologue: list[str]
 
     def __init__(self, max_bits: int):
         assert max_bits in [64, 128, 256, 512]
         self.max_bits = max_bits
+        self.counter = 0
+        self.prologue = []
+
+    def get_new_var(self) -> str:
+        self.counter += 1
+        return f"v{self.counter}"
 
     def max_lanes(self, element_type: ElementType) -> int:
         """Get the maximal number of lanes possible given the type"""
@@ -80,6 +88,8 @@ class CodeGen:
         vars = self.collect_variables(expr)
         args = ", ".join(f"const {ElementType.Float.to_str()} *{var}" for var in vars)
         text = "\n".join(
+            self.prologue
+            +
             [
                 f"auto make_{name}({args}) {{",
                 f"    return {code.text};",
@@ -133,11 +143,10 @@ class CodeGen:
                 code_a = self.enforce_lanes(code_a)
                 code_f = self.enforce_lanes(code_f)
                 vec_type = self.get_vec_type(element_type)
-
-                program = f"make_s_convolve<{code_a.taps}, {vec_type}>({code_a.text}, {code_f.text})"
+                program = f"make_s_convolve<{vec_type}>({code_a.text}, {code_f.text})"
                 return Code(program, element_type, code_a.lanes)
             case Recurse(a, g):
-                time_delay, a = a.time_delay()
+                time_delay, a = a.time_delay(self.max_lanes(ElementType.Float))
                 code_a = self.generate_kernel(a)
                 code_g = self.generate_signal(g)
 
@@ -145,13 +154,13 @@ class CodeGen:
                 element_type = code_a.element_type
 
                 # Lanes of an IIR depends on its time delay (and hardware limit)
-                lanes = min(self.max_lanes(code_a.element_type), time_delay)
+                lanes = time_delay
 
                 code_a = self.enforce_lanes(code_a, lanes)
                 code_g = self.enforce_lanes(code_g, lanes)
                 vec_type = self.get_vec_type(element_type, lanes)
 
-                program = f"make_s_recurse<{code_a.taps}, {vec_type}>({code_a.text}, {code_g.text})"
+                program = f"make_s_recurse<{vec_type}>({code_a.text}, {code_g.text})"
                 return Code(program, element_type, lanes)
 
         assert False
@@ -164,13 +173,25 @@ class CodeGen:
                 taps, indices, values = expr.to_sparse_repr()
                 index_args = ", ".join(map(str, indices))
                 value_args = ", ".join(map(str, values))
+
+                index_var = self.get_new_var()
+                value_var = self.get_new_var()
+
+                self.prologue.append(
+                    f"constexpr static int {index_var}[{taps}] = {{{index_args}}};",
+                )
+                self.prologue.append(
+                    f"constexpr static {ElementType.Float.to_str()} {value_var}[{taps}] = {{{value_args}}};",
+                )
+
                 return Code(
-                    f"TimeInvariantKernel<{taps}, {vec_type}>({{{index_args}}}, {{{value_args}}})",
+                    f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
                     ElementType.Float,
                     self.max_lanes(ElementType.Float),
                     taps=taps,
                 )
-            case TVKernel(signals):
+            case TVKernel(_):
+                taps, indices, signals = expr.to_sparse_repr()
                 signal_codes = [self.generate_signal(signal) for signal in signals]
                 signal_codes = [self.enforce_lanes(code) for code in signal_codes]
                 element_type = signal_codes[0].element_type
@@ -179,8 +200,14 @@ class CodeGen:
 
                 arguments = ", ".join(c.text for c in signal_codes)
 
+                index_args = ", ".join(map(str, indices))
+                index_var = self.get_new_var()
+                self.prologue.append(
+                    f"constexpr static int {index_var}[{taps}] = {{{index_args}}};",
+                )
+
                 return Code(
-                    f"TimeVaryingKernel<{taps}, {vec_type}>({arguments})",
+                    f"TimeVaryingKernel<{taps}, {vec_type}, {index_var}>({arguments})",
                     element_type,
                     self.max_lanes(element_type),
                     taps=taps,
@@ -208,7 +235,7 @@ class CodeGen:
         if code.lanes < lanes:
             # upscale lanes
             return Code(
-                f"ConvertN2One<{vec_type_in}, {vec_type_out}>({code.text})",
+                f"make_convert_n2one<{vec_type_in}, {vec_type_out}>({code.text})",
                 code.element_type,
                 lanes,
                 taps=code.taps,
@@ -216,7 +243,7 @@ class CodeGen:
         else:  # code.lanes > lanes
             # downscale lanes
             return Code(
-                f"ConvertOne2N<{vec_type_in}, {vec_type_out}>({code.text})",
+                f"make_convert_one2n<{vec_type_in}, {vec_type_out}>({code.text})",
                 code.element_type,
                 lanes,
                 taps=code.taps,

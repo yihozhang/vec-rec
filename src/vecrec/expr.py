@@ -46,7 +46,7 @@ class SignalExpr(RecLang):
 
 class KernelExpr(RecLang):
     @abstractmethod
-    def time_delay(self) -> Tuple[int, KernelExpr]:
+    def time_delay(self, max_delay) -> Tuple[int, KernelExpr]:
         """Return the time delay of the kernel and the kernel without the delay."""
         ...
 
@@ -80,11 +80,13 @@ class TIKernel(KernelExpr):
     def promote(self) -> TVKernel:
         return TVKernel([Num(x) for x in self.data])
 
-    def time_delay(self) -> Tuple[int, KernelExpr]:
-        for i, v in enumerate(self.data):
+    def time_delay(self, max_delay) -> Tuple[int, KernelExpr]:
+        for i, v in enumerate(self.data[:max_delay]):
             if not np.isclose(v, 0.0):
                 return i, TIKernel(self.data[i:])
-        return 0, TIKernel(self.data)
+        if max_delay < len(self.data):
+            return max_delay, TIKernel(self.data[max_delay:])
+        assert False, "max_delay exceeds kernel length"
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[float]]:
         """Returns a tuple of (num_nonzero, indices, values) representing the sparse form of the kernel."""
@@ -182,15 +184,30 @@ class TVKernel(KernelExpr):
         super().__init__()
         self.data = data
 
-    def time_delay(self) -> Tuple[int, KernelExpr]:
+    def time_delay(self, max_delay) -> Tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
-        for i, v in enumerate(self.data):
+        for i, v in enumerate(self.data[:max_delay]):
             match v:
                 case Num(value) if np.isclose(value, 0.0):
                     continue
                 case _:
                     return i, TVKernel(self.data[i:])
-        return 0, TVKernel(self.data)
+        if max_delay < len(self.data):
+            return max_delay, TVKernel(self.data[max_delay:])
+        assert False, "max_delay exceeds kernel length"
+
+    def to_sparse_repr(self) -> Tuple[int, List[int], List[float]]:
+        """Returns a tuple of (num_nonzero, indices, values) representing the sparse form of the kernel."""
+        indices = []
+        values = []
+        for i, v in enumerate(self.data):
+            match v:
+                case Num(value) if np.isclose(value, 0.0):
+                    continue
+                case _:
+                    indices.append(i)
+                    values.append(v)
+        return len(indices), indices, values
 
     def __add__(self, other: TIKernel | TVKernel) -> TVKernel:
         if isinstance(other, TIKernel):

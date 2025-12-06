@@ -9,18 +9,26 @@ from vecrec.expr import Convolve, Recurse, TIKernel, Var
 
 
 def main():
-    kernel = TIKernel([0, 0.9, -1.8])
+    kernel = TIKernel([0, 1.8, -0.9])
     signal = Var("x")
     expr = Recurse(kernel, signal)
     transforms = [
         Dilate(),
         Dilate(),
-        Dilate(),
+        # Dilate(),
+        Preorder(Try(ConstantFold)),
         Delay(),
+        # Dilate(),
+        # Preorder(Try(ConstantFold)),
+        # Delay(),
+        # Preorder(Try(ConstantFold)),
+        # Delay(),
+        # Preorder(Try(ConstantFold)),
+        # Delay(),
         Preorder(Try(ConstantFold)),
     ]
     results = ApplySequence(transforms).apply_signal(expr)
     print(results[0])
-    codegen = CodeGen(512)
+    codegen = CodeGen(256)
     code = codegen.generate(results[0], "test")
-    code.to_file("output.cpp")
+    code.to_file("output.h")

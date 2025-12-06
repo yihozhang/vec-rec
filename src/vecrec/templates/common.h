@@ -6,12 +6,14 @@
 #include <string>
 #include <tuple>
 #include <vector>
-
+typedef float float_vec1;
+typedef float float_vec2 __attribute__((ext_vector_type(2)));
 typedef float float_vec4 __attribute__((ext_vector_type(4)));
 typedef float float_vec8 __attribute__((ext_vector_type(8)));
 typedef float float_vec16 __attribute__((ext_vector_type(16)));
 
 constexpr int vec_lanes_of(float) { return 1; }
+constexpr int vec_lanes_of(float_vec2) { return 2; }
 constexpr int vec_lanes_of(float_vec4) { return 4; }
 constexpr int vec_lanes_of(float_vec8) { return 8; }
 constexpr int vec_lanes_of(float_vec16) { return 16; }
@@ -21,6 +23,10 @@ struct ElementType {};
 
 template <>
 struct ElementType<float> {
+    using type = float;
+};
+template <>
+struct ElementType<float_vec2> {
     using type = float;
 };
 template <>
@@ -54,6 +60,19 @@ inline float extract_slice(float a, float b, int offset) {
     };
     assert(false);
     return float{};
+}
+
+inline float_vec2 extract_slice(float_vec2 a, float_vec2 b, int offset) {
+    switch (offset) {
+    case 0:
+        return a;
+    case 1:
+        return __builtin_shufflevector(a, b, 1, 2);
+    case 2:
+        return b;
+    };
+    assert(false);
+    return float_vec2{};
 }
 
 inline float_vec4 extract_slice(float_vec4 a, float_vec4 b, int offset) {
@@ -139,10 +158,11 @@ inline float_vec16 extract_slice(float_vec16 a, float_vec16 b, int offset) {
     return float_vec16{};
 }
 
-template <int taps, typename vec_type, const int indices[taps], const typename ElementType<vec_type>::type vals[taps]>
+template <int _taps, typename vec_type, const int indices[_taps], const typename ElementType<vec_type>::type vals[_taps]>
 struct TimeInvariantKernel {
     using elt_type = typename ElementType<vec_type>::type;
-    constexpr static int idxs[taps] = indices;
+    constexpr static const int *idxs = indices;
+    constexpr static int taps = _taps;
 
     TimeInvariantKernel() {}
 
@@ -164,14 +184,16 @@ void write_coeff(vec_type *coeff, std::tuple<Args...> &args) {
     }
 }
 
-template <int taps, typename vec_type, const int indices[taps], typename... Args>
+template <int _taps, typename vec_type, const int indices[_taps], typename... Args>
 struct TimeVaryingKernel {
+    constexpr static const int *idxs = indices;
+    constexpr static int taps = _taps;
     std::tuple<Args...> args;
 
     TimeVaryingKernel(Args... args) : args(args...) {}
 
     void run(vec_type *out) {
-        write_coeff<vec_type, taps, 0, Args...>(out, args);
+        write_coeff<vec_type, _taps, 0, Args...>(out, args);
     }
 };
 
@@ -195,6 +217,8 @@ struct Signal1DConstant {
 template <typename vec_type>
 struct Signal1D {
     using elt_type = typename ElementType<vec_type>::type;
+    // constexpr static int taps = 1;
+    // constexpr static const int idxs[1] = {0};
 
     const vec_type *data;
     Signal1D(const elt_type *data) : data((const vec_type *)data) {}
@@ -203,23 +227,24 @@ struct Signal1D {
     // does not go out of bound
     // const vec_type *run() {
     void run(vec_type *d) {
-        *d = *data++;
+        memcpy((float*)d, (float*)data, sizeof(vec_type));
+        data++;
     }
 };
 
-template <int taps, typename vec_type, typename K, typename S>
+template <typename vec_type, typename K, typename S>
 struct SConvolve {
     K kernel;
     S signal;
 
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
-    constexpr static int buffer_size = taps / vec_lanes;
+    constexpr static int buffer_size = (K::idxs[K::taps - 1] + vec_lanes - 1) / vec_lanes + 1;
 
-    vec_type prev_input[buffer_size];
+    vec_type prev_input[buffer_size] = {};
 
     SConvolve(K kernel, S signal) : kernel(kernel), signal(signal) {}
 
-    void run(vec_type *__restrict__ d) __restrict__ {
+    void run(vec_type *d) {
         vec_type curr_output;
         vec_type curr_input;
 
@@ -231,58 +256,48 @@ struct SConvolve {
         }
         prev_input[buffer_size - 1] = curr_input;
 
-        vec_type k;
-        kernel.run(&k);
+        vec_type k[K::taps];
+        kernel.run(k);
         curr_output = 0;
 
-        for (int i = 0; i < taps; i++) {
-            // TODO: This is out of bound when i = 0
-            int idx = (buffer_size - 1) * vec_lanes - i;
-            vec_type va = prev_input[idx / vec_lanes];
-            vec_type vb = prev_input[idx / vec_lanes + 1];
-            curr_output += extract_slice(va, vb, idx % vec_lanes) * k[i];
+        for (int i = 0; i < K::taps; i++) {
+            int idx = (buffer_size - 1) * vec_lanes - K::idxs[i];
+            if (idx % vec_lanes == 0) {
+                curr_output += prev_input[idx / vec_lanes] * k[i];
+            } else {
+                vec_type va = prev_input[idx / vec_lanes];
+                vec_type vb = prev_input[idx / vec_lanes + 1];
+                curr_output += extract_slice(va, vb, idx % vec_lanes) * k[i];
+            }
         }
         *d = curr_output;
     }
 };
 
-template <int taps, typename vec_type, typename K, typename S>
+template <typename vec_type, typename K, typename S>
 struct SRecurse {
     K kernel;
     S signal;
 
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
-    constexpr static int buffer_size = (taps - 1 + vec_lanes - 1) / vec_lanes + 1;
+    constexpr static int buffer_size = (K::idxs[K::taps - 1] - 1 + vec_lanes - 1) / vec_lanes + 1;
 
     vec_type prev_output[buffer_size] = {};
 
     SRecurse(K kernel, S signal) : kernel(kernel), signal(signal) {}
 
-    void run(vec_type *__restrict__ out) __restrict__ {
+    void run(vec_type *out) {
         vec_type curr_input;
         vec_type curr_output;
-        vec_type k[taps];
+        vec_type k[K::taps];
 
         kernel.run(k);
-        for (int i = 0; i < vec_lanes; i++) {
-            // Cannot depend on things being computed.
-            assert(__builtin_reduce_max(k[i] == 0.));
-        }
-
-#pragma unroll
-        for (int i = 0; i + 1 < buffer_size; i++) {
-            // To avoid LLVM from turning it into a memmove intrinsic
-            asm volatile("" :::);
-            prev_output[i] = prev_output[i + 1];
-        }
-
         signal.run(&curr_input);
         curr_output = curr_input;
 
-        // ignore k[0]..k[vec_lanes-1]
 #pragma unroll
-        for (int i = vec_lanes; i < taps; i++) {
-            int idx = (buffer_size - 1) * vec_lanes - i;
+        for (int i = 0; i < K::taps; i++) {
+            int idx = (buffer_size - 1) * vec_lanes - K::idxs[i];
             if (idx % vec_lanes == 0) {
                 curr_output += prev_output[idx / vec_lanes] * k[i];
             } else {
@@ -291,22 +306,32 @@ struct SRecurse {
                 curr_output += extract_slice(va, vb, idx % vec_lanes) * k[i];
             }
         }
+
+#pragma unroll
+        for (int i = 0; i + 1 < buffer_size; i++) {
+            // To avoid LLVM from turning it into a memmove intrinsic
+            asm volatile("" :::);
+            prev_output[i] = prev_output[i + 1];
+        }
         prev_output[buffer_size - 1] = curr_output;
         *out = curr_output;
     }
 };
 
+
 template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct ConvertN2One {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
     constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
-    constexpr static int factor = lanes_in / lanes_out;
-    static_assert(lanes_in % lanes_out == 0, "lanes_in must be multiple of lanes_out");
+    constexpr static int factor = lanes_out / lanes_in;
+    static_assert(lanes_out % lanes_in == 0, "lanes_in must be multiple of lanes_out");
+    // constexpr static const int *idxs = Inner::idxs;
+    // constexpr static int taps = Inner::taps;
 
     Inner inner;
 
     ConvertN2One(Inner inner) : inner(inner) {}
-    void run(vec_type_out __restrict__ *out) __restrict__ {
+    void run(vec_type_out *out) {
 
         vec_type_in *p = (vec_type_in *)out;
 #pragma unroll
@@ -322,8 +347,10 @@ template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct ConvertOne2N {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
     constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
-    constexpr static int factor = lanes_out / lanes_in;
-    static_assert(lanes_out % lanes_in == 0, "lanes_out must be multiple of lanes_in");
+    constexpr static int factor = lanes_in / lanes_out;
+    static_assert(lanes_in % lanes_out == 0, "lanes_out must be multiple of lanes_in");
+    // constexpr static const int *idxs = Inner::idxs;
+    // constexpr static int taps = Inner::taps;
 
     Inner inner;
     vec_type_in buffer;
@@ -331,7 +358,7 @@ struct ConvertOne2N {
 
     ConvertOne2N(Inner inner) : inner(inner), offset(0) {}
 
-    void run(vec_type_out __restrict__ *out) __restrict__ {
+    void run(vec_type_out *out) {
         if (offset == 0) {
             inner.run(&buffer);
         }
@@ -348,7 +375,7 @@ struct ConvertOne2N {
         S2 s2;                                              \
         name(S1 s1, S2 s2) : s1(s1), s2(s2) {}              \
                                                             \
-        void run(vec_type *__restrict__ out) __restrict__ { \
+        void run(vec_type *out) { \
             vec_type left = s1.run();                       \
             vec_type right = s2.run();                      \
             *out = left operator right;                     \
@@ -365,70 +392,28 @@ struct SNeg {
     S1 s1;
     SNeg(S1 s1) : s1(s1) {}
 
-    void run(vec_type *__restrict__ out) __restrict__ {
+    void run(vec_type *out) {
         vec_type data = s1.run();
         *out = *data;
     }
 };
 
-template <int taps, typename vec_type, typename K, typename S>
+template<typename vec_type_in, typename vec_type_out, typename Inner>
+auto make_convert_n2one(Inner inner) {
+    return ConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
+}
+
+template<typename vec_type_in, typename vec_type_out, typename Inner>
+auto make_convert_one2n(Inner inner) {
+    return ConvertOne2N<vec_type_in, vec_type_out, Inner>(inner);
+}
+
+template <typename vec_type, typename K, typename S>
 auto make_s_convolve(K kernel, S signal) {
-    return SConvolve<taps, vec_type, K, S>(kernel, signal);
+    return SConvolve<vec_type, K, S>(kernel, signal);
 }
 
-template <int taps, typename vec_type, typename K, typename S>
+template <typename vec_type, typename K, typename S>
 auto make_s_recurse(K kernel, S signal) {
-    return SRecurse<taps, vec_type, K, S>(kernel, signal);
+    return SRecurse<vec_type, K, S>(kernel, signal);
 }
-
-// constexpr int taps = 10;
-// using VecType = float_vec8;
-
-// // using KernelType = TimeVaryingKernel<float, 3, Signal1D<float, float>, Signal1D<float, float>, Signal1D<float, float>>;
-// using KernelType = TimeInvariantKernel<VecType, taps>;
-
-// int main() {
-//     float *k1 = new float[2048 * 2048];
-//     float *k2 = new float[2048 * 2048];
-//     float *k3 = new float[2048 * 2048];
-//     float *s = new float[2048 * 2048];
-//     for (int i = 0; i < 2048 * 2048; i++) {
-//         k1[i] = 0;
-//         k2[i] = (1.0 * std::rand()) / RAND_MAX + 1;
-//         k3[i] = (1.0 * std::rand()) / RAND_MAX;
-//         // s[i] = (1.0 * std::rand()) / RAND_MAX;
-//         s[i] = 0;
-//     }
-//     s[0] = 1;
-//     s[1] = 1;
-//     s[2] = 2;
-//     s[3] = 3;
-//     s[4] = 5;
-//     s[5] = 8;
-//     s[6] = 13;
-//     s[7] = 21;
-//     Signal1D<float> ks1(k1);
-//     Signal1D<float> ks2(k2);
-//     Signal1D<float> ks3(k3);
-//     // KernelType kernel(ks1, ks2, ks3);
-
-//     // float tik[] = {0,1, 1};
-//     float tik[taps] = {0, 0, 0, 0, 0, 0, 0, 0, 34, 21};
-//     KernelType kernel(tik);
-
-//     Signal1D<VecType> signal(s);
-//     SRecurse<VecType, taps, KernelType, Signal1D<VecType>> k(kernel, signal);
-
-//     VecType result;
-//     for (int i = 0; i < 4; i++) {
-//         k.run(&result);
-//         // for (int j = 0; j < vec_lanes_of(result); j++) {
-//         //     std::cout << *((const float*)&result + j) << "\n";
-//         // }
-//         // std::cout << *k.run() << "\n";
-//     }
-//     k.run(&result);
-//     for (int j = 0; j < vec_lanes_of(result); j++) {
-//         std::cout << *((const float *)&result + j) << "\n";
-//     }
-// }

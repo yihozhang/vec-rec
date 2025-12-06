@@ -83,7 +83,7 @@ class Dilate(Transform):
                 stride *= 2
                 continue
 
-            f = even_k - odd_k
+            f = TIKernel.i() - even_k + odd_k
             i = -even_k * even_k + 2 * even_k + odd_k * odd_k
             return f, i
 
@@ -95,14 +95,21 @@ class Dilate(Transform):
             case _:
                 return []
 
-
 class Delay(Transform):
     """Delay an IIR. One particular usage of this is time varying convolution"""
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
-            case Recurse(a, g):
-                return [Recurse(KConvolve(a, a), Convolve(KAdd(TIKernel.i(), a), g))]
+            case Recurse(TIKernel(_) as a, g):
+                pos, val = next(
+                    ((i, v) for i, v in enumerate(a) if not np.isclose(v, 0)), (len(a), 0)
+                )
+                if val == 0:
+                    return []
+                coeff = TIKernel.z(-pos) * val
+                return [Recurse(a + coeff * (a-TIKernel.i()), Convolve(TIKernel.i() + coeff, g))]
+            # case Recurse(a, g):
+            #     return [Recurse(KConvolve(a, a), Convolve(KAdd(TIKernel.i(), a), g))]
             case _:
                 return []
 
