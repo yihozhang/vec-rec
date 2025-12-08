@@ -16,15 +16,7 @@ def main():
         Dilate(),
         Dilate(),
         # Dilate(),
-        Preorder(Try(ConstantFold)),
         Delay(),
-        # Dilate(),
-        # Preorder(Try(ConstantFold)),
-        # Delay(),
-        # Preorder(Try(ConstantFold)),
-        # Delay(),
-        # Preorder(Try(ConstantFold)),
-        # Delay(),
         Preorder(Try(ConstantFold)),
     ]
     results = ApplySequence(transforms).apply_signal(expr)

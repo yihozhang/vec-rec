@@ -280,7 +280,7 @@ struct SRecurse {
     S signal;
 
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
-    constexpr static int buffer_size = (K::idxs[K::taps - 1] - 1 + vec_lanes - 1) / vec_lanes + 1;
+    constexpr static int buffer_size = (K::idxs[K::taps - 1] + vec_lanes - 1) / vec_lanes + 1;
 
     vec_type prev_output[buffer_size] = {};
 
@@ -320,13 +320,39 @@ struct SRecurse {
 
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
+struct KConvertN2One {
+    constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
+    constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
+    constexpr static int factor = lanes_out / lanes_in;
+    static_assert(lanes_out % lanes_in == 0, "lanes_in must be multiple of lanes_out");
+    constexpr static int taps = Inner::taps;
+    constexpr static const int *idxs = Inner::idxs;
+
+    Inner inner;
+
+    KConvertN2One(Inner inner) : inner(inner) {}
+    void run(vec_type_out *out) {
+
+        vec_type_in *p = (vec_type_in *)out;
+#pragma unroll
+        for (int i = 0; i < factor; i++) {
+            vec_type_in in[taps];
+            inner.run(&in);
+#pragma unroll
+            for (int j = 0; j < taps; j++) {
+                p[j * factor + i] = in[j];
+            }
+            *p++ = in;
+        }
+    }
+};
+
+template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct ConvertN2One {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
     constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
     constexpr static int factor = lanes_out / lanes_in;
     static_assert(lanes_out % lanes_in == 0, "lanes_in must be multiple of lanes_out");
-    // constexpr static const int *idxs = Inner::idxs;
-    // constexpr static int taps = Inner::taps;
 
     Inner inner;
 
@@ -344,13 +370,38 @@ struct ConvertN2One {
 };
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
+struct KConvertOne2N {
+    constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
+    constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
+    constexpr static int factor = lanes_in / lanes_out;
+    static_assert(lanes_in % lanes_out == 0, "lanes_out must be multiple of lanes_in");
+    constexpr static int taps = Inner::taps;
+    constexpr static const int *idxs = Inner::idxs;
+
+    Inner inner;
+    vec_type_in buffer[taps];
+    int offset;
+
+    KConvertOne2N(Inner inner) : inner(inner), offset(0) {}
+
+    void run(vec_type_out *out) {
+        if (offset == 0) {
+            inner.run(buffer);
+        }
+#pragma unroll
+        for (int i = 0; i < taps; i++) {
+            out[i] = ((vec_type_out *)&buffer[i])[offset];
+        }
+        offset = (offset + 1) % factor;
+    }
+};
+
+template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct ConvertOne2N {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
     constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
     constexpr static int factor = lanes_in / lanes_out;
     static_assert(lanes_in % lanes_out == 0, "lanes_out must be multiple of lanes_in");
-    // constexpr static const int *idxs = Inner::idxs;
-    // constexpr static int taps = Inner::taps;
 
     Inner inner;
     vec_type_in buffer;
@@ -363,7 +414,7 @@ struct ConvertOne2N {
             inner.run(&buffer);
         }
 
-        *out = (vec_type_out *)buffer + offset;
+        *out = ((vec_type_out *)&buffer)[offset];
         offset = (offset + 1) % factor;
     }
 };
@@ -399,8 +450,18 @@ struct SNeg {
 };
 
 template<typename vec_type_in, typename vec_type_out, typename Inner>
+auto make_k_convert_n2one(Inner inner) {
+    return KConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
+}
+
+template<typename vec_type_in, typename vec_type_out, typename Inner>
 auto make_convert_n2one(Inner inner) {
     return ConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
+}
+
+template<typename vec_type_in, typename vec_type_out, typename Inner>
+auto make_k_convert_one2n(Inner inner) {
+    return KConvertOne2N<vec_type_in, vec_type_out, Inner>(inner);
 }
 
 template<typename vec_type_in, typename vec_type_out, typename Inner>

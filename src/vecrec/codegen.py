@@ -231,11 +231,18 @@ class CodeGen:
 
         vec_type_in = self.get_vec_type(code.element_type, code.lanes)
         vec_type_out = self.get_vec_type(code.element_type, lanes)
+        
+        function_name = {
+            (True, True): "make_convert_n2one",
+            (True, False): "make_convert_one2n",
+            (False, True): "make_k_convert_n2one",
+            (False, False): "make_k_convert_one2n",
+        }[(code.taps is None, code.lanes < lanes)]
 
         if code.lanes < lanes:
             # upscale lanes
             return Code(
-                f"make_convert_n2one<{vec_type_in}, {vec_type_out}>({code.text})",
+                f"{function_name}<{vec_type_in}, {vec_type_out}>({code.text})",
                 code.element_type,
                 lanes,
                 taps=code.taps,
@@ -243,7 +250,7 @@ class CodeGen:
         else:  # code.lanes > lanes
             # downscale lanes
             return Code(
-                f"make_convert_one2n<{vec_type_in}, {vec_type_out}>({code.text})",
+                f"{function_name}<{vec_type_in}, {vec_type_out}>({code.text})",
                 code.element_type,
                 lanes,
                 taps=code.taps,
