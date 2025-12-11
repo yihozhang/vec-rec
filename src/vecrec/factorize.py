@@ -1,5 +1,5 @@
 import numpy as np
-from vecrec.expr import TIKernel
+from vecrec.expr import TIKernel, Type
 import pytest
 from typing import List, Tuple
 import numpy.typing as npt
@@ -96,5 +96,5 @@ def factorize_polynomial(
     elif len(second_order) > 0:
         second_order[-1][0] *= leading_coef
 
-    return [TIKernel(f) for f in first_order] + [TIKernel(f) for f in second_order]
+    return [TIKernel(f, Type.Arith) for f in first_order] + [TIKernel(f, Type.Arith) for f in second_order]
 

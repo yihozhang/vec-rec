@@ -5,6 +5,7 @@ import numpy as np
 from typing import Callable, List, Optional, Dict, Protocol, Sequence, Tuple, overload
 from abc import abstractmethod
 from vecrec.expr import *
+from vecrec.expr import Type
 from vecrec.factorize import factorize_polynomial
 
 
@@ -41,6 +42,17 @@ class ConstantFoldConvolve(Transform):
                 return []
 
 
+def ArithTransform(cls):
+    cls.apply_kernel_impl = cls.apply_kernel
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        if expr.ty == Type.Arith:
+            return self.apply_kernel_impl(expr)
+        else:
+            return []
+    cls.apply_kernel = apply_kernel
+    return cls
+
+@ArithTransform
 class ConstantFoldNegate(Transform):
     """Constant fold negation of time invariant kernels."""
 
@@ -54,7 +66,7 @@ class ConstantFoldNegate(Transform):
 
 # IIRs
 
-
+@ArithTransform
 class FuseRecurse(Transform):
     """Fuse nested IIRs"""
 
@@ -65,25 +77,26 @@ class FuseRecurse(Transform):
             case _:
                 return []
 
-
+@ArithTransform
 class Dilate(Transform):
     """Dilate an IIR"""
 
     def op(self, k: TIKernel) -> Tuple[TIKernel, TIKernel]:
+        assert k.ty == Type.Arith
         stride = 2
         while True:
-            even = np.zeros(len(k), dtype=np.float64)
+            even = [0.0] * len(k)
             even[0::stride] = k.data[0::stride]
-            odd = k.data - even
+            odd = [a - b for a, b in zip(k.data, even)]
 
-            even_k = TIKernel(even)
-            odd_k = TIKernel(odd)
+            even_k = TIKernel(even, Type.Arith)
+            odd_k = TIKernel(odd, Type.Arith)
 
             if len(odd_k) == 0:
                 stride *= 2
                 continue
 
-            f = TIKernel.i() - even_k + odd_k
+            f = TIKernel.i(Type.Arith) - even_k + odd_k
             i = -even_k * even_k + 2 * even_k + odd_k * odd_k
             return f, i
 
@@ -95,23 +108,26 @@ class Dilate(Transform):
             case _:
                 return []
 
+@ArithTransform
 class Delay(Transform):
     """Delay an IIR by identifying leading coefficient v at feedback p and negating by v*z^-p"""
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(a, g) if isinstance(a, TIKernel):
+                assert a.ty == Type.Arith
                 pos, val = next(
                     ((i, v) for i, v in enumerate(a.data) if not np.isclose(v, 0)), (len(a), 0)
                 )
                 if val == 0:
                     return []
-                coeff = TIKernel.z(-pos) * val
-                return [Recurse(a + coeff * (a-TIKernel.i()), Convolve(TIKernel.i() + coeff, g))]
+                coeff = TIKernel.z(Type.Arith, -pos) * val
+                return [Recurse(a + coeff * (a-TIKernel.i(Type.Arith)), Convolve(TIKernel.i(Type.Arith) + coeff, g))]
             case _:
                 return []
 
 
+@ArithTransform
 class ComposeRecurse(Transform):
     """Compose two IIRs R(a, g) + R(b, h)"""
 
@@ -122,14 +138,14 @@ class ComposeRecurse(Transform):
             case SAdd(Recurse(TIKernel(_) as a, g), Recurse(TIKernel(_) as b, h)):
                 c = KSub(KAdd(a, b), KConvolve(a, b))
                 w = SAdd(
-                    Convolve(KSub(TIKernel.i(), b), g),
-                    Convolve(KSub(TIKernel.i(), a), h),
+                    Convolve(KSub(TIKernel.i(Type.Arith), b), g),
+                    Convolve(KSub(TIKernel.i(Type.Arith), a), h),
                 )
                 return [Recurse(c, w)]
             case _:
                 return []
 
-
+@ArithTransform
 class Factorize(Transform):
     """Factorize a TIKernel into products of first-order and second-order factors."""
 
@@ -144,41 +160,42 @@ class Factorize(Transform):
                 return []
 
 ## Time-varying kernels
-
+@ArithTransform
 class DilateTVWithSingleOddOrder(Transform):
     def all_nonzeros(self, a: Sequence[SignalExpr]) -> List[int]:
         inzs = []
         for i, v in enumerate(a):
-            if v != Num(0):
+            if v != Num(0, Type.Arith):
                 inzs.append(i)
         return inzs
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(TVKernel(a), g):
-                even: List[SignalExpr] = [Num(0)] * len(a)
-                odd: List[SignalExpr] = [Num(0)] * len(a)
+                even: List[SignalExpr] = [Num(0, Type.Arith)] * len(a)
+                odd: List[SignalExpr] = [Num(0, Type.Arith)] * len(a)
                 even[0::2] = a[0::2]
                 odd[1::2] = a[1::2]
                 inzs = self.all_nonzeros(odd)
                 if len(inzs) == 1:
                     inz = inzs[0]
-                    A = TVKernel(odd)
-                    B = TVKernel(even)
+                    A = TVKernel(odd, Type.Arith)
+                    B = TVKernel(even, Type.Arith)
                     C = KConvolve(
                         TVKernel(
-                            [Num(0)] * (inz - 1)
+                            [Num(0, Type.Arith)] * (inz - 1)
                             + [
                                 PointwiseDiv(
-                                    odd[inz], Convolve(TIKernel.z(-inz), odd[inz])
+                                    odd[inz], Convolve(TIKernel.z(Type.Arith, -inz), odd[inz])
                                 )
-                            ]
+                            ],
+                            Type.Arith,
                         ),
                         B,
                     )
                     exprs = [B, C, KConvolve(A, A), KNeg(KConvolve(C, B))]
                     expr = Recurse(
-                        KAdd.of(exprs), Convolve(KAdd.of([TIKernel.i(), A, KNeg(C)]), g)
+                        KAdd.of(exprs), Convolve(KAdd.of([TIKernel.i(Type.Arith), A, KNeg(C)]), g)
                     )
                     return [expr]
                 elif len(inzs) == 0:
