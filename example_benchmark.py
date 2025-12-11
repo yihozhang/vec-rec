@@ -51,10 +51,6 @@ def main():
         kernel_names=kernel_names,
         output_path="benchmark.cpp",
         include_correctness_check=True,  # Enable correctness checking
-        correctness_tolerance=1e-3,       # Tolerance for floating point comparison
-        input_size=100000,                # Size of input data
-        warmup_iterations=5,              # Warmup iterations
-        benchmark_iterations=50           # Benchmark iterations
     )
     print("✓ Generated benchmark program: benchmark.cpp")
     
