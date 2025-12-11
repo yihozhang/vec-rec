@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Generated C++ files
+output.h
+benchmark.cpp
+benchmark
+*.o
+*.out

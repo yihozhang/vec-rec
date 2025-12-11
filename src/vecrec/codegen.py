@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 from vecrec.expr import *
 import numpy as np
 
@@ -38,14 +38,6 @@ class Code:
         self.element_type = element_type
         self.lanes = lanes
         self.taps = taps
-
-def instantiate_kernels(path: str, codes: List[Code]) -> str:
-    text = TEMPLATE.read_text()
-    for code in codes:
-        text += "\n" + code.text
-    with open(path, "w") as f:
-        f.write(text)
-
 
 class CodeGen:
     # Hardware-dependent maximum
@@ -287,3 +279,198 @@ class CodeGen:
                 pass
 
         return vars
+
+def instantiate_kernels(path: str, codes: List[Code]) -> None:
+    text = TEMPLATE.read_text()
+    for code in codes:
+        text += "\n" + code.text
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def generate_benchmark(
+    codegen: CodeGen,
+    exprs: List[SignalExpr],
+    kernel_names: List[str],
+    output_path: str,
+    include_correctness_check: bool = False,
+    correctness_tolerance: float = 1e-3,
+    input_size: int = (1 << 20),
+    warmup_iterations: int = 10,
+    benchmark_iterations: int = 100,
+) -> None:
+    """
+    Generate a C++ benchmarking program for the given kernels.
+    
+    Args:
+        codegen: CodeGen instance used to generate the kernels
+        exprs: List of signal expressions corresponding to each kernel
+        kernel_names: List of names corresponding to each kernel
+        output_path: Path where the benchmark C++ file will be written
+        include_correctness_check: If True, adds correctness checking code
+        correctness_tolerance: Tolerance for floating point comparisons in correctness checking
+        input_size: Size of input data for benchmarking
+        warmup_iterations: Number of warmup iterations before timing
+        benchmark_iterations: Number of iterations for timing
+    """
+    assert len(exprs) == len(kernel_names), "Number of expressions and kernel names must match"
+    
+    # Collect variables from all expressions
+    all_vars = set()
+    for expr in exprs:
+        vars = codegen.collect_variables(expr)
+        all_vars.update(vars)
+    
+    # Generate the benchmark program
+    benchmark_code = _generate_benchmark_code(
+        list(all_vars),
+        kernel_names,
+        include_correctness_check,
+        correctness_tolerance,
+        input_size,
+        warmup_iterations,
+        benchmark_iterations,
+    )
+    
+    with open(output_path, "w") as f:
+        f.write(benchmark_code)
+
+
+def _generate_benchmark_code(
+    all_vars: List[str],
+    kernel_names: List[str],
+    include_correctness_check: bool,
+    correctness_tolerance: float,
+    input_size: int,
+    warmup_iterations: int,
+    benchmark_iterations: int,
+) -> str:
+    """Generate the complete C++ benchmark code."""
+    
+    # Start with includes
+    benchmark_text = '#include "output.h"\n'
+    benchmark_text += "#include <iostream>\n"
+    benchmark_text += "#include <chrono>\n"
+    benchmark_text += "#include <vector>\n"
+    benchmark_text += "#include <cmath>\n"
+    benchmark_text += "#include <random>\n\n"
+    
+    if include_correctness_check:
+        benchmark_text += _generate_correctness_check_helper(correctness_tolerance)
+    
+    # Generate main function
+    benchmark_text += "int main() {\n"
+    benchmark_text += f"    const int N = {input_size};\n"
+    benchmark_text += f"    const int warmup = {warmup_iterations};\n"
+    benchmark_text += f"    const int iterations = {benchmark_iterations};\n\n"
+    
+    # Generate input data initialization
+    benchmark_text += "    // Initialize input data\n"
+    benchmark_text += "    std::random_device rd;\n"
+    benchmark_text += "    std::mt19937 gen(rd());\n"
+    benchmark_text += "    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);\n\n"
+    
+    for var in sorted(all_vars):
+        benchmark_text += f"    std::vector<float> {var}(N);\n"
+        benchmark_text += f"    for (int i = 0; i < N; i++) {{\n"
+        benchmark_text += f"        {var}[i] = dis(gen);\n"
+        benchmark_text += f"    }}\n\n"
+    
+    # Generate output buffers for each kernel
+    benchmark_text += "    // Output buffers for each kernel\n"
+    for i, name in enumerate(kernel_names):
+        benchmark_text += f"    std::vector<float> output_{name}(N);\n"
+    benchmark_text += "\n"
+    
+    # Generate benchmark code for each kernel
+    var_args = ", ".join(f"{var}.data()" for var in sorted(all_vars))
+    
+    for i, name in enumerate(kernel_names):
+        benchmark_text += f"    // Benchmark {name}\n"
+        benchmark_text += f"    {{\n"
+        
+        benchmark_text += f"        auto kernel = make_{name}({var_args});\n"
+        benchmark_text += f"        \n"
+        benchmark_text += f"        // Warmup\n"
+        benchmark_text += f"        for (int i = 0; i < warmup; i++) {{\n"
+        benchmark_text += f"            {name}_vector_type out;\n"
+        benchmark_text += f"            kernel.run(&out);\n"
+        benchmark_text += f"        }}\n\n"
+        
+        benchmark_text += f"        // Reset kernel state\n"
+        benchmark_text += f"        kernel = make_{name}({var_args});\n\n"
+        
+        benchmark_text += f"        // Timed run\n"
+        benchmark_text += f"        auto start = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += f"        for (int iter = 0; iter < iterations; iter++) {{\n"
+        benchmark_text += f"            // Recreate kernel for each iteration\n"
+        benchmark_text += f"            kernel = make_{name}({var_args});\n"
+        benchmark_text += f"            int pos = 0;\n"
+        benchmark_text += f"            while (pos < N) {{\n"
+        benchmark_text += f"                {name}_vector_type out;\n"
+        benchmark_text += f"                kernel.run(&out);\n"
+        benchmark_text += f"                memcpy(&output_{name}[pos], &out, sizeof(out));\n"
+        benchmark_text += f"                pos += vec_lanes_of(out);\n"
+        benchmark_text += f"            }}\n"
+        benchmark_text += f"        }}\n"
+        benchmark_text += f"        auto end = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += f"        \n"
+        benchmark_text += f"        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
+        benchmark_text += f'        std::cout << "{name}: " << duration / static_cast<double>(iterations) << " us per iteration\\n";\n'
+        benchmark_text += f"    }}\n\n"
+    
+    # Add correctness checking if requested
+    if include_correctness_check and len(kernel_names) > 1:
+        benchmark_text += _generate_correctness_check_code(kernel_names, input_size)
+    
+    benchmark_text += "    return 0;\n"
+    benchmark_text += "}\n"
+    
+    return benchmark_text
+
+
+def _generate_correctness_check_helper(tolerance: float = 1e-3) -> str:
+    """
+    Generate helper function for correctness checking.
+    
+    Returns:
+        C++ code for arrays_equal function with trailing newlines for proper spacing.
+    """
+    return f"""// Helper function for comparing floating point arrays
+bool arrays_equal(const std::vector<float>& a, const std::vector<float>& b, float tolerance = {tolerance}) {{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) {{
+        if (std::abs(a[i] - b[i]) > tolerance) {{
+            std::cout << "Mismatch at index " << i << ": " << a[i] << " vs " << b[i] << "\\n";
+            return false;
+        }}
+    }}
+    return true;
+}}
+
+"""
+
+
+def _generate_correctness_check_code(kernel_names: List[str], input_size: int) -> str:
+    """
+    Generate correctness checking code comparing all kernels.
+    
+    Compares each kernel's output against the first kernel (reference).
+    
+    Returns:
+        C++ code for correctness checking with trailing newlines for proper spacing.
+    """
+    code = "    // Correctness checking\n"
+    code += '    std::cout << "\\nCorrectness checking:\\n";\n'
+    
+    reference = kernel_names[0]
+    for i in range(1, len(kernel_names)):
+        name = kernel_names[i]
+        code += f'    if (arrays_equal(output_{reference}, output_{name})) {{\n'
+        code += f'        std::cout << "{name} matches {reference}: PASS\\n";\n'
+        code += f'    }} else {{\n'
+        code += f'        std::cout << "{name} matches {reference}: FAIL\\n";\n'
+        code += f'    }}\n'
+    
+    code += "\n"
+    return code
