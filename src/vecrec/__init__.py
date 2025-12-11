@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 import numpy as np
 
-from vecrec.codegen import CodeGen, instantiate_kernels, generate_benchmark
+from vecrec.codegen import CodeGen, instantiate_kernels, generate_benchmark, generate_and_run_benchmark
 from vecrec.transform import ApplyParallel, ConstantFold, Delay, Dilate, ApplySequence, Preorder, Try
 from vecrec.expr import Convolve, Recurse, TIKernel, Var
 

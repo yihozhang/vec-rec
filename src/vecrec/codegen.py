@@ -292,6 +292,7 @@ def generate_benchmark(
     codegen: CodeGen,
     exprs: List[SignalExpr],
     kernel_names: List[str],
+    kernel_header_path: str,
     output_path: str,
     include_correctness_check: bool = False,
     correctness_tolerance: float = 1e-3,
@@ -325,6 +326,7 @@ def generate_benchmark(
     benchmark_code = _generate_benchmark_code(
         list(all_vars),
         kernel_names,
+        kernel_header_path,
         include_correctness_check,
         correctness_tolerance,
         input_size,
@@ -339,6 +341,7 @@ def generate_benchmark(
 def _generate_benchmark_code(
     all_vars: List[str],
     kernel_names: List[str],
+    header_path: str,
     include_correctness_check: bool,
     correctness_tolerance: float,
     input_size: int,
@@ -348,7 +351,7 @@ def _generate_benchmark_code(
     """Generate the complete C++ benchmark code."""
     
     # Start with includes
-    benchmark_text = '#include "output.h"\n'
+    benchmark_text = f'#include "{header_path}"\n'
     benchmark_text += "#include <iostream>\n"
     benchmark_text += "#include <chrono>\n"
     benchmark_text += "#include <vector>\n"
@@ -474,3 +477,117 @@ def _generate_correctness_check_code(kernel_names: List[str], input_size: int) -
     
     code += "\n"
     return code
+
+
+def generate_and_run_benchmark(
+    codegen: CodeGen,
+    exprs: List[SignalExpr],
+    kernel_names: List[str],
+    header_path: str,
+    benchmark_path: Optional[str] = None,
+    executable_path: Optional[str] = None,
+    include_correctness_check: bool = False,
+    correctness_tolerance: float = 1e-3,
+    input_size: int = (1 << 20),
+    warmup_iterations: int = 10,
+    benchmark_iterations: int = 100,
+    compiler: str = "clang++",
+    compiler_flags: Optional[List[str]] = None,
+) -> dict:
+    """
+    Generate, compile, and run a benchmark for the given kernels.
+    
+    Args:
+        codegen: CodeGen instance used to generate the kernels
+        exprs: List of signal expressions corresponding to each kernel
+        kernel_names: List of names corresponding to each kernel
+        header_path: Path where the kernel header file will be written
+        benchmark_path: Path where the benchmark C++ file will be written (default: random file in /tmp/)
+        executable_path: Path for the compiled benchmark executable (default: random file in /tmp/)
+        include_correctness_check: If True, adds correctness checking code
+        correctness_tolerance: Tolerance for floating point comparisons in correctness checking
+        input_size: Size of input data for benchmarking
+        warmup_iterations: Number of warmup iterations before timing
+        benchmark_iterations: Number of iterations for timing
+        compiler: Compiler to use (default: clang++)
+        compiler_flags: Additional compiler flags (default: ["-std=c++20", "-O2", "-march=native"])
+    
+    Returns:
+        A dictionary containing:
+            - 'success': bool indicating if benchmark ran successfully
+            - 'output': stdout from benchmark execution
+            - 'error': stderr if any errors occurred
+            - 'return_code': return code from benchmark execution
+    """
+    import subprocess
+    import os
+    import tempfile
+    
+    if compiler_flags is None:
+        compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
+    
+    # Generate unique random file names if not provided
+    if benchmark_path is None:
+        fd, benchmark_path = tempfile.mkstemp(suffix='.cpp', prefix='benchmark_', dir='/tmp')
+        os.close(fd)  # Close the file descriptor, we'll write to it later
+    
+    if executable_path is None:
+        fd, executable_path = tempfile.mkstemp(prefix='benchmark_', dir='/tmp')
+        os.close(fd)  # Close the file descriptor
+    
+    try:
+        # Generate kernel code
+        codes = [codegen.generate(expr, name) for expr, name in zip(exprs, kernel_names)]
+        instantiate_kernels(header_path, codes)
+        
+        # Generate benchmark program
+        generate_benchmark(
+            codegen=codegen,
+            exprs=exprs,
+            kernel_names=kernel_names,
+            kernel_header_path=header_path,
+            output_path=benchmark_path,
+            include_correctness_check=include_correctness_check,
+            correctness_tolerance=correctness_tolerance,
+            input_size=input_size,
+            warmup_iterations=warmup_iterations,
+            benchmark_iterations=benchmark_iterations,
+        )
+        
+        # Compile benchmark
+        compile_cmd = [compiler] + compiler_flags + [benchmark_path, "-o", executable_path]
+        compile_result = subprocess.run(
+            compile_cmd,
+            capture_output=True,
+            text=True,
+        )
+        
+        if compile_result.returncode != 0:
+            return {
+                'success': False,
+                'output': compile_result.stdout,
+                'error': f"Compilation failed: {compile_result.stderr}",
+                'return_code': compile_result.returncode,
+            }
+        
+        # Run benchmark
+        run_result = subprocess.run(
+            [os.path.abspath(executable_path)],
+            capture_output=True,
+            text=True,
+        )
+        
+        return {
+            'success': run_result.returncode == 0,
+            'output': run_result.stdout,
+            'error': run_result.stderr if run_result.returncode != 0 else "",
+            'return_code': run_result.returncode,
+        }
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'output': "",
+            'error': str(e),
+            'return_code': -1,
+        }
