@@ -5,9 +5,6 @@ import numpy as np
 
 from importlib.resources import files
 
-if TYPE_CHECKING:
-    from typing import Any
-
 TEMPLATE = files("vecrec.templates") / "common.h"
 
 
@@ -195,7 +192,12 @@ def _generate_benchmark_code(
 
 
 def _generate_correctness_check_helper(tolerance: float = 1e-3) -> str:
-    """Generate helper function for correctness checking."""
+    """
+    Generate helper function for correctness checking.
+    
+    Returns:
+        C++ code for arrays_equal function with trailing newlines for proper spacing.
+    """
     return f"""// Helper function for comparing floating point arrays
 bool arrays_equal(const std::vector<float>& a, const std::vector<float>& b, float tolerance = {tolerance}) {{
     if (a.size() != b.size()) return false;
@@ -212,7 +214,14 @@ bool arrays_equal(const std::vector<float>& a, const std::vector<float>& b, floa
 
 
 def _generate_correctness_check_code(kernel_names: List[str], input_size: int) -> str:
-    """Generate correctness checking code comparing all kernels."""
+    """
+    Generate correctness checking code comparing all kernels.
+    
+    Compares each kernel's output against the first kernel (reference).
+    
+    Returns:
+        C++ code for correctness checking with trailing newlines for proper spacing.
+    """
     code = "    // Correctness checking\n"
     code += '    std::cout << "\\nCorrectness checking:\\n";\n'
     
