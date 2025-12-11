@@ -52,7 +52,7 @@ def instantiate_kernels(path: str, codes: List[Code]) -> None:
 
 def generate_benchmark(
     codegen: "CodeGen",
-    exprs: List,
+    exprs: List[SignalExpr],
     kernel_names: List[str],
     output_path: str,
     include_correctness_check: bool = False,
@@ -116,9 +116,6 @@ def _generate_benchmark_code(
     benchmark_text += "#include <vector>\n"
     benchmark_text += "#include <cmath>\n"
     benchmark_text += "#include <random>\n\n"
-    
-    # Add helper function for timing
-    benchmark_text += _generate_timing_helper()
     
     if include_correctness_check:
         benchmark_text += _generate_correctness_check_helper(correctness_tolerance)
@@ -195,22 +192,6 @@ def _generate_benchmark_code(
     benchmark_text += "}\n"
     
     return benchmark_text
-
-
-def _generate_timing_helper() -> str:
-    """Generate helper function for timing measurements."""
-    return """// Helper function for precise timing
-template<typename Func>
-double time_execution(Func&& func, int iterations) {
-    auto start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < iterations; i++) {
-        func();
-    }
-    auto end = std::chrono::high_resolution_clock::now();
-    return std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / static_cast<double>(iterations);
-}
-
-"""
 
 
 def _generate_correctness_check_helper(tolerance: float = 1e-3) -> str:
