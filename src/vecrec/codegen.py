@@ -42,7 +42,7 @@ class Code:
         self.lanes = lanes
         self.taps = taps
 
-def instantiate_kernels(path: str, codes: List[Code]) -> str:
+def instantiate_kernels(path: str, codes: List[Code]) -> None:
     text = TEMPLATE.read_text()
     for code in codes:
         text += "\n" + code.text
