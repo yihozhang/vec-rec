@@ -96,7 +96,7 @@ class Dilate(Transform):
                 return []
 
 class Delay(Transform):
-    """Delay an IIR. One particular usage of this is time varying convolution"""
+    """Delay an IIR by identifying leading coefficient v at feedback p and negating by v*z^-p"""
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
@@ -108,8 +108,6 @@ class Delay(Transform):
                     return []
                 coeff = TIKernel.z(-pos) * val
                 return [Recurse(a + coeff * (a-TIKernel.i()), Convolve(TIKernel.i() + coeff, g))]
-            # case Recurse(a, g):
-            #     return [Recurse(KConvolve(a, a), Convolve(KAdd(TIKernel.i(), a), g))]
             case _:
                 return []
 
@@ -119,9 +117,9 @@ class ComposeRecurse(Transform):
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
-            # TODO: this transformation is wrong for time-varying kernels
-            # TODO: look at other transformations
-            case SAdd(Recurse(a, g), Recurse(b, h)):
+            # Requires commutativity
+            # G/(I-A) + H/(I-B) = (I-B)G/(I-B)(I-A) + (I-A)H/(I-A)(I-B) = ((I-B)G + (I-A)H) / (I - A)(I - B)
+            case SAdd(Recurse(TIKernel(_) as a, g), Recurse(TIKernel(_) as b, h)):
                 c = KSub(KAdd(a, b), KConvolve(a, b))
                 w = SAdd(
                     Convolve(KSub(TIKernel.i(), b), g),
@@ -145,9 +143,7 @@ class Factorize(Transform):
             case _:
                 return []
 
-
 ## Time-varying kernels
-
 
 class DilateTVWithSingleOddOrder(Transform):
     def all_nonzeros(self, a: Sequence[SignalExpr]) -> List[int]:

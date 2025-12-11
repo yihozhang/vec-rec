@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 from vecrec.expr import *
 import numpy as np
 
@@ -39,14 +39,12 @@ class Code:
         self.lanes = lanes
         self.taps = taps
 
-    def to_str(self, path: str) -> str:
-        text = TEMPLATE.read_text() + "\n" + self.text
-        return text
-
-    def to_file(self, path: str):
-        text = self.to_str(path)
-        with open(path, "w") as f:
-            f.write(text)
+def instantiate_kernels(path: str, codes: List[Code]) -> str:
+    text = TEMPLATE.read_text()
+    for code in codes:
+        text += "\n" + code.text
+    with open(path, "w") as f:
+        f.write(text)
 
 
 class CodeGen:
@@ -83,17 +81,22 @@ class CodeGen:
             case ElementType.I32:
                 raise NotImplementedError
 
+    def clear(self):
+        self.counter = 0
+        self.prologue = []
+
     def generate(self, expr: SignalExpr, name: str) -> Code:
+        self.clear()
         code = self.generate_signal(expr)
         vars = self.collect_variables(expr)
         args = ", ".join(f"const {ElementType.Float.to_str()} *{var}" for var in vars)
         text = "\n".join(
-            self.prologue
-            +
             [
                 f"auto make_{name}({args}) {{",
+                *map(lambda x: "    " + x, self.prologue),
                 f"    return {code.text};",
                 "}",
+                f"using {name}_vector_type = {self.get_vec_type(code.element_type, code.lanes)};"
             ]
         )
         return Code(
