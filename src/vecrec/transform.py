@@ -100,9 +100,9 @@ class Delay(Transform):
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
-            case Recurse(TIKernel(a), g):
+            case Recurse(a, g) if isinstance(a, TIKernel):
                 pos, val = next(
-                    ((i, v) for i, v in enumerate(a) if not np.isclose(v, 0)), (len(a), 0)
+                    ((i, v) for i, v in enumerate(a.data) if not np.isclose(v, 0)), (len(a), 0)
                 )
                 if val == 0:
                     return []

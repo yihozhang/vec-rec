@@ -9,6 +9,7 @@ This script shows how to:
 """
 
 from vecrec import CodeGen, instantiate_kernels, generate_benchmark
+from vecrec.codegen import generate_and_run_benchmark
 from vecrec.transform import ApplyParallel, ConstantFold, Delay, Dilate, ApplySequence, Preorder, Try
 from vecrec.expr import Recurse, TIKernel, Var
 
@@ -42,22 +43,16 @@ def main():
     
     # Generate kernel header file
     instantiate_kernels("output.h", codes)
-    print("✓ Generated kernel header: output.h")
     
     # Generate benchmark program with correctness checking
-    generate_benchmark(
+    result = generate_and_run_benchmark(
         codegen=codegen,
         exprs=exprs_list,
         kernel_names=kernel_names,
-        output_path="benchmark.cpp",
-        include_correctness_check=True,  # Enable correctness checking
+        header_path="output.h",
+        include_correctness_check=True
     )
-    print("✓ Generated benchmark program: benchmark.cpp")
-    
-    print("\nTo compile and run the benchmark:")
-    print("  clang++ -std=c++20 -O2 -march=native benchmark.cpp -o benchmark")
-    print("  ./benchmark")
-
+    print(result['output'])
 
 if __name__ == "__main__":
     main()
