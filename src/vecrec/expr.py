@@ -196,7 +196,7 @@ class TVKernel(KernelExpr):
             return max_delay, TVKernel(self.data[max_delay:])
         assert False, "max_delay exceeds kernel length"
 
-    def to_sparse_repr(self) -> Tuple[int, List[int], List[float]]:
+    def to_sparse_repr(self) -> Tuple[int, List[int], List[SignalExpr]]:
         """Returns a tuple of (num_nonzero, indices, values) representing the sparse form of the kernel."""
         indices = []
         values = []
@@ -276,9 +276,12 @@ class KernelExprBinOp(KernelExpr):
         self.a = a
         self.b = b
 
-    def time_delay(self) -> int:
+    def time_delay(self, max_delay) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
-        return min(self.a.time_delay(), self.b.time_delay())
+        a_delay, _ = self.a.time_delay(max_delay)
+        b_delay, _ = self.b.time_delay(max_delay)
+        delay = min(a_delay, b_delay)
+        return delay, KConvolve(TIKernel.z(-delay), self)
 
     @classmethod
     def of(cls, exprs: List[KernelExpr]):
@@ -295,9 +298,12 @@ class KSub(KernelExprBinOp):
 
 
 class KConvolve(KernelExprBinOp):
-    def time_delay(self) -> int:
+    def time_delay(self, max_delay) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
-        return self.a.time_delay() + self.b.time_delay()
+        a_delay, _ = self.a.time_delay(max_delay)
+        b_delay, _ = self.b.time_delay(max_delay)
+        delay = min(a_delay + b_delay, max_delay)
+        return delay, KConvolve(TIKernel.z(-delay), self)
 
 
 class KNeg(KernelExpr):
@@ -308,10 +314,10 @@ class KNeg(KernelExpr):
         super().__init__()
         self.a = a
 
-    def time_delay(self) -> int:
+    def time_delay(self, max_delay) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
-        return self.a.time_delay()
-
+        delay, e = self.a.time_delay(max_delay)
+        return delay, KNeg(e)
 
 # SignalExpr
 
