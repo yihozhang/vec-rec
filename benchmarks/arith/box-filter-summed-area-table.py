@@ -1,0 +1,1 @@
+# Box filter can be implemented using summed area table (integral image).
