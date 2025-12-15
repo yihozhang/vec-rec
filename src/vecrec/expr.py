@@ -111,6 +111,24 @@ class Type(Enum):
         assert False, "unreachable"
     
     @overload
+    def sub(self, a: List[float], b: List[float]) -> List[float]: ...
+    @overload
+    def sub(self, a: List[float], b: float) -> List[float]: ...
+    @overload
+    def sub(self, a: float, b: List[float]) -> List[float]: ...
+    def sub(self, a, b):
+        assert self == Type.Arith, "Subtraction is only defined for arithmetic type"
+        if isinstance(a, list) and isinstance(b, list):
+            return [x - y for x, y in zip(a, b)]
+        elif isinstance(a, list) and isinstance(b, numbers.Number):
+            return [x - b for x in a]
+        elif isinstance(a, numbers.Number) and isinstance(b, list):
+            return [a - y for y in b]
+        elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
+            return a - b
+        assert False, "unreachable"
+    
+    @overload
     def mult(self, a: float, b: float) -> float: ...
     @overload
     def mult(self, a: list[float], b: list[float] | float) -> list[float]: ...
@@ -282,7 +300,7 @@ class TIKernel(KernelExpr):
         max_len = max(len(self), len(other))
         a_data = self.data + [self.ty.zero()] * (max_len - len(self))
         b_data = other.data + [other.ty.zero()] * (max_len - len(other))
-        return TIKernel(self.ty.add(a_data, b_data), self.ty)
+        return TIKernel(self.ty.sub(a_data, b_data), self.ty)
 
     def __neg__(self) -> TIKernel:
         assert self.ty == Type.Arith, "Negation is only defined for arithmetic type"

@@ -117,7 +117,7 @@ class Delay(Transform):
             case Recurse(a, g) if isinstance(a, TIKernel):
                 assert a.ty == Type.Arith
                 pos, val = next(
-                    ((i, v) for i, v in enumerate(a.data) if not np.isclose(v, 0)), (len(a), 0)
+                    ((i, v) for i, v in enumerate(a.data) if not a.ty.is_zero(v)), (len(a), 0)
                 )
                 if val == 0:
                     return []
