@@ -28,7 +28,6 @@ def test_generate_and_run():
         codegen=codegen,
         exprs=[expr, results[0], results[1]],
         kernel_names=["original", "dilated", "dilate_and_delayed"],
-        header_path="output.h",
         include_correctness_check=True,
         input_size=1 << 16,  # Smaller size for quick testing
         warmup_iterations=5,

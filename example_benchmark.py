@@ -49,7 +49,6 @@ def main():
         codegen=codegen,
         exprs=exprs_list,
         kernel_names=kernel_names,
-        header_path="output.h",
         include_correctness_check=True
     )
     print(result['output'])

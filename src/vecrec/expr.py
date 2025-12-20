@@ -30,6 +30,7 @@ __all__ = [
     "Convolve",
     "Recurse",
     "Var",
+    "Type",
 ]
 
 class Type(Enum):
@@ -125,7 +126,7 @@ class Type(Enum):
         elif isinstance(a, numbers.Number) and isinstance(b, list):
             return [a - y for y in b]
         elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
-            return a - b
+            return a - b # type: ignore
         assert False, "unreachable"
     
     @overload

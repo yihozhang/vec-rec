@@ -14,17 +14,21 @@ def main():
     expr = Recurse(kernel, signal)
     
     transforms = [
+        Dilate(),
+        Dilate(),
+        Preorder(Try(ConstantFold)),
         Delay(),
         Preorder(Try(ConstantFold)),
     ]
     results = ApplySequence(transforms).apply_signal(expr)
     print(results[0])
     codegen = CodeGen(256)
-    original = codegen.generate(expr, "original")
-    delayed = codegen.generate(results[0], "delayed")
-    instantiate_kernels("output.h", [original, delayed])
+    # original = codegen.generate(expr, "original")
+    # delayed = codegen.generate(results[0], "delayed")
+    # instantiate_kernels("output.h", [original, delayed])
     
-    # result = generate_and_run_benchmark(codegen, [original, delayed], ['original', 'delayed'], "output.h", True)
+    result = generate_and_run_benchmark(codegen, [expr, results[0]], ['original', 'delayed'], True)
+    print(result)
 
     # transforms = [
     #     Dilate(),

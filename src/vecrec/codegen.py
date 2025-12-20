@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING, Sequence
 from vecrec.expr import *
 import numpy as np
 
@@ -290,8 +290,8 @@ def instantiate_kernels(path: str, codes: List[Code]) -> None:
 
 def generate_benchmark(
     codegen: CodeGen,
-    exprs: List[SignalExpr],
-    kernel_names: List[str],
+    exprs: Sequence[SignalExpr],
+    kernel_names: Sequence[str],
     kernel_header_path: str,
     output_path: str,
     include_correctness_check: bool = False,
@@ -340,7 +340,7 @@ def generate_benchmark(
 
 def _generate_benchmark_code(
     all_vars: List[str],
-    kernel_names: List[str],
+    kernel_names: Sequence[str],
     header_path: str,
     include_correctness_check: bool,
     correctness_tolerance: float,
@@ -454,7 +454,7 @@ bool arrays_equal(const std::vector<float>& a, const std::vector<float>& b, floa
 """
 
 
-def _generate_correctness_check_code(kernel_names: List[str], input_size: int) -> str:
+def _generate_correctness_check_code(kernel_names: Sequence[str], input_size: int) -> str:
     """
     Generate correctness checking code comparing all kernels.
     
@@ -481,10 +481,10 @@ def _generate_correctness_check_code(kernel_names: List[str], input_size: int) -
 
 def generate_and_run_benchmark(
     codegen: CodeGen,
-    exprs: List[SignalExpr],
-    kernel_names: List[str],
-    header_path: str,
+    exprs: Sequence[SignalExpr],
+    kernel_names: Sequence[str],
     include_correctness_check: bool = False,
+    header_path: Optional[str] = None,
     benchmark_path: Optional[str] = None,
     executable_path: Optional[str] = None,
     correctness_tolerance: float = 1e-3,
@@ -526,6 +526,10 @@ def generate_and_run_benchmark(
     if compiler_flags is None:
         compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
     
+    if header_path is None:
+        fd, header_path= tempfile.mkstemp(suffix='.h', prefix='header_', dir='/tmp')
+        os.close(fd)  # Close the file descriptor, we'll write to it later
+
     # Generate unique random file names if not provided
     if benchmark_path is None:
         fd, benchmark_path = tempfile.mkstemp(suffix='.cpp', prefix='benchmark_', dir='/tmp')
