@@ -10,7 +10,7 @@ This script shows how to:
 
 from vecrec import CodeGen, instantiate_kernels, generate_benchmark
 from vecrec.codegen import generate_and_run_benchmark
-from vecrec.transform import ApplyParallel, ConstantFold, Delay, Dilate, ApplySequence, Preorder, Try
+from vecrec.transform import Any, ConstantFold, Delay, Dilate, Seq, Preorder, Try
 from vecrec.expr import Recurse, TIKernel, Type, Var
 
 
@@ -24,10 +24,10 @@ def main():
     transforms = [
         Dilate(),
         Dilate(),
-        ApplyParallel([Dilate(), Delay()]),
+        Any(Dilate(), Delay()),
         Preorder(Try(ConstantFold)),
     ]
-    results = ApplySequence(transforms).apply_signal(expr)
+    results = Seq(*transforms).apply_signal(expr)
     
     # Create code generator
     codegen = CodeGen(256)  # 256-bit SIMD

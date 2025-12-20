@@ -5,9 +5,8 @@ import numpy as np
 from typing import Callable, List, Optional, Dict, Protocol, Sequence, Tuple, overload
 from abc import abstractmethod
 from vecrec.expr import *
-from vecrec.expr import Type
+from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.factorize import factorize_polynomial
-
 
 class Transform:
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
@@ -16,6 +15,12 @@ class Transform:
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         return []
 
+
+class Noop(Transform):
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        return [expr]
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        return [expr]
 
 # Constant folding
 class ConstantFoldAdd(Transform):
@@ -208,8 +213,8 @@ class DilateTVWithSingleOddOrder(Transform):
                 return []
 
 
-class ApplySequence(Transform):
-    def __init__(self, transforms: Sequence[Transform]) -> None:
+class Seq(Transform):
+    def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
@@ -238,8 +243,8 @@ class Try(Transform):
         return results if len(results) > 0 else [expr]
 
 
-class ApplyParallel(Transform):
-    def __init__(self, transforms: Sequence[Transform]) -> None:
+class Any(Transform):
+    def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
@@ -257,12 +262,10 @@ class ApplyParallel(Transform):
         ]
 
 
-ConstantFold = ApplyParallel(
-    [
-        ConstantFoldAdd(),
-        ConstantFoldConvolve(),
-        ConstantFoldNegate(),
-    ]
+ConstantFold = Any(
+    ConstantFoldAdd(),
+    ConstantFoldConvolve(),
+    ConstantFoldNegate(),
 )
 
 

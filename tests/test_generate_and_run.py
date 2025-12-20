@@ -1,6 +1,6 @@
 
 from vecrec import CodeGen, generate_and_run_benchmark
-from vecrec.transform import ApplyParallel, ConstantFold, Delay, Dilate, ApplySequence, Preorder, Try
+from vecrec.transform import Any, ConstantFold, Delay, Dilate, Seq, Preorder, Try
 from vecrec.expr import Recurse, TIKernel, Type, Var
 
 
@@ -11,13 +11,13 @@ def test_generate_and_run():
     expr = Recurse(kernel, signal)
     
     # Apply transformations to optimize the kernel
-    transforms = [
+    schedule = Seq(
         Dilate(),
         Dilate(),
-        ApplyParallel([Dilate(), Delay()]),
+        Any(Dilate(), Delay()),
         Preorder(Try(ConstantFold)),
-    ]
-    results = ApplySequence(transforms).apply_signal(expr)
+    )
+    results = schedule.apply_signal(expr)
     
     # Create code generator
     codegen = CodeGen(256)  # 256-bit SIMD
@@ -34,7 +34,7 @@ def test_generate_and_run():
         benchmark_iterations=10,
     )
     
-    if result['success']:
+    if result['return_code'] == 0:
         print("\n✓ Benchmark completed successfully!\n")
         print("Output:")
         print(result['output'])

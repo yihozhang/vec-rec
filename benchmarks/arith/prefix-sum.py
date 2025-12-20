@@ -12,7 +12,7 @@ def main():
         Delay(),
         Preorder(Try(ConstantFold)),
     ]
-    results = ApplySequence(transforms).apply_signal(program)
+    results = Seq(*transforms).apply_signal(program)
     assert len(results) == 1
     codegen = CodeGen(256)
     code = codegen.generate(results[0], "prefix_sum")

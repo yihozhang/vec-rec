@@ -2,7 +2,7 @@ from enum import Enum
 from typing import List, Optional, TYPE_CHECKING, Sequence
 from vecrec.expr import *
 import numpy as np
-
+import json
 from importlib.resources import files
 
 TEMPLATE = files("vecrec.templates") / "common.h"
@@ -388,6 +388,8 @@ def _generate_benchmark_code(
     # Generate benchmark code for each kernel
     var_args = ", ".join(f"{var}.data()" for var in sorted(all_vars))
     
+    benchmark_text += f'    std::cout << "{{\\n";'
+
     for i, name in enumerate(kernel_names):
         benchmark_text += f"    // Benchmark {name}\n"
         benchmark_text += f"    {{\n"
@@ -419,12 +421,18 @@ def _generate_benchmark_code(
         benchmark_text += f"        auto end = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += f"        \n"
         benchmark_text += f"        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
-        benchmark_text += f'        std::cout << "{name}: " << duration / static_cast<double>(iterations) << " us per iteration\\n";\n'
+        # Deciding if we need to generate the trailing comma
+        if i == len(kernel_names) - 1 and not (include_correctness_check and len(kernel_names) > 1):
+            benchmark_text += f'        std::cout << "  \\"{name}\\": " << duration / static_cast<double>(iterations) << "\\n";\n'
+        else:
+            benchmark_text += f'        std::cout << "  \\"{name}\\": " << duration / static_cast<double>(iterations) << ",\\n";\n'
         benchmark_text += f"    }}\n\n"
     
     # Add correctness checking if requested
     if include_correctness_check and len(kernel_names) > 1:
         benchmark_text += _generate_correctness_check_code(kernel_names, input_size)
+    
+    benchmark_text += f'    std::cout << "}}\\n";'
     
     benchmark_text += "    return 0;\n"
     benchmark_text += "}\n"
@@ -440,15 +448,14 @@ def _generate_correctness_check_helper(tolerance: float = 1e-3) -> str:
         C++ code for arrays_equal function with trailing newlines for proper spacing.
     """
     return f"""// Helper function for comparing floating point arrays
-bool arrays_equal(const std::vector<float>& a, const std::vector<float>& b, float tolerance = {tolerance}) {{
-    if (a.size() != b.size()) return false;
+int arrays_equal(const std::vector<float>& a, const std::vector<float>& b, float tolerance = {tolerance}) {{
+    if (a.size() != b.size()) return -1;
     for (size_t i = 0; i < a.size(); i++) {{
         if (std::abs(a[i] - b[i]) > tolerance) {{
-            std::cout << "Mismatch at index " << i << ": " << a[i] << " vs " << b[i] << "\\n";
-            return false;
+            return i;
         }}
     }}
-    return true;
+    return a.size();
 }}
 
 """
@@ -464,17 +471,23 @@ def _generate_correctness_check_code(kernel_names: Sequence[str], input_size: in
         C++ code for correctness checking with trailing newlines for proper spacing.
     """
     code = "    // Correctness checking\n"
-    code += '    std::cout << "\\nCorrectness checking:\\n";\n'
+    code += '    std::cout << "  \\"validation\\":{\\n";\n'
+    code += f'    int idx;'
     
     reference = kernel_names[0]
     for i in range(1, len(kernel_names)):
         name = kernel_names[i]
-        code += f'    if (arrays_equal(output_{reference}, output_{name})) {{\n'
-        code += f'        std::cout << "{name} matches {reference}: PASS\\n";\n'
+        code += f'    if ((idx=arrays_equal(output_{reference}, output_{name})) == output_{reference}.size()) {{\n'
+        code += f'        std::cout << "    \\"{name}\\": true";\n'
         code += f'    }} else {{\n'
-        code += f'        std::cout << "{name} matches {reference}: FAIL\\n";\n'
+        code += f'        std::cout << "    \\"{name}\\":" << idx;\n'
         code += f'    }}\n'
+        if i == len(kernel_names) - 1:
+            code += f'    std::cout << "\\n";\n'
+        else:
+            code += f'    std::cout << ",\\n";\n'
     
+    code += '    std::cout << "  }\\n";\n'
     code += "\n"
     return code
 
@@ -514,7 +527,6 @@ def generate_and_run_benchmark(
     
     Returns:
         A dictionary containing:
-            - 'success': bool indicating if benchmark ran successfully
             - 'output': stdout from benchmark execution
             - 'error': stderr if any errors occurred
             - 'return_code': return code from benchmark execution
@@ -568,7 +580,6 @@ def generate_and_run_benchmark(
         
         if compile_result.returncode != 0:
             return {
-                'success': False,
                 'output': compile_result.stdout,
                 'error': f"Compilation failed: {compile_result.stderr}",
                 'return_code': compile_result.returncode,
@@ -581,16 +592,15 @@ def generate_and_run_benchmark(
             text=True,
         )
         
+        json_output = json.loads(run_result.stdout)
         return {
-            'success': run_result.returncode == 0,
-            'output': run_result.stdout,
+            'output': json_output,
             'error': run_result.stderr if run_result.returncode != 0 else "",
             'return_code': run_result.returncode,
         }
         
     except Exception as e:
         return {
-            'success': False,
             'output': "",
             'error': str(e),
             'return_code': -1,
