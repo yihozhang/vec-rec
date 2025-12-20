@@ -8,16 +8,16 @@ from vecrec.codegen import CodeGen, generate_and_run_benchmark, generate_benchma
 
 def main():
     program = Recurse(TIKernel([0, 1], Type.Arith), Var("g", Type.Arith))
-    transforms = [
-        Delay(),
-        Preorder(Try(ConstantFold)),
-    ]
-    results = Seq(*transforms).apply_signal(program)
-    assert len(results) == 1
+    transforms = Any(
+        Seq(
+            Dilate(),
+            Dilate(),
+            Dilate(),
+        ),
+    )
+    results = transforms.apply_signal(program)
     codegen = CodeGen(256)
-    code = codegen.generate(results[0], "prefix_sum")
-    instantiate_kernels("prefix_sum.h", [code])
-    benchmark_result = generate_and_run_benchmark(codegen, results, ["prefix_sum"], True)
+    benchmark_result = generate_and_run_benchmark(codegen, [program, *results], ["original", "prefix_sum"], True)
     print(benchmark_result)
 
 if __name__ == "__main__":
