@@ -158,6 +158,53 @@ inline float_vec16 extract_slice(float_vec16 a, float_vec16 b, int offset) {
     return float_vec16{};
 }
 
+// from https://stackoverflow.com/questions/37602057/why-isnt-a-for-loop-a-compile-time-expression
+template<std::size_t N>
+struct num { static const constexpr auto value = N; };
+
+template <class F, std::size_t... Is>
+void for_(F func, std::index_sequence<Is...>)
+{
+  (func(num<Is>{}), ...);
+}
+
+template <std::size_t N, typename F>
+void for_(F func)
+{
+  for_(func, std::make_index_sequence<N>());
+}
+
+template <typename vec_type_in, typename vec_type_out, int n>
+struct ExtractSubVector {};
+
+template <typename vec_type_in, int n>
+struct ExtractSubVector<vec_type_in, float_vec1, n> {
+    static float_vec1 extract_sub_vector(vec_type_in a) {
+        return a[n];
+    }
+};
+
+template <typename vec_type_in, int n>
+struct ExtractSubVector<vec_type_in, float_vec2, n> {
+    static float_vec2 extract_sub_vector(vec_type_in a) {
+        return __builtin_shufflevector(a, a, 2 * n, 2 * n + 1);
+    }
+};
+
+template <typename vec_type_in, int n>
+struct ExtractSubVector<vec_type_in, float_vec4, n> {
+    static float_vec8 extract_sub_vector(vec_type_in a) {
+        return __builtin_shufflevector(a, a, 4 * n, 4 * n + 1, 4 * n + 2, 4 * n + 3);
+    }
+};
+
+template <typename vec_type_in, int n>
+struct ExtractSubVector<vec_type_in, float_vec8, n> {
+    static float_vec8 extract_sub_vector(vec_type_in a) {
+        return __builtin_shufflevector(a, a, 8 * n, 8 * n + 1, 8 * n + 2, 8 * n + 3, 8 * n + 4, 8 * n + 5, 8 * n + 6, 8 * n + 7);
+    }
+};
+
 template <int _taps, typename vec_type, const int indices[_taps], const typename ElementType<vec_type>::type vals[_taps]>
 struct TimeInvariantKernel {
     using elt_type = typename ElementType<vec_type>::type;
@@ -380,6 +427,7 @@ struct KConvertOne2N {
 
     Inner inner;
     vec_type_in buffer[taps];
+    vec_type_out out_buffer[taps][factor];
     int offset;
 
     KConvertOne2N(Inner inner) : inner(inner), offset(0) {}
@@ -387,15 +435,21 @@ struct KConvertOne2N {
     void run(vec_type_out *out) {
         if (offset == 0) {
             inner.run(buffer);
+#pragma unroll
+            for (int i = 0; i < taps; i++) {
+                for_<factor>([&] (auto j) {
+                    out_buffer[i][j.value] = ExtractSubVector<vec_type_in, vec_type_out, j.value>::extract_sub_vector(buffer[i]);
+                });
+            }
         }
 #pragma unroll
         for (int i = 0; i < taps; i++) {
-            out[i] = ((vec_type_out *)&buffer[i])[offset];
+            out[i] = out_buffer[i][offset];
         }
         offset = (offset + 1) % factor;
     }
 };
-
+#include<iostream>
 template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct ConvertOne2N {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
@@ -405,6 +459,7 @@ struct ConvertOne2N {
 
     Inner inner;
     vec_type_in buffer;
+    vec_type_out out_buffer[factor];
     int offset;
 
     ConvertOne2N(Inner inner) : inner(inner), offset(0) {}
@@ -412,9 +467,12 @@ struct ConvertOne2N {
     void run(vec_type_out *out) {
         if (offset == 0) {
             inner.run(&buffer);
-        }
 
-        *out = ((vec_type_out *)&buffer)[offset];
+            for_<factor>([&] (auto i) {
+                out_buffer[i.value] = ExtractSubVector<vec_type_in, vec_type_out, i.value>::extract_sub_vector(buffer);
+            });
+        }
+        *out = out_buffer[offset];
         offset = (offset + 1) % factor;
     }
 };

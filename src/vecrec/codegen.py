@@ -540,11 +540,13 @@ def generate_and_run_benchmark(
     
     if header_path is None:
         fd, header_path= tempfile.mkstemp(suffix='.h', prefix='header_', dir='/tmp')
+        print(header_path)
         os.close(fd)  # Close the file descriptor, we'll write to it later
 
     # Generate unique random file names if not provided
     if benchmark_path is None:
         fd, benchmark_path = tempfile.mkstemp(suffix='.cpp', prefix='benchmark_', dir='/tmp')
+        print(benchmark_path)
         os.close(fd)  # Close the file descriptor, we'll write to it later
     
     if executable_path is None:
