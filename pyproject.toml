@@ -20,3 +20,12 @@ vecrec = "vecrec:main"
 [build-system]
 requires = ["uv_build>=0.8.19,<0.9.0"]
 build-backend = "uv_build"
+
+[tool.mypy]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+strict_equality = true
+disallow_any_unimported = true
+disallow_incomplete_defs = true
