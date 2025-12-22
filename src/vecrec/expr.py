@@ -1,5 +1,6 @@
 from __future__ import annotations
 from abc import abstractmethod
+import copy
 from dataclasses import dataclass
 from enum import Enum
 from functools import reduce
@@ -31,6 +32,8 @@ __all__ = [
     "Recurse",
     "Var",
     "Type",
+    "ConvertLanes",
+    "KConvertLanes",
 ]
 
 class Type(Enum):
@@ -155,6 +158,8 @@ class Type(Enum):
 
 
 class RecLang:
+    lanes: Optional[int] = None
+
     def __eq__(self, other):
         if type(self) is not type(other):
             return False
@@ -163,18 +168,47 @@ class RecLang:
 
     def __hash__(self):
         return hash((type(self), tuple(sorted(self.__dict__.items()))))
+    
+    def children(self) -> List[KernelExpr | SignalExpr]:
+        """Return the children of the expression."""
+        return [
+            v
+            for v in self.__dict__.values()
+            if isinstance(v, (KernelExpr, SignalExpr))
+        ]
+    
+    def is_leaf(self) -> bool:
+        """Return whether the expression is a leaf node."""
+        for v in self.__dict__.values():
+            if isinstance(v, (KernelExpr, SignalExpr)):
+                return False
+        return True
+
+    def with_lanes(self, lanes: int) -> RecLang:
+        """Return a copy of the expression with the given number of lanes."""
+        assert self.lanes is None, "Lanes already set"
+        new_expr = copy.copy(self)
+        new_expr.lanes = lanes
+        return new_expr
 
 class SignalExpr(RecLang):
     ty: Type
+
+    def with_lanes(self, lanes: int) -> SignalExpr:
+        """Return a copy of the expression with the given number of lanes."""
+        return super().with_lanes(lanes) # type: ignore
 
 
 class KernelExpr(RecLang):
     ty: Type
 
     @abstractmethod
-    def time_delay(self, max_delay) -> Tuple[int, KernelExpr]:
+    def time_delay(self, max_delay: int) -> Tuple[int, KernelExpr]:
         """Return the time delay of the kernel and the kernel without the delay."""
         ...
+    
+    def with_lanes(self, lanes: int) -> KernelExpr:
+        return super().with_lanes(lanes) # type: ignore
 
 
 class TIKernel(KernelExpr):
@@ -207,7 +241,7 @@ class TIKernel(KernelExpr):
     def promote(self) -> TVKernel:
         return TVKernel([Num(x, self.ty) for x in self.data], self.ty)
 
-    def time_delay(self, max_delay) -> Tuple[int, KernelExpr]:
+    def time_delay(self, max_delay: int) -> Tuple[int, KernelExpr]:
         for i, v in enumerate(self.data[:max_delay]):
             if not self.ty.is_zero(v):
                 return i, TIKernel(self.data[i:], self.ty)
@@ -317,7 +351,7 @@ class TVKernel(KernelExpr):
         self.data = data
         self.ty = ty
 
-    def time_delay(self, max_delay) -> Tuple[int, KernelExpr]:
+    def time_delay(self, max_delay: int) -> Tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
         for i, v in enumerate(self.data[:max_delay]):
             match v:
@@ -415,7 +449,7 @@ class KernelExprBinOp(KernelExpr):
         self.b = b
         self.ty = a.ty
 
-    def time_delay(self, max_delay) -> tuple[int, KernelExpr]:
+    def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
         a_delay, _ = self.a.time_delay(max_delay)
         b_delay, _ = self.b.time_delay(max_delay)
@@ -423,7 +457,7 @@ class KernelExprBinOp(KernelExpr):
         return delay, KConvolve(TIKernel.z(self.ty, -delay), self)
 
     @classmethod
-    def of(cls, exprs: List[KernelExpr]):
+    def of(cls, exprs: List[KernelExpr]) -> KernelExpr:
         """Combine a list of KernelExpr into a single KernelExpr using the binary operation."""
         return reduce(lambda a, b: cls(a, b), exprs)
 
@@ -437,7 +471,7 @@ class KSub(KernelExprBinOp):
 
 
 class KConvolve(KernelExprBinOp):
-    def time_delay(self, max_delay) -> tuple[int, KernelExpr]:
+    def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
         a_delay, _ = self.a.time_delay(max_delay)
         b_delay, _ = self.b.time_delay(max_delay)
@@ -455,7 +489,7 @@ class KNeg(KernelExpr):
         self.a = a
         self.ty = a.ty
 
-    def time_delay(self, max_delay) -> tuple[int, KernelExpr]:
+    def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
         delay, e = self.a.time_delay(max_delay)
         return delay, KNeg(e)
@@ -486,7 +520,7 @@ class SignalExprBinOp(SignalExpr):
         self.ty = a.ty
 
     @classmethod
-    def of(cls, exprs: List[SignalExpr]):
+    def of(cls, exprs: List[SignalExpr]) -> SignalExpr:
         return reduce(lambda a, b: cls(a, b), exprs)
 
 
@@ -559,3 +593,30 @@ class Var(SignalExpr):
         super().__init__()
         self.name = name
         self.ty = ty
+
+# Convert Lanes
+class ConvertLanes(SignalExpr):
+    a: SignalExpr
+    __match_args__ = ("a",)
+
+    def __init__(self, a: SignalExpr, lanes: int) -> None:
+        super().__init__()
+        self.a = a
+        self.ty = a.ty
+        self.lanes = lanes
+
+class KConvertLanes(KernelExpr):
+    a: KernelExpr
+    __match_args__ = ("a",)
+
+    def __init__(self, a: KernelExpr, lanes: int) -> None:
+        super().__init__()
+        self.a = a
+        self.ty = a.ty
+        self.lanes = lanes
+    
+    def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
+        """Return the time delay of the kernel."""
+        delay, e = self.a.time_delay(max_delay)
+        assert self.lanes is not None
+        return delay, KConvertLanes(e, self.lanes)

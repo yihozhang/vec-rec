@@ -1,6 +1,7 @@
 from __future__ import annotations
 from functools import partial, reduce
 import itertools
+import copy
 import numpy as np
 from typing import Callable, List, Optional, Dict, Protocol, Sequence, Tuple, overload
 from abc import abstractmethod
@@ -9,6 +10,19 @@ from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.factorize import factorize_polynomial
 
 class Transform:
+    @overload
+    def apply_generic(self, expr: KernelExpr) -> Sequence[KernelExpr]: ...
+    @overload
+    def apply_generic(self, expr: SignalExpr) -> Sequence[SignalExpr]: ...
+
+    def apply_generic(self, expr):
+        if isinstance(expr, KernelExpr):
+            return self.apply_kernel(expr)
+        elif isinstance(expr, SignalExpr):
+            return self.apply_signal(expr)
+        else:
+            raise TypeError(f"Unknown expression type: {type(expr)}")
+
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         return []
 
@@ -49,7 +63,7 @@ class ConstantFoldConvolve(Transform):
 
 def ArithTransform(cls):
     cls.apply_kernel_impl = cls.apply_kernel
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]: # type: ignore
         if expr.ty == Type.Arith:
             return self.apply_kernel_impl(expr)
         else:
@@ -274,7 +288,7 @@ class Preorder(Transform):
         self.transform = transform
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        def cartesian(constructor, lists) -> Sequence[KernelExpr]:
+        def cartesian(constructor, lists) -> Sequence[KernelExpr]: # type: ignore
             return [constructor(*args) for args in itertools.product(*lists)]
 
         results: List[KernelExpr] = []
@@ -282,28 +296,36 @@ class Preorder(Transform):
             match expr:
                 case TIKernel(_) | TVKernel(_):
                     results.append(expr)
-                case KAdd(a, b):
-                    results += cartesian(
-                        KAdd, [self.apply_kernel(a), self.apply_kernel(b)]
-                    )
-                case KSub(a, b):
-                    results += cartesian(
-                        KSub, [self.apply_kernel(a), self.apply_kernel(b)]
-                    )
-                case KNeg(a):
-                    results += cartesian(KNeg, [self.apply_kernel(a)])
-                case KConvolve(a, b):
-                    results += cartesian(
-                        KConvolve, [self.apply_kernel(a), self.apply_kernel(b)]
-                    )
                 case _:
-                    raise NotImplementedError(
-                        f"Preorder traversal not implemented for {expr}"
+                    results += cartesian(
+                        type(expr), [self.apply_generic(child) for child in expr.children()]
                     )
+                # case KAdd(a, b):
+                #     results += cartesian(
+                #         KAdd, [self.apply_kernel(a), self.apply_kernel(b)]
+                #     )
+                # case KSub(a, b):
+                #     results += cartesian(
+                #         KSub, [self.apply_kernel(a), self.apply_kernel(b)]
+                #     )
+                # case KNeg(a):
+                #     results += cartesian(KNeg, [self.apply_kernel(a)])
+                # case KConvolve(a, b):
+                #     results += cartesian(
+                #         KConvolve, [self.apply_kernel(a), self.apply_kernel(b)]
+                #     )
+                # case KConvertLanes(a):
+                #     results += cartesian(
+                #         KConvertLanes, [self.apply_kernel(a)]
+                #     )
+                # case _:
+                #     raise NotImplementedError(
+                #         f"Preorder traversal not implemented for {expr}"
+                #     )
         return results
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        def cartesian(constructor, lists) -> Sequence[SignalExpr]:
+        def cartesian(constructor, lists) -> Sequence[SignalExpr]: # type: ignore
             return [constructor(*args) for args in itertools.product(*lists)]
 
         results: List[SignalExpr] = []
@@ -311,34 +333,152 @@ class Preorder(Transform):
             match expr:
                 case Var(_) | Num(_):
                     results.append(expr)
-                case SAdd(a, b):
-                    results += cartesian(
-                        SAdd, [self.apply_signal(a), self.apply_signal(b)]
-                    )
-                case SSub(a, b):
-                    results += cartesian(
-                        SSub, [self.apply_signal(a), self.apply_signal(b)]
-                    )
-                case PointwiseMul(a, b):
-                    results += cartesian(
-                        PointwiseMul, [self.apply_signal(a), self.apply_signal(b)]
-                    )
-                case PointwiseDiv(a, b):
-                    results += cartesian(
-                        PointwiseDiv, [self.apply_signal(a), self.apply_signal(b)]
-                    )
-                case SNeg(a):
-                    results += cartesian(SNeg, [self.apply_signal(a)])
-                case Convolve(a, b):
-                    results += cartesian(
-                        Convolve, [self.apply_kernel(a), self.apply_signal(b)]
-                    )
-                case Recurse(a, g):
-                    results += cartesian(
-                        Recurse, [self.apply_kernel(a), self.apply_signal(g)]
-                    )
                 case _:
-                    raise NotImplementedError(
-                        f"Preorder traversal not implemented for {expr}"
+                    results += cartesian(
+                        type(expr), [self.apply_generic(child) for child in expr.children()]
                     )
+                    
+                # case SAdd(a, b):
+                #     results += cartesian(
+                #         SAdd, [self.apply_signal(a), self.apply_signal(b)]
+                #     )
+                # case SSub(a, b):
+                #     results += cartesian(
+                #         SSub, [self.apply_signal(a), self.apply_signal(b)]
+                #     )
+                # case PointwiseMul(a, b):
+                #     results += cartesian(
+                #         PointwiseMul, [self.apply_signal(a), self.apply_signal(b)]
+                #     )
+                # case PointwiseDiv(a, b):
+                #     results += cartesian(
+                #         PointwiseDiv, [self.apply_signal(a), self.apply_signal(b)]
+                #     )
+                # case SNeg(a):
+                #     results += cartesian(SNeg, [self.apply_signal(a)])
+                # case Convolve(a, b):
+                #     results += cartesian(
+                #         Convolve, [self.apply_kernel(a), self.apply_signal(b)]
+                #     )
+                # case Recurse(a, g):
+                #     results += cartesian(
+                #         Recurse, [self.apply_kernel(a), self.apply_signal(g)]
+                #     )
+                # case ConvertLanes(a):
+                #     results += cartesian(
+                #         ConvertLanes, [self.apply_signal(a)]
+                #     )
+                # case _:
+                #     raise NotImplementedError(
+                #         f"Preorder traversal not implemented for {expr}"
+                #     )
+        return results
+
+class AnnotateLanes(Transform):
+    max_lanes: int
+    def __init__(self, max_lanes: int) -> None:
+        self.max_lanes = max_lanes
+
+
+    @overload
+    def convert_lanes(self, e: SignalExpr, lanes: int) -> SignalExpr: ...
+    @overload
+    def convert_lanes(self, e: KernelExpr, lanes: int) -> KernelExpr: ...
+
+    def convert_lanes(self, e, lanes):
+        if e.lanes != lanes:
+            return ConvertLanes(e, lanes) if isinstance(e, SignalExpr) else KConvertLanes(e, lanes)
+        else:
+            return e
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Recurse(a, g):
+                lanes, _ = a.time_delay(self.max_lanes)
+            case _:
+                lanes = self.max_lanes
+        
+        if expr.is_leaf():
+            return [expr.with_lanes(lanes)]
+        else:
+            args = [self.convert_lanes(self.apply_generic(child)[0], lanes) for child in expr.children()]
+            new_expr = type(expr)(*args)
+            new_expr.lanes = lanes
+
+            return [new_expr]
+    
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        match expr:
+            case TVKernel(data):
+                def convert_lanes(e):
+                    if e.lanes != self.max_lanes:
+                        return ConvertLanes(e, self.max_lanes)
+                    else:
+                        return e
+                new_data = [convert_lanes(self.apply_signal(sig)[0]) for sig in data]
+                new_expr: KernelExpr = TVKernel(new_data, expr.ty)
+                new_expr.lanes = self.max_lanes
+                return [new_expr]
+            case _:
+                args = [self.apply_generic(child)[0] for child in expr.children()]
+                for arg in args:
+                    assert arg.lanes == self.max_lanes
+                new_expr = type(expr)(*args)
+                new_expr.lanes = self.max_lanes
+                return [new_expr]
+
+class PushDownConvertLanes(Transform):
+    # Try to make the expression compute that many lanes at a time.
+    @overload
+    def narrow_lanes(self, expr: KernelExpr, lanes: int) -> KernelExpr: ...
+    @overload
+    def narrow_lanes(self, expr: SignalExpr, lanes: int) -> SignalExpr: ...
+
+    def narrow_lanes(self, expr, lanes):
+        assert expr.lanes is not None
+        assert lanes <= expr.lanes
+
+        if isinstance(expr, KernelExpr):
+            if isinstance(expr, TIKernel):
+                new_kernel_expr: KernelExpr = TIKernel(expr.data, expr.ty)
+                new_kernel_expr.lanes = lanes
+                return new_kernel_expr
+            elif isinstance(expr, TVKernel):
+                # There are two ways we can do it:
+                # 1. Narrow down the lanes of each signal
+                # 2. Use a ConvertLanes instead.
+                raise NotImplementedError("Narrowing lanes of TVKernel not implemented")
+            else:
+                raise NotImplementedError(f"Narrowing lanes of {type(expr)} not implemented")
+        else:
+            assert isinstance(expr, SignalExpr)
+            if expr.is_leaf():
+                new_signal_expr = copy.copy(expr)
+            else:
+                args = [self.narrow_lanes(child, lanes) for child in expr.children()]
+                new_signal_expr = type(expr)(*args)
+
+            new_signal_expr.lanes = lanes
+
+            return new_signal_expr
+    
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        if not isinstance(expr, KConvertLanes):
+            return [expr]
+
+        assert expr.lanes is not None and expr.a.lanes is not None
+        if expr.lanes < expr.a.lanes:
+            return [self.narrow_lanes(expr.a, expr.lanes)]
+        
+        return [expr]
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        results: List[SignalExpr] = [expr]
+        if not isinstance(expr, ConvertLanes):
+            return results
+        
+        assert expr.lanes is not None and expr.a.lanes is not None
+        if expr.lanes < expr.a.lanes:
+            results.append(self.narrow_lanes(expr.a, expr.lanes))
+
         return results
