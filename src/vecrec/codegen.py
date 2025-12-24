@@ -1,31 +1,11 @@
-from enum import Enum
 from typing import List, Optional, TYPE_CHECKING, Sequence
 from vecrec.expr import *
+from vecrec.util import ElementType
 import numpy as np
 import json
 from importlib.resources import files
 
 TEMPLATE = files("vecrec.templates") / "common.h"
-
-
-class ElementType(Enum):
-    Float = 1
-    I32 = 2
-
-    def bit_width(self) -> int:
-        match self:
-            case ElementType.Float:
-                return 32
-            case ElementType.I32:
-                return 32
-
-    def to_str(self) -> str:
-        match self:
-            case ElementType.Float:
-                return "float"
-            case ElementType.I32:
-                return "int32_t"
-
 
 class Code:
     text: str
@@ -41,13 +21,10 @@ class Code:
 
 class CodeGen:
     # Hardware-dependent maximum
-    max_bits: int
     counter: int
     prologue: list[str]
 
-    def __init__(self, max_bits: int):
-        assert max_bits in [64, 128, 256, 512]
-        self.max_bits = max_bits
+    def __init__(self):
         self.counter = 0
         self.prologue = []
 
@@ -55,18 +32,11 @@ class CodeGen:
         self.counter += 1
         return f"v{self.counter}"
 
-    def max_lanes(self, element_type: ElementType) -> int:
-        """Get the maximal number of lanes possible given the type"""
-        return self.max_bits // element_type.bit_width()
-
-    def get_vec_type(self, element_type: ElementType, lanes: int = -1) -> str:
+    def get_vec_type(self, element_type: ElementType, lanes: int) -> str:
         """
         Get the C++ type of the given element type and lanes.
         Use maximum number of lanes if not provided.
         """
-        if lanes == -1:
-            lanes = self.max_bits // element_type.bit_width()
-
         match element_type:
             case ElementType.Float:
                 return f"float_vec{lanes}"
@@ -98,12 +68,13 @@ class CodeGen:
         )
 
     def generate_signal(self, expr: SignalExpr) -> Code:
+        assert expr.lanes is not None
         match expr:
             case Num(value):
                 return Code(
-                    f"Signal1DConstant<{self.get_vec_type(ElementType.Float)}>({value})",
+                    f"Signal1DConstant<{self.get_vec_type(ElementType.Float, expr.lanes)}>({value})",
                     ElementType.Float,
-                    self.max_lanes(ElementType.Float),
+                    expr.lanes,
                 )
             case SignalExprBinOp(a, b):
                 code_a = self.generate_signal(a)
@@ -112,21 +83,15 @@ class CodeGen:
                 assert code_a.element_type == code_b.element_type
                 element_type = code_a.element_type
 
-                code_a = self.enforce_lanes(code_a)
-                code_b = self.enforce_lanes(code_b)
-
                 constructor = type(expr).__name__
                 program = f"{constructor}({code_a.text}, {code_b.text})"
-                return Code(program, element_type, self.max_lanes(element_type))
+                return Code(program, element_type, expr.lanes)
 
             case Var(name):
-                # TODO: It is not optimal to assume input signal can always be produced
-                # in groups of `max_lanes`, since it might be immediately followed by a
-                # Recurse that requires a smaller lanes
                 return Code(
-                    f"Signal1D<{self.get_vec_type(ElementType.Float)}>({name})",
+                    f"Signal1D<{self.get_vec_type(ElementType.Float, expr.lanes)}>({name})",
                     ElementType.Float,
-                    self.max_lanes(ElementType.Float),
+                    expr.lanes,
                 )
             case Convolve(a, f):
                 code_a = self.generate_kernel(a)
@@ -135,35 +100,33 @@ class CodeGen:
                 assert code_a.element_type == code_f.element_type
                 element_type = code_a.element_type
 
-                code_a = self.enforce_lanes(code_a)
-                code_f = self.enforce_lanes(code_f)
-                vec_type = self.get_vec_type(element_type)
+                vec_type = self.get_vec_type(element_type, expr.lanes)
                 program = f"make_s_convolve<{vec_type}>({code_a.text}, {code_f.text})"
-                return Code(program, element_type, code_a.lanes)
+                return Code(program, element_type, expr.lanes)
             case Recurse(a, g):
-                time_delay, a = a.time_delay(self.max_lanes(ElementType.Float))
+                time_delay, a = a.time_delay(expr.lanes)
+                assert time_delay == a.lanes
                 code_a = self.generate_kernel(a)
                 code_g = self.generate_signal(g)
 
                 assert code_a.element_type == code_g.element_type
                 element_type = code_a.element_type
 
-                # Lanes of an IIR depends on its time delay (and hardware limit)
-                lanes = time_delay
-
-                code_a = self.enforce_lanes(code_a, lanes)
-                code_g = self.enforce_lanes(code_g, lanes)
-                vec_type = self.get_vec_type(element_type, lanes)
+                vec_type = self.get_vec_type(element_type, expr.lanes)
 
                 program = f"make_s_recurse<{vec_type}>({code_a.text}, {code_g.text})"
-                return Code(program, element_type, lanes)
-
+                return Code(program, element_type, a.lanes)
+            case ConvertLanes(a):
+                code_a = self.generate_signal(a)
+                code_a = self.enforce_lanes(code_a, expr.lanes)
+                return code_a
         assert False
 
     def generate_kernel(self, expr: KernelExpr) -> Code:
+        assert expr.lanes is not None
         match expr:
             case TIKernel(_):
-                vec_type = self.get_vec_type(ElementType.Float)
+                vec_type = self.get_vec_type(ElementType.Float, expr.lanes)
 
                 taps, indices, values = expr.to_sparse_repr()
                 index_args = ", ".join(map(str, indices))
@@ -182,15 +145,14 @@ class CodeGen:
                 return Code(
                     f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
                     ElementType.Float,
-                    self.max_lanes(ElementType.Float),
+                    expr.lanes,
                     taps=taps,
                 )
             case TVKernel(_):
                 taps, indices, signals = expr.to_sparse_repr()
                 signal_codes = [self.generate_signal(signal) for signal in signals]
-                signal_codes = [self.enforce_lanes(code) for code in signal_codes]
                 element_type = signal_codes[0].element_type
-                vec_type = self.get_vec_type(element_type)
+                vec_type = self.get_vec_type(element_type, expr.lanes)
                 taps = len(signal_codes)
 
                 arguments = ", ".join(c.text for c in signal_codes)
@@ -204,23 +166,24 @@ class CodeGen:
                 return Code(
                     f"TimeVaryingKernel<{taps}, {vec_type}, {index_var}>({arguments})",
                     element_type,
-                    self.max_lanes(element_type),
+                    expr.lanes,
                     taps=taps,
                 )
+            case KConvertLanes(a):
+                code_a = self.generate_kernel(a)
+                code_a = self.enforce_lanes(code_a, expr.lanes)
+                return code_a
             case KAdd(_, _) | KSub(_, _) | KNeg(_) | KConvolve(_, _):
                 raise NotImplementedError("These apps should have been eliminated by constant folding")
             case _:
                 assert False
 
 
-    def enforce_lanes(self, code: Code, lanes: int = -1) -> Code:
+    def enforce_lanes(self, code: Code, lanes: int) -> Code:
         """
         Return the code adapted to produce a vector of maximum lanes possible.
         This is a no-op if the code is already producing maximum lanes
         """
-        if lanes == -1:
-            lanes = self.max_lanes(code.element_type)
-
         if code.lanes == lanes:
             return code
 
@@ -261,22 +224,25 @@ class CodeGen:
             case Var(name):
                 # TODO: variables need have type information
                 vars.add(name)
-            case SignalExprBinOp(a, b):
-                self.collect_variables(a, vars)
-                self.collect_variables(b, vars)
-            case Convolve(a, f):
-                self.collect_variables(a, vars)
-                self.collect_variables(f, vars)
-            case Recurse(a, g):
-                self.collect_variables(a, vars)
-                self.collect_variables(g, vars)
-            case KAdd(a, b) | KSub(a, b) | KConvolve(a, b):
-                self.collect_variables(a, vars)
-                self.collect_variables(b, vars)
-            case KNeg(a):
-                self.collect_variables(a, vars)
-            case TIKernel() | TVKernel() | Num():
-                pass
+            case _:
+                for c in expr.children():
+                    self.collect_variables(c, vars)
+            # case SignalExprBinOp(a, b):
+            #     self.collect_variables(a, vars)
+            #     self.collect_variables(b, vars)
+            # case Convolve(a, f):
+            #     self.collect_variables(a, vars)
+            #     self.collect_variables(f, vars)
+            # case Recurse(a, g):
+            #     self.collect_variables(a, vars)
+            #     self.collect_variables(g, vars)
+            # case KAdd(a, b) | KSub(a, b) | KConvolve(a, b):
+            #     self.collect_variables(a, vars)
+            #     self.collect_variables(b, vars)
+            # case KNeg(a):
+            #     self.collect_variables(a, vars)
+            # case TIKernel() | TVKernel() | Num():
+            #     pass
 
         return vars
 
@@ -413,9 +379,14 @@ def _generate_benchmark_code(
         benchmark_text += f"            int pos = 0;\n"
         benchmark_text += f"            while (pos < N) {{\n"
         benchmark_text += f"                {name}_vector_type out;\n"
-        benchmark_text += f"                kernel.run(&out);\n"
-        benchmark_text += f"                memcpy(&output_{name}[pos], &out, sizeof(out));\n"
-        benchmark_text += f"                pos += vec_lanes_of(out);\n"
+        # TODO: 16 only for avx-512 with float32.
+        # This piece of code should be generalized.
+        benchmark_text += f"#pragma unroll\n"
+        benchmark_text += f"                for (int i = 0; i < 16 / vec_lanes_of({name}_vector_type{{}}); i++) {{\n"
+        benchmark_text += f"                    kernel.run(&out);\n"
+        benchmark_text += f"                    memcpy(&output_{name}[pos], &out, sizeof(out));\n"
+        benchmark_text += f"                    pos += vec_lanes_of(out);\n"
+        benchmark_text += f"                }}\n"
         benchmark_text += f"            }}\n"
         benchmark_text += f"        }}\n"
         benchmark_text += f"        auto end = std::chrono::high_resolution_clock::now();\n"
@@ -553,57 +524,49 @@ def generate_and_run_benchmark(
         fd, executable_path = tempfile.mkstemp(prefix='benchmark_', dir='/tmp')
         os.close(fd)  # Close the file descriptor
     
-    try:
-        # Generate kernel code
-        codes = [codegen.generate(expr, name) for expr, name in zip(exprs, kernel_names)]
-        instantiate_kernels(header_path, codes)
-        
-        # Generate benchmark program
-        generate_benchmark(
-            codegen=codegen,
-            exprs=exprs,
-            kernel_names=kernel_names,
-            kernel_header_path=header_path,
-            output_path=benchmark_path,
-            include_correctness_check=include_correctness_check,
-            correctness_tolerance=correctness_tolerance,
-            input_size=input_size,
-            warmup_iterations=warmup_iterations,
-            benchmark_iterations=benchmark_iterations,
-        )
-        
-        # Compile benchmark
-        compile_cmd = [compiler] + compiler_flags + [benchmark_path, "-o", executable_path]
-        compile_result = subprocess.run(
-            compile_cmd,
-            capture_output=True,
-            text=True,
-        )
-        
-        if compile_result.returncode != 0:
-            return {
-                'output': compile_result.stdout,
-                'error': f"Compilation failed: {compile_result.stderr}",
-                'return_code': compile_result.returncode,
-            }
-        
-        # Run benchmark
-        run_result = subprocess.run(
-            [os.path.abspath(executable_path)],
-            capture_output=True,
-            text=True,
-        )
-        
-        json_output = json.loads(run_result.stdout)
+    # Generate kernel code
+    codes = [codegen.generate(expr, name) for expr, name in zip(exprs, kernel_names)]
+    instantiate_kernels(header_path, codes)
+    
+    # Generate benchmark program
+    generate_benchmark(
+        codegen=codegen,
+        exprs=exprs,
+        kernel_names=kernel_names,
+        kernel_header_path=header_path,
+        output_path=benchmark_path,
+        include_correctness_check=include_correctness_check,
+        correctness_tolerance=correctness_tolerance,
+        input_size=input_size,
+        warmup_iterations=warmup_iterations,
+        benchmark_iterations=benchmark_iterations,
+    )
+    
+    # Compile benchmark
+    compile_cmd = [compiler] + compiler_flags + [benchmark_path, "-o", executable_path]
+    compile_result = subprocess.run(
+        compile_cmd,
+        capture_output=True,
+        text=True,
+    )
+    
+    if compile_result.returncode != 0:
         return {
-            'output': json_output,
-            'error': run_result.stderr if run_result.returncode != 0 else "",
-            'return_code': run_result.returncode,
+            'output': compile_result.stdout,
+            'error': f"Compilation failed: {compile_result.stderr}",
+            'return_code': compile_result.returncode,
         }
-        
-    except Exception as e:
-        return {
-            'output': "",
-            'error': str(e),
-            'return_code': -1,
-        }
+    
+    # Run benchmark
+    run_result = subprocess.run(
+        [os.path.abspath(executable_path)],
+        capture_output=True,
+        text=True,
+    )
+    
+    json_output = json.loads(run_result.stdout)
+    return {
+        'output': json_output,
+        'error': run_result.stderr if run_result.returncode != 0 else "",
+        'return_code': run_result.returncode,
+    }

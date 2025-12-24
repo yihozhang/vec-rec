@@ -15,16 +15,27 @@ def main():
     
     constant_fold = Preorder(Try(ConstantFold))
     schedule = Seq(
-        Dilate(),
-        constant_fold,
         Any(
-            Noop(), 
-            Seq(Delay(), constant_fold),
-            Seq(*[Delay(), constant_fold] * 3), 
-            Seq(*[Delay(), constant_fold] * 5)),
+            Noop(),
+            Seq(
+                Dilate(),
+                constant_fold,
+                Any(
+                    Noop(), 
+                    Seq(Delay(), constant_fold),
+                    Seq(*[Delay(), constant_fold] * 3), 
+                    Seq(*[Delay(), constant_fold] * 9),
+                    Dilate(),
+                )
+            )
+        ),
+        
+        AnnotateLanes(512),
+        PushDownConvertLanes(),
+        # UnrollToMaxLanes(512),
     )
     results = schedule.apply_signal(expr)
-    codegen = CodeGen(256)
-    
-    result = generate_and_run_benchmark(codegen, [expr, *results], ['original', 'd', 'dd', 'd2d', 'd3d'], True)
+    codegen = CodeGen()
+    print(len(results))
+    result = generate_and_run_benchmark(codegen, results, [f"k{i+1}" for i in range(len(results))], True)
     print(result)

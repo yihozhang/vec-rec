@@ -7,17 +7,24 @@ from vecrec.codegen import CodeGen, generate_and_run_benchmark, generate_benchma
 
 
 def main():
+    lanes = 512
     program = Recurse(TIKernel([0, 1], Type.Arith), Var("g", Type.Arith))
-    transforms = Any(
-        Seq(
-            Dilate(),
-            Dilate(),
-            Dilate(),
+    transforms = Seq(
+        Any(
+            Noop(),
+            Seq(
+                Dilate(),
+                Dilate(),
+                Dilate(),
+                Any(Noop(), Dilate()),
+            ),
         ),
+        AnnotateLanes(512),
+        PushDownConvertLanes(),
     )
     results = transforms.apply_signal(program)
-    codegen = CodeGen(256)
-    benchmark_result = generate_and_run_benchmark(codegen, [program, *results], ["original", "prefix_sum"], True)
+    codegen = CodeGen()
+    benchmark_result = generate_and_run_benchmark(codegen, results, ["k" + str(i) for i in range(len(results))], True)
     print(benchmark_result)
 
 if __name__ == "__main__":

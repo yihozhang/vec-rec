@@ -184,7 +184,7 @@ class RecLang:
                 return False
         return True
 
-    def with_lanes(self, lanes: int) -> RecLang:
+    def with_lanes(self, lanes: Optional[int]) -> RecLang:
         """Return a copy of the expression with the given number of lanes."""
         assert self.lanes is None, "Lanes already set"
         new_expr = copy.copy(self)
@@ -194,7 +194,7 @@ class RecLang:
 class SignalExpr(RecLang):
     ty: Type
 
-    def with_lanes(self, lanes: int) -> SignalExpr:
+    def with_lanes(self, lanes: Optional[int]) -> SignalExpr:
         """Return a copy of the expression with the given number of lanes."""
         return super().with_lanes(lanes) # type: ignore
 
@@ -207,7 +207,7 @@ class KernelExpr(RecLang):
         """Return the time delay of the kernel and the kernel without the delay."""
         ...
     
-    def with_lanes(self, lanes: int) -> KernelExpr:
+    def with_lanes(self, lanes: Optional[int]) -> KernelExpr:
         return super().with_lanes(lanes) # type: ignore
 
 
@@ -239,14 +239,16 @@ class TIKernel(KernelExpr):
         self.ty = ty
 
     def promote(self) -> TVKernel:
-        return TVKernel([Num(x, self.ty) for x in self.data], self.ty)
+        promoted = TVKernel([Num(x, self.ty) for x in self.data], self.ty)
+        promoted.lanes = self.lanes
+        return promoted
 
     def time_delay(self, max_delay: int) -> Tuple[int, KernelExpr]:
         for i, v in enumerate(self.data[:max_delay]):
             if not self.ty.is_zero(v):
-                return i, TIKernel(self.data[i:], self.ty)
+                return i, TIKernel(self.data[i:], self.ty).with_lanes(self.lanes)
         if max_delay < len(self.data):
-            return max_delay, TIKernel(self.data[max_delay:], self.ty)
+            return max_delay, TIKernel(self.data[max_delay:], self.ty).with_lanes(self.lanes)
         assert False, "max_delay exceeds kernel length"
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[float]]:
@@ -269,7 +271,9 @@ class TIKernel(KernelExpr):
         return hash(tuple(self.data))
 
     def copy(self) -> TIKernel:
-        return TIKernel(self.data.copy(), self.ty)
+        copied = TIKernel(self.data.copy(), self.ty)
+        copied.lanes = self.lanes
+        return copied
 
     def __len__(self) -> int:
         return len(self.data)
@@ -358,9 +362,9 @@ class TVKernel(KernelExpr):
                 case Num(value) if self.ty.is_zero(value):
                     continue
                 case _:
-                    return i, TVKernel(self.data[i:], self.ty)
+                    return i, TVKernel(self.data[i:], self.ty).with_lanes(self.lanes)
         if max_delay < len(self.data):
-            return max_delay, TVKernel(self.data[max_delay:], self.ty)
+            return max_delay, TVKernel(self.data[max_delay:], self.ty).with_lanes(self.lanes)
         assert False, "max_delay exceeds kernel length"
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[SignalExpr]]:
@@ -454,7 +458,7 @@ class KernelExprBinOp(KernelExpr):
         a_delay, _ = self.a.time_delay(max_delay)
         b_delay, _ = self.b.time_delay(max_delay)
         delay = min(a_delay, b_delay)
-        return delay, KConvolve(TIKernel.z(self.ty, -delay), self)
+        return delay, KConvolve(TIKernel.z(self.ty, -delay), self).with_lanes(self.lanes)
 
     @classmethod
     def of(cls, exprs: List[KernelExpr]) -> KernelExpr:
@@ -476,7 +480,7 @@ class KConvolve(KernelExprBinOp):
         a_delay, _ = self.a.time_delay(max_delay)
         b_delay, _ = self.b.time_delay(max_delay)
         delay = min(a_delay + b_delay, max_delay)
-        return delay, KConvolve(TIKernel.z(self.ty, -delay), self)
+        return delay, KConvolve(TIKernel.z(self.ty, -delay), self).with_lanes(self.lanes)
 
 
 class KNeg(KernelExpr):
@@ -492,7 +496,7 @@ class KNeg(KernelExpr):
     def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
         delay, e = self.a.time_delay(max_delay)
-        return delay, KNeg(e)
+        return delay, KNeg(e).with_lanes(self.lanes)
 
 # SignalExpr
 
@@ -595,28 +599,30 @@ class Var(SignalExpr):
         self.ty = ty
 
 # Convert Lanes
+@dataclass
 class ConvertLanes(SignalExpr):
     a: SignalExpr
     __match_args__ = ("a",)
 
-    def __init__(self, a: SignalExpr, lanes: int) -> None:
+    def __init__(self, a: SignalExpr) -> None:
         super().__init__()
         self.a = a
         self.ty = a.ty
-        self.lanes = lanes
+        self.lanes = None
 
+@dataclass
 class KConvertLanes(KernelExpr):
     a: KernelExpr
     __match_args__ = ("a",)
 
-    def __init__(self, a: KernelExpr, lanes: int) -> None:
+    def __init__(self, a: KernelExpr) -> None:
         super().__init__()
         self.a = a
         self.ty = a.ty
-        self.lanes = lanes
+        self.lanes = None
     
     def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
         delay, e = self.a.time_delay(max_delay)
         assert self.lanes is not None
-        return delay, KConvertLanes(e, self.lanes)
+        return delay, KConvertLanes(e).with_lanes(self.lanes)

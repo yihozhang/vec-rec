@@ -8,6 +8,7 @@ from abc import abstractmethod
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.factorize import factorize_polynomial
+from vecrec.util import ElementType
 
 class Transform:
     @overload
@@ -288,8 +289,8 @@ class Preorder(Transform):
         self.transform = transform
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        def cartesian(constructor, lists) -> Sequence[KernelExpr]: # type: ignore
-            return [constructor(*args) for args in itertools.product(*lists)]
+        def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]: # type: ignore
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[KernelExpr] = []
         for expr in self.transform.apply_kernel(expr):
@@ -298,7 +299,7 @@ class Preorder(Transform):
                     results.append(expr)
                 case _:
                     results += cartesian(
-                        type(expr), [self.apply_generic(child) for child in expr.children()]
+                        type(expr), [self.apply_generic(child) for child in expr.children()], expr.lanes
                     )
                 # case KAdd(a, b):
                 #     results += cartesian(
@@ -325,8 +326,8 @@ class Preorder(Transform):
         return results
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        def cartesian(constructor, lists) -> Sequence[SignalExpr]: # type: ignore
-            return [constructor(*args) for args in itertools.product(*lists)]
+        def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]: # type: ignore
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[SignalExpr] = []
         for expr in self.transform.apply_signal(expr):
@@ -335,7 +336,7 @@ class Preorder(Transform):
                     results.append(expr)
                 case _:
                     results += cartesian(
-                        type(expr), [self.apply_generic(child) for child in expr.children()]
+                        type(expr), [self.apply_generic(child) for child in expr.children()], expr.lanes
                     )
                     
                 # case SAdd(a, b):
@@ -375,10 +376,13 @@ class Preorder(Transform):
         return results
 
 class AnnotateLanes(Transform):
-    max_lanes: int
-    def __init__(self, max_lanes: int) -> None:
-        self.max_lanes = max_lanes
+    max_bits: int
+    def __init__(self, max_bits: int) -> None:
+        self.max_bits = max_bits
 
+    def max_lanes(self, element_type: ElementType) -> int:
+        """Get the maximal number of lanes possible given the type"""
+        return self.max_bits // element_type.bit_width()
 
     @overload
     def convert_lanes(self, e: SignalExpr, lanes: int) -> SignalExpr: ...
@@ -387,16 +391,19 @@ class AnnotateLanes(Transform):
 
     def convert_lanes(self, e, lanes):
         if e.lanes != lanes:
-            return ConvertLanes(e, lanes) if isinstance(e, SignalExpr) else KConvertLanes(e, lanes)
+            new_expr = ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
+            new_expr.lanes = lanes
+            return new_expr
         else:
             return e
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(a, g):
-                lanes, _ = a.time_delay(self.max_lanes)
+                # TODO: ElementType.Float should be obtained from expr, not made up.
+                lanes, _ = a.time_delay(self.max_lanes(ElementType.Float))
             case _:
-                lanes = self.max_lanes
+                lanes = self.max_lanes(ElementType.Float)
         
         if expr.is_leaf():
             return [expr.with_lanes(lanes)]
@@ -408,26 +415,32 @@ class AnnotateLanes(Transform):
             return [new_expr]
     
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        match expr:
-            case TVKernel(data):
-                def convert_lanes(e):
-                    if e.lanes != self.max_lanes:
-                        return ConvertLanes(e, self.max_lanes)
-                    else:
-                        return e
-                new_data = [convert_lanes(self.apply_signal(sig)[0]) for sig in data]
-                new_expr: KernelExpr = TVKernel(new_data, expr.ty)
-                new_expr.lanes = self.max_lanes
-                return [new_expr]
-            case _:
-                args = [self.apply_generic(child)[0] for child in expr.children()]
-                for arg in args:
-                    assert arg.lanes == self.max_lanes
-                new_expr = type(expr)(*args)
-                new_expr.lanes = self.max_lanes
-                return [new_expr]
+        # TODO: this should not be a made up type
+        max_lanes = self.max_lanes(ElementType.Float)
+        if isinstance(expr, TVKernel):
+            data = expr.data
+            def convert_lanes(e):
+                if e.lanes != max_lanes:
+                    new_expr = ConvertLanes(e)
+                    new_expr.lanes = max_lanes
+                    return new_expr
+                else:
+                    return e
+            new_data = [convert_lanes(self.apply_signal(sig)[0]) for sig in data]
+            new_expr: KernelExpr = TVKernel(new_data, expr.ty)
+            new_expr.lanes = max_lanes
+            return [new_expr]
+        elif expr.is_leaf():
+            return [expr.with_lanes(max_lanes)]
+        else:
+            args = [self.apply_generic(child)[0] for child in expr.children()]
+            for arg in args:
+                assert arg.lanes == max_lanes
+            new_expr = type(expr)(*args)
+            new_expr.lanes = max_lanes
+            return [new_expr]
 
-class PushDownConvertLanes(Transform):
+class PushDownConvertLanesImpl(Transform):
     # Try to make the expression compute that many lanes at a time.
     @overload
     def narrow_lanes(self, expr: KernelExpr, lanes: int) -> KernelExpr: ...
@@ -482,3 +495,26 @@ class PushDownConvertLanes(Transform):
             results.append(self.narrow_lanes(expr.a, expr.lanes))
 
         return results
+
+def PushDownConvertLanes():
+    return Preorder(PushDownConvertLanesImpl())
+
+# class UnrollToMaxLanes(Transform):
+#     def __init__(self, max_bits: int) -> None:
+#         self.max_bits = max_bits
+    
+#     def max_lanes(self, element_type: ElementType) -> int:
+#         """Get the maximal number of lanes possible given the type"""
+#         return self.max_bits // element_type.bit_width()
+
+#     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+#         assert expr.lanes is not None
+#         # TODO: ElementType.Float should be obtained from expr, not made up.
+#         max_lanes = self.max_lanes(ElementType.Float)
+#         assert expr.lanes <= max_lanes
+#         if expr.lanes < max_lanes:
+#             new_expr = ConvertLanes(expr)
+#             new_expr.lanes = max_lanes
+#             return [new_expr]
+#         else:
+#             return [expr]

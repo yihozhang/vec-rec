@@ -193,7 +193,7 @@ struct ExtractSubVector<vec_type_in, float_vec2, n> {
 
 template <typename vec_type_in, int n>
 struct ExtractSubVector<vec_type_in, float_vec4, n> {
-    static float_vec8 extract_sub_vector(vec_type_in a) {
+    static float_vec4 extract_sub_vector(vec_type_in a) {
         return __builtin_shufflevector(a, a, 4 * n, 4 * n + 1, 4 * n + 2, 4 * n + 3);
     }
 };
