@@ -3,7 +3,7 @@ from functools import partial, reduce
 import itertools
 import copy
 import numpy as np
-from typing import Callable, List, Optional, Dict, Protocol, Sequence, Tuple, overload
+from typing import Callable, List, Dict, Protocol, Sequence, Tuple, overload
 from abc import abstractmethod
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
@@ -244,6 +244,48 @@ class Seq(Transform):
             results = [next for res in results for next in transform.apply_signal(res)]
         return results
 
+class Repeat(Transform):
+    def __init__(self, times: int, *transforms: Transform) -> None:
+        self.transform = Seq(*transforms)
+        self.times = times
+
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        results: List[KernelExpr] = [expr]
+        for _ in range(self.times):
+            results = [next for res in results for next in self.transform.apply_kernel(res)]
+        return results
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        results: List[SignalExpr] = [expr]
+        for _ in range(self.times):
+            results = [next for res in results for next in self.transform.apply_signal(res)]
+        return results
+
+class RepeatUpTo(Transform):
+    def __init__(self, max_times: int, *transforms: Transform) -> None:
+        self.transform = Seq(*transforms)
+        self.max_times = max_times
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        results: List[List[KernelExpr]] = [[expr]]
+        for _ in range(self.max_times):
+            new_results: List[KernelExpr] = []
+            for res in results[-1]:
+                new_results += self.transform.apply_kernel(res)
+            results.append(new_results)
+        return [s for res in results for s in res]
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        results: List[List[SignalExpr]] = [[expr]]
+        for _ in range(self.max_times):
+            new_results: List[SignalExpr] = []
+            for res in results[-1]:
+                new_results += self.transform.apply_signal(res)
+            results.append(new_results)
+        print(f"RepeatUpTo generated {len(results)} results")
+        return [s for res in results for s in res]
+
+def Optional(transform: Transform) -> Transform:
+    return Any(Noop(), transform)
 
 class Try(Transform):
     def __init__(self, transform: Transform) -> None:
@@ -301,28 +343,6 @@ class Preorder(Transform):
                     results += cartesian(
                         type(expr), [self.apply_generic(child) for child in expr.children()], expr.lanes
                     )
-                # case KAdd(a, b):
-                #     results += cartesian(
-                #         KAdd, [self.apply_kernel(a), self.apply_kernel(b)]
-                #     )
-                # case KSub(a, b):
-                #     results += cartesian(
-                #         KSub, [self.apply_kernel(a), self.apply_kernel(b)]
-                #     )
-                # case KNeg(a):
-                #     results += cartesian(KNeg, [self.apply_kernel(a)])
-                # case KConvolve(a, b):
-                #     results += cartesian(
-                #         KConvolve, [self.apply_kernel(a), self.apply_kernel(b)]
-                #     )
-                # case KConvertLanes(a):
-                #     results += cartesian(
-                #         KConvertLanes, [self.apply_kernel(a)]
-                #     )
-                # case _:
-                #     raise NotImplementedError(
-                #         f"Preorder traversal not implemented for {expr}"
-                #     )
         return results
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
@@ -338,41 +358,6 @@ class Preorder(Transform):
                     results += cartesian(
                         type(expr), [self.apply_generic(child) for child in expr.children()], expr.lanes
                     )
-                    
-                # case SAdd(a, b):
-                #     results += cartesian(
-                #         SAdd, [self.apply_signal(a), self.apply_signal(b)]
-                #     )
-                # case SSub(a, b):
-                #     results += cartesian(
-                #         SSub, [self.apply_signal(a), self.apply_signal(b)]
-                #     )
-                # case PointwiseMul(a, b):
-                #     results += cartesian(
-                #         PointwiseMul, [self.apply_signal(a), self.apply_signal(b)]
-                #     )
-                # case PointwiseDiv(a, b):
-                #     results += cartesian(
-                #         PointwiseDiv, [self.apply_signal(a), self.apply_signal(b)]
-                #     )
-                # case SNeg(a):
-                #     results += cartesian(SNeg, [self.apply_signal(a)])
-                # case Convolve(a, b):
-                #     results += cartesian(
-                #         Convolve, [self.apply_kernel(a), self.apply_signal(b)]
-                #     )
-                # case Recurse(a, g):
-                #     results += cartesian(
-                #         Recurse, [self.apply_kernel(a), self.apply_signal(g)]
-                #     )
-                # case ConvertLanes(a):
-                #     results += cartesian(
-                #         ConvertLanes, [self.apply_signal(a)]
-                #     )
-                # case _:
-                #     raise NotImplementedError(
-                #         f"Preorder traversal not implemented for {expr}"
-                #     )
         return results
 
 class AnnotateLanes(Transform):
