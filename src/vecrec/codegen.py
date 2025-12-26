@@ -565,6 +565,12 @@ def generate_and_run_benchmark(
     )
     
     json_output = json.loads(run_result.stdout)
+    validation = json_output.pop("validation", None)
+    # Since Python 3.7, Python dicts maintain insertion order.
+    json_output = dict(sorted(json_output.items(), key=lambda item: item[1]))
+    if validation is not None:
+        json_output["validation"] = validation
+
     return {
         'output': json_output,
         'error': run_result.stderr if run_result.returncode != 0 else "",

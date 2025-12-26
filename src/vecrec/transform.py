@@ -169,12 +169,13 @@ class ComposeRecurse(Transform):
 class Factorize(Transform):
     """Factorize a TIKernel into products of first-order and second-order factors."""
 
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
-            case TIKernel(a):
+            case Convolve(TIKernel(a), g):
                 factors: Sequence[KernelExpr] = factorize_polynomial(a)
                 assert len(factors) > 0
-                e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
+                # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
+                e = reduce(lambda acc, factor: Convolve(factor, acc), factors, g)
                 return [e]
             case _:
                 return []
@@ -281,7 +282,6 @@ class RepeatUpTo(Transform):
             for res in results[-1]:
                 new_results += self.transform.apply_signal(res)
             results.append(new_results)
-        print(f"RepeatUpTo generated {len(results)} results")
         return [s for res in results for s in res]
 
 def Optional(transform: Transform) -> Transform:
