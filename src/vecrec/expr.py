@@ -36,6 +36,7 @@ __all__ = [
     "KConvertLanes",
 ]
 
+
 class Type(Enum):
     Arith = 1
     TropMax = 2
@@ -50,7 +51,7 @@ class Type(Enum):
             case Type.TropMin:
                 return bool(np.isclose(value, np.inf))
         assert False, "unreachable"
-    
+
     def zero(self) -> float:
         match self:
             case Type.Arith:
@@ -60,7 +61,7 @@ class Type(Enum):
             case Type.TropMin:
                 return np.inf
         assert False, "unreachable"
-    
+
     def one(self) -> float:
         match self:
             case Type.Arith:
@@ -70,7 +71,7 @@ class Type(Enum):
             case Type.TropMin:
                 return 0.0
         assert False, "unreachable"
-    
+
     def convolve(self, a: List[float], b: List[float]) -> List[float]:
         match self:
             case Type.Arith:
@@ -90,7 +91,7 @@ class Type(Enum):
                         result[i + j] = min(result[i + j], a[i] + b[j])
                 return result
         assert False, "unreachable"
-    
+
     @overload
     def add(self, a: float, b: float) -> float: ...
     @overload
@@ -113,7 +114,7 @@ class Type(Enum):
         elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
             return f(a, b)
         assert False, "unreachable"
-    
+
     @overload
     def sub(self, a: List[float], b: List[float]) -> List[float]: ...
     @overload
@@ -129,9 +130,9 @@ class Type(Enum):
         elif isinstance(a, numbers.Number) and isinstance(b, list):
             return [a - y for y in b]
         elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
-            return a - b # type: ignore
+            return a - b  # type: ignore
         assert False, "unreachable"
-    
+
     @overload
     def mult(self, a: float, b: float) -> float: ...
     @overload
@@ -153,7 +154,7 @@ class Type(Enum):
             return [f(a, y) for y in b]
         elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
             return f(a, b)
-        print(a,b)
+        print(a, b)
         assert False, "unreachable"
 
 
@@ -168,15 +169,13 @@ class RecLang:
 
     def __hash__(self):
         return hash((type(self), tuple(sorted(self.__dict__.items()))))
-    
+
     def children(self) -> List[KernelExpr | SignalExpr]:
         """Return the children of the expression."""
         return [
-            v
-            for v in self.__dict__.values()
-            if isinstance(v, (KernelExpr, SignalExpr))
+            v for v in self.__dict__.values() if isinstance(v, (KernelExpr, SignalExpr))
         ]
-    
+
     def is_leaf(self) -> bool:
         """Return whether the expression is a leaf node."""
         for v in self.__dict__.values():
@@ -191,12 +190,13 @@ class RecLang:
         new_expr.lanes = lanes
         return new_expr
 
+
 class SignalExpr(RecLang):
     ty: Type
 
     def with_lanes(self, lanes: Optional[int]) -> SignalExpr:
         """Return a copy of the expression with the given number of lanes."""
-        return super().with_lanes(lanes) # type: ignore
+        return super().with_lanes(lanes)  # type: ignore
 
 
 class KernelExpr(RecLang):
@@ -206,9 +206,9 @@ class KernelExpr(RecLang):
     def time_delay(self, max_delay: int) -> Tuple[int, KernelExpr]:
         """Return the time delay of the kernel and the kernel without the delay."""
         ...
-    
+
     def with_lanes(self, lanes: Optional[int]) -> KernelExpr:
-        return super().with_lanes(lanes) # type: ignore
+        return super().with_lanes(lanes)  # type: ignore
 
 
 class TIKernel(KernelExpr):
@@ -248,7 +248,9 @@ class TIKernel(KernelExpr):
             if not self.ty.is_zero(v):
                 return i, TIKernel(self.data[i:], self.ty).with_lanes(self.lanes)
         if max_delay < len(self.data):
-            return max_delay, TIKernel(self.data[max_delay:], self.ty).with_lanes(self.lanes)
+            return max_delay, TIKernel(self.data[max_delay:], self.ty).with_lanes(
+                self.lanes
+            )
         assert False, "max_delay exceeds kernel length"
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[float]]:
@@ -335,7 +337,7 @@ class TIKernel(KernelExpr):
         if isinstance(other, TVKernel):
             return self.promote() - other
         assert self.ty == other.ty
-        
+
         max_len = max(len(self), len(other))
         a_data = self.data + [self.ty.zero()] * (max_len - len(self))
         b_data = other.data + [other.ty.zero()] * (max_len - len(other))
@@ -344,6 +346,7 @@ class TIKernel(KernelExpr):
     def __neg__(self) -> TIKernel:
         assert self.ty == Type.Arith, "Negation is only defined for arithmetic type"
         return TIKernel([-x for x in self.data], self.ty)
+
 
 class TVKernel(KernelExpr):
     data: Sequence[SignalExpr]
@@ -364,7 +367,9 @@ class TVKernel(KernelExpr):
                 case _:
                     return i, TVKernel(self.data[i:], self.ty).with_lanes(self.lanes)
         if max_delay < len(self.data):
-            return max_delay, TVKernel(self.data[max_delay:], self.ty).with_lanes(self.lanes)
+            return max_delay, TVKernel(self.data[max_delay:], self.ty).with_lanes(
+                self.lanes
+            )
         assert False, "max_delay exceeds kernel length"
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[SignalExpr]]:
@@ -458,7 +463,9 @@ class KernelExprBinOp(KernelExpr):
         a_delay, _ = self.a.time_delay(max_delay)
         b_delay, _ = self.b.time_delay(max_delay)
         delay = min(a_delay, b_delay)
-        return delay, KConvolve(TIKernel.z(self.ty, -delay), self).with_lanes(self.lanes)
+        return delay, KConvolve(TIKernel.z(self.ty, -delay), self).with_lanes(
+            self.lanes
+        )
 
     @classmethod
     def of(cls, exprs: List[KernelExpr]) -> KernelExpr:
@@ -480,7 +487,9 @@ class KConvolve(KernelExprBinOp):
         a_delay, _ = self.a.time_delay(max_delay)
         b_delay, _ = self.b.time_delay(max_delay)
         delay = min(a_delay + b_delay, max_delay)
-        return delay, KConvolve(TIKernel.z(self.ty, -delay), self).with_lanes(self.lanes)
+        return delay, KConvolve(TIKernel.z(self.ty, -delay), self).with_lanes(
+            self.lanes
+        )
 
 
 class KNeg(KernelExpr):
@@ -498,6 +507,7 @@ class KNeg(KernelExpr):
         delay, e = self.a.time_delay(max_delay)
         return delay, KNeg(e).with_lanes(self.lanes)
 
+
 # SignalExpr
 
 
@@ -510,6 +520,7 @@ class Num(SignalExpr):
         super().__init__()
         self.value = value
         self.ty = ty
+
 
 class SignalExprBinOp(SignalExpr):
     a: SignalExpr
@@ -598,6 +609,7 @@ class Var(SignalExpr):
         self.name = name
         self.ty = ty
 
+
 # Convert Lanes
 @dataclass
 class ConvertLanes(SignalExpr):
@@ -610,6 +622,10 @@ class ConvertLanes(SignalExpr):
         self.ty = a.ty
         self.lanes = None
 
+    def __repr__(self) -> str:
+        return f"ConvertLanes({self.lanes}, {self.a})"
+
+
 @dataclass
 class KConvertLanes(KernelExpr):
     a: KernelExpr
@@ -620,9 +636,12 @@ class KConvertLanes(KernelExpr):
         self.a = a
         self.ty = a.ty
         self.lanes = None
-    
+
     def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
         delay, e = self.a.time_delay(max_delay)
         assert self.lanes is not None
         return delay, KConvertLanes(e).with_lanes(self.lanes)
+
+    def __repr__(self) -> str:
+        return f"ConvertLanes({self.lanes}, {self.a})"

@@ -10,6 +10,7 @@ from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.factorize import factorize_polynomial
 from vecrec.util import ElementType
 
+
 class Transform:
     @overload
     def apply_generic(self, expr: KernelExpr) -> Sequence[KernelExpr]: ...
@@ -34,8 +35,10 @@ class Transform:
 class Noop(Transform):
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         return [expr]
+
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         return [expr]
+
 
 # Constant folding
 class ConstantFoldAdd(Transform):
@@ -45,6 +48,17 @@ class ConstantFoldAdd(Transform):
                 b, KernelConstant
             ):
                 return [a + b]
+            case _:
+                return []
+
+
+class ConstantFoldSub(Transform):
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        match expr:
+            case KSub(a, b) if isinstance(a, KernelConstant) and isinstance(
+                b, KernelConstant
+            ):
+                return [a - b]
             case _:
                 return []
 
@@ -64,13 +78,16 @@ class ConstantFoldConvolve(Transform):
 
 def ArithTransform(cls):
     cls.apply_kernel_impl = cls.apply_kernel
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]: # type: ignore
+
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:  # type: ignore
         if expr.ty == Type.Arith:
             return self.apply_kernel_impl(expr)
         else:
             return []
+
     cls.apply_kernel = apply_kernel
     return cls
+
 
 @ArithTransform
 class ConstantFoldNegate(Transform):
@@ -86,6 +103,7 @@ class ConstantFoldNegate(Transform):
 
 # IIRs
 
+
 @ArithTransform
 class FuseRecurse(Transform):
     """Fuse nested IIRs"""
@@ -96,6 +114,7 @@ class FuseRecurse(Transform):
                 return [Recurse(KSub(KAdd(a, b), KConvolve(a, b)), g)]
             case _:
                 return []
+
 
 @ArithTransform
 class Dilate(Transform):
@@ -128,6 +147,7 @@ class Dilate(Transform):
             case _:
                 return []
 
+
 @ArithTransform
 class Delay(Transform):
     """Delay an IIR by identifying leading coefficient v at feedback p and negating by v*z^-p"""
@@ -137,12 +157,18 @@ class Delay(Transform):
             case Recurse(a, g) if isinstance(a, TIKernel):
                 assert a.ty == Type.Arith
                 pos, val = next(
-                    ((i, v) for i, v in enumerate(a.data) if not a.ty.is_zero(v)), (len(a), 0)
+                    ((i, v) for i, v in enumerate(a.data) if not a.ty.is_zero(v)),
+                    (len(a), 0),
                 )
                 if val == 0:
                     return []
                 coeff = TIKernel.z(Type.Arith, -pos) * val
-                return [Recurse(a + coeff * (a-TIKernel.i(Type.Arith)), Convolve(TIKernel.i(Type.Arith) + coeff, g))]
+                return [
+                    Recurse(
+                        a + coeff * (a - TIKernel.i(Type.Arith)),
+                        Convolve(TIKernel.i(Type.Arith) + coeff, g),
+                    )
+                ]
             case _:
                 return []
 
@@ -165,6 +191,7 @@ class ComposeRecurse(Transform):
             case _:
                 return []
 
+
 @ArithTransform
 class Factorize(Transform):
     """Factorize a TIKernel into products of first-order and second-order factors."""
@@ -179,6 +206,7 @@ class Factorize(Transform):
                 return [e]
             case _:
                 return []
+
 
 ## Time-varying kernels
 @ArithTransform
@@ -207,7 +235,8 @@ class DilateTVWithSingleOddOrder(Transform):
                             [Num(0, Type.Arith)] * (inz - 1)
                             + [
                                 PointwiseDiv(
-                                    odd[inz], Convolve(TIKernel.z(Type.Arith, -inz), odd[inz])
+                                    odd[inz],
+                                    Convolve(TIKernel.z(Type.Arith, -inz), odd[inz]),
                                 )
                             ],
                             Type.Arith,
@@ -216,7 +245,8 @@ class DilateTVWithSingleOddOrder(Transform):
                     )
                     exprs = [B, C, KConvolve(A, A), KNeg(KConvolve(C, B))]
                     expr = Recurse(
-                        KAdd.of(exprs), Convolve(KAdd.of([TIKernel.i(Type.Arith), A, KNeg(C)]), g)
+                        KAdd.of(exprs),
+                        Convolve(KAdd.of([TIKernel.i(Type.Arith), A, KNeg(C)]), g),
                     )
                     return [expr]
                 elif len(inzs) == 0:
@@ -245,6 +275,7 @@ class Seq(Transform):
             results = [next for res in results for next in transform.apply_signal(res)]
         return results
 
+
 class Repeat(Transform):
     def __init__(self, times: int, *transforms: Transform) -> None:
         self.transform = Seq(*transforms)
@@ -253,19 +284,25 @@ class Repeat(Transform):
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         results: List[KernelExpr] = [expr]
         for _ in range(self.times):
-            results = [next for res in results for next in self.transform.apply_kernel(res)]
+            results = [
+                next for res in results for next in self.transform.apply_kernel(res)
+            ]
         return results
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         results: List[SignalExpr] = [expr]
         for _ in range(self.times):
-            results = [next for res in results for next in self.transform.apply_signal(res)]
+            results = [
+                next for res in results for next in self.transform.apply_signal(res)
+            ]
         return results
+
 
 class RepeatUpTo(Transform):
     def __init__(self, max_times: int, *transforms: Transform) -> None:
         self.transform = Seq(*transforms)
         self.max_times = max_times
+
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         results: List[List[KernelExpr]] = [[expr]]
         for _ in range(self.max_times):
@@ -284,8 +321,10 @@ class RepeatUpTo(Transform):
             results.append(new_results)
         return [s for res in results for s in res]
 
+
 def Optional(transform: Transform) -> Transform:
     return Any(Noop(), transform)
+
 
 class Try(Transform):
     def __init__(self, transform: Transform) -> None:
@@ -321,6 +360,7 @@ class Any(Transform):
 
 ConstantFold = Any(
     ConstantFoldAdd(),
+    ConstantFoldSub(),
     ConstantFoldConvolve(),
     ConstantFoldNegate(),
 )
@@ -331,8 +371,11 @@ class Preorder(Transform):
         self.transform = transform
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]: # type: ignore
-            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
+        def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
 
         results: List[KernelExpr] = []
         for expr in self.transform.apply_kernel(expr):
@@ -341,13 +384,18 @@ class Preorder(Transform):
                     results.append(expr)
                 case _:
                     results += cartesian(
-                        type(expr), [self.apply_generic(child) for child in expr.children()], expr.lanes
+                        type(expr),
+                        [self.apply_generic(child) for child in expr.children()],
+                        expr.lanes,
                     )
         return results
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]: # type: ignore
-            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
+        def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
 
         results: List[SignalExpr] = []
         for expr in self.transform.apply_signal(expr):
@@ -356,12 +404,59 @@ class Preorder(Transform):
                     results.append(expr)
                 case _:
                     results += cartesian(
-                        type(expr), [self.apply_generic(child) for child in expr.children()], expr.lanes
+                        type(expr),
+                        [self.apply_generic(child) for child in expr.children()],
+                        expr.lanes,
                     )
         return results
 
+
+class Postorder(Transform):
+    def __init__(self, transform: Transform) -> None:
+        self.transform = transform
+
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
+
+        results: Sequence[KernelExpr]
+        match expr:
+            case TIKernel(_) | TVKernel(_):
+                results = [expr]
+            case _:
+                results = cartesian(
+                    type(expr),
+                    [self.apply_generic(child) for child in expr.children()],
+                    expr.lanes,
+                )
+        return [e for result in results for e in self.transform.apply_kernel(result)]
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
+
+        results: Sequence[SignalExpr]
+        match expr:
+            case Var(_) | Num(_):
+                results = [expr]
+            case _:
+                results = cartesian(
+                    type(expr),
+                    [self.apply_generic(child) for child in expr.children()],
+                    expr.lanes,
+                )
+        return [e for result in results for e in self.transform.apply_signal(result)]
+
+
 class AnnotateLanes(Transform):
     max_bits: int
+
     def __init__(self, max_bits: int) -> None:
         self.max_bits = max_bits
 
@@ -376,7 +471,9 @@ class AnnotateLanes(Transform):
 
     def convert_lanes(self, e, lanes):
         if e.lanes != lanes:
-            new_expr = ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
+            new_expr = (
+                ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
+            )
             new_expr.lanes = lanes
             return new_expr
         else:
@@ -389,21 +486,25 @@ class AnnotateLanes(Transform):
                 lanes, _ = a.time_delay(self.max_lanes(ElementType.Float))
             case _:
                 lanes = self.max_lanes(ElementType.Float)
-        
+
         if expr.is_leaf():
             return [expr.with_lanes(lanes)]
         else:
-            args = [self.convert_lanes(self.apply_generic(child)[0], lanes) for child in expr.children()]
+            args = [
+                self.convert_lanes(self.apply_generic(child)[0], lanes)
+                for child in expr.children()
+            ]
             new_expr = type(expr)(*args)
             new_expr.lanes = lanes
 
             return [new_expr]
-    
+
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         # TODO: this should not be a made up type
         max_lanes = self.max_lanes(ElementType.Float)
         if isinstance(expr, TVKernel):
             data = expr.data
+
             def convert_lanes(e):
                 if e.lanes != max_lanes:
                     new_expr = ConvertLanes(e)
@@ -411,6 +512,7 @@ class AnnotateLanes(Transform):
                     return new_expr
                 else:
                     return e
+
             new_data = [convert_lanes(self.apply_signal(sig)[0]) for sig in data]
             new_expr: KernelExpr = TVKernel(new_data, expr.ty)
             new_expr.lanes = max_lanes
@@ -425,6 +527,7 @@ class AnnotateLanes(Transform):
             new_expr.lanes = max_lanes
             return [new_expr]
 
+
 class PushDownConvertLanesImpl(Transform):
     # Try to make the expression compute that many lanes at a time.
     @overload
@@ -436,7 +539,14 @@ class PushDownConvertLanesImpl(Transform):
         assert expr.lanes is not None
         assert lanes <= expr.lanes
 
-        if isinstance(expr, KernelExpr):
+        if isinstance(expr, ConvertLanes) or isinstance(expr, ConvertLanes):
+            if expr.a.lanes == lanes:
+                return expr.a
+
+            new_expr = copy.copy(expr)
+            new_expr.lanes = lanes
+            return new_expr
+        elif isinstance(expr, KernelExpr):
             if isinstance(expr, TIKernel):
                 new_kernel_expr: KernelExpr = TIKernel(expr.data, expr.ty)
                 new_kernel_expr.lanes = lanes
@@ -447,7 +557,11 @@ class PushDownConvertLanesImpl(Transform):
                 # 2. Use a ConvertLanes instead.
                 raise NotImplementedError("Narrowing lanes of TVKernel not implemented")
             else:
-                raise NotImplementedError(f"Narrowing lanes of {type(expr)} not implemented")
+                assert False, "unreachable"
+        elif isinstance(expr, Var):
+            new_signal_expr: SignalExpr = Var(expr.name, expr.ty)
+            new_signal_expr.lanes = lanes
+            return new_signal_expr
         else:
             assert isinstance(expr, SignalExpr)
             if expr.is_leaf():
@@ -459,7 +573,7 @@ class PushDownConvertLanesImpl(Transform):
             new_signal_expr.lanes = lanes
 
             return new_signal_expr
-    
+
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         if not isinstance(expr, KConvertLanes):
             return [expr]
@@ -467,27 +581,29 @@ class PushDownConvertLanesImpl(Transform):
         assert expr.lanes is not None and expr.a.lanes is not None
         if expr.lanes < expr.a.lanes:
             return [self.narrow_lanes(expr.a, expr.lanes)]
-        
+
         return [expr]
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         results: List[SignalExpr] = [expr]
         if not isinstance(expr, ConvertLanes):
             return results
-        
+
         assert expr.lanes is not None and expr.a.lanes is not None
         if expr.lanes < expr.a.lanes:
             results.append(self.narrow_lanes(expr.a, expr.lanes))
 
         return results
 
+
 def PushDownConvertLanes():
-    return Preorder(PushDownConvertLanesImpl())
+    return Postorder(PushDownConvertLanesImpl())
+
 
 # class UnrollToMaxLanes(Transform):
 #     def __init__(self, max_bits: int) -> None:
 #         self.max_bits = max_bits
-    
+
 #     def max_lanes(self, element_type: ElementType) -> int:
 #         """Get the maximal number of lanes possible given the type"""
 #         return self.max_bits // element_type.bit_width()

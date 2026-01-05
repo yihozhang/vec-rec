@@ -27,7 +27,7 @@ def main():
 		Optional(Seq(Preorder(Try(Factorize())), Preorder(Try(ConstantFold)))),
 		Optional(
 			Seq(
-				RepeatUpTo(3, Dilate(), Try(Preorder(ConstantFold))),
+				RepeatUpTo(3, Dilate(), Preorder(Try(ConstantFold))),
 				Any(Dilate(), Delay()),
 			),
 		),
