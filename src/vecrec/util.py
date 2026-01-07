@@ -13,11 +13,7 @@ class ElementType(Enum):
                 return 32
             case ElementType.I32:
                 return 32
-            case ElementType.U32:
-                return 32
             case ElementType.I64:
-                return 64
-            case ElementType.U64:
                 return 64
 
     def to_str(self) -> str:
@@ -26,12 +22,17 @@ class ElementType(Enum):
                 return "float"
             case ElementType.I32:
                 return "int32_t"
-            case ElementType.U32:
-                return "uint32_t"
             case ElementType.I64:
                 return "int64_t"
-            case ElementType.U64:
-                return "uint64_t"
+    
+    def val_to_str(self, val) -> str:
+        match self:
+            case ElementType.Float:
+                return f"{val}"
+            case ElementType.I32:
+                return str(int(val))
+            case ElementType.I64:
+                return str(int(val))
 
 def allclose(a, b, tol=1e-6):
     if len(a) != len(b):

@@ -42,12 +42,8 @@ class CodeGen:
                 return f"float_vec{lanes}"
             case ElementType.I32:
                 return f"int32_vec{lanes}"
-            case ElementType.U32:
-                return f"uint32_vec{lanes}"
             case ElementType.I64:
                 return f"int64_vec{lanes}"
-            case ElementType.U64:
-                return f"uint64_vec{lanes}"
 
     def clear(self):
         self.counter = 0
@@ -136,7 +132,7 @@ class CodeGen:
 
                 taps, indices, values = expr.to_sparse_repr()
                 index_args = ", ".join(map(str, indices))
-                value_args = ", ".join(map(str, values))
+                value_args = ", ".join(map(lambda v: f"{expr.element_type.val_to_str(v)}", values))
 
                 index_var = self.get_new_var()
                 value_var = self.get_new_var()
@@ -347,8 +343,8 @@ def _generate_benchmark_code(
 
     # Determine which distributions are needed
     needs_float = any(elt_type == ElementType.Float for elt_type in all_vars.values())
-    needs_int32 = any(elt_type in (ElementType.I32, ElementType.U32) for elt_type in all_vars.values())
-    needs_int64 = any(elt_type in (ElementType.I64, ElementType.U64) for elt_type in all_vars.values())
+    needs_int32 = any(elt_type == ElementType.I32 for elt_type in all_vars.values())
+    needs_int64 = any(elt_type == ElementType.I64 for elt_type in all_vars.values())
 
     if needs_float:
         benchmark_text += "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
@@ -362,7 +358,7 @@ def _generate_benchmark_code(
         cpp_type = elt_type.to_str()
         if elt_type == ElementType.Float:
             dist = "float_dis"
-        elif elt_type in (ElementType.I32, ElementType.U32):
+        elif elt_type == ElementType.I32:
             dist = "int32_dis"
         else:  # I64 or U64
             dist = "int64_dis"
@@ -375,7 +371,7 @@ def _generate_benchmark_code(
     # Generate output buffers for each kernel
     benchmark_text += "    // Output buffers for each kernel\n"
     for i, name in enumerate(kernel_names):
-        benchmark_text += f"    std::vector<float> output_{name}(N);\n"
+        benchmark_text += f"    std::vector<{elt_type.to_str()}> output_{name}(N);\n"
     benchmark_text += "\n"
     
     # Generate benchmark code for each kernel
@@ -450,6 +446,26 @@ int arrays_equal(const std::vector<float>& a, const std::vector<float>& b, float
     if (a.size() != b.size()) return -1;
     for (size_t i = 0; i < a.size(); i++) {{
         if (std::abs(a[i] - b[i]) > tolerance) {{
+            return i;
+        }}
+    }}
+    return a.size();
+}}
+
+int arrays_equal(const std::vector<int32_t>& a, const std::vector<int32_t>& b) {{
+    if (a.size() != b.size()) return -1;
+    for (size_t i = 0; i < a.size(); i++) {{
+        if (a[i] != b[i]) {{
+            return i;
+        }}
+    }}
+    return a.size();
+}}
+
+int arrays_equal(const std::vector<int64_t>& a, const std::vector<int64_t>& b) {{
+    if (a.size() != b.size()) return -1;
+    for (size_t i = 0; i < a.size(); i++) {{
+        if (a[i] != b[i]) {{
             return i;
         }}
     }}
@@ -590,7 +606,8 @@ def generate_and_run_benchmark(
         capture_output=True,
         text=True,
     )
-    
+
+    print(run_result.stdout)    
     json_output = json.loads(run_result.stdout)
     validation = json_output.pop("validation", None)
     # Since Python 3.7, Python dicts maintain insertion order.

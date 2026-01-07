@@ -1,6 +1,6 @@
 
 from vecrec import CodeGen, generate_and_run_benchmark
-from vecrec.transform import AnnotateLanes, Any, ConstantFold, Delay, Dilate, PushDownConvertLanes, Seq, Preorder, Try
+from vecrec.transform import AnnotateLanes, Any, ConstantFold, Delay, Dilate, Optional, PushDownConvertLanes, Seq, Preorder, Try
 from vecrec.expr import Recurse, TIKernel, Type, Var
 from vecrec.util import ElementType
 
@@ -13,23 +13,27 @@ def test_generate_and_run():
     
     # Apply transformations to optimize the kernel
     schedule = Seq(
-        Dilate(),
-        Dilate(),
-        Any(Dilate(), Delay()),
-        Preorder(Try(ConstantFold)),
+        Optional(
+            Seq(
+                Dilate(),
+                Dilate(),
+                Any(Dilate(), Delay()),
+                Preorder(Try(ConstantFold)),
+            )
+        ),
         AnnotateLanes(512),
         PushDownConvertLanes(),
     )
     results = schedule.apply_signal(expr)
     
     # Create code generator
-    codegen = CodeGen()  # 256-bit SIMD
+    codegen = CodeGen()
     
     # Generate, compile, and run benchmark
     print("Generating, compiling, and running benchmark...")
     result = generate_and_run_benchmark(
         codegen=codegen,
-        exprs=[expr, results[0], results[1]],
+        exprs=results[:3],
         kernel_names=["original", "dilated", "dilate_and_delayed"],
         include_correctness_check=True,
         input_size=1 << 16,  # Smaller size for quick testing

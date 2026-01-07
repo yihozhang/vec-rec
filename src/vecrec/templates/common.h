@@ -19,21 +19,10 @@ typedef int32_t int32_vec4 __attribute__((ext_vector_type(4)));
 typedef int32_t int32_vec8 __attribute__((ext_vector_type(8)));
 typedef int32_t int32_vec16 __attribute__((ext_vector_type(16)));
 
-typedef uint32_t uint32_vec1;
-typedef uint32_t uint32_vec2 __attribute__((ext_vector_type(2)));
-typedef uint32_t uint32_vec4 __attribute__((ext_vector_type(4)));
-typedef uint32_t uint32_vec8 __attribute__((ext_vector_type(8)));
-typedef uint32_t uint32_vec16 __attribute__((ext_vector_type(16)));
-
 typedef int64_t int64_vec1;
 typedef int64_t int64_vec2 __attribute__((ext_vector_type(2)));
 typedef int64_t int64_vec4 __attribute__((ext_vector_type(4)));
 typedef int64_t int64_vec8 __attribute__((ext_vector_type(8)));
-
-typedef uint64_t uint64_vec1;
-typedef uint64_t uint64_vec2 __attribute__((ext_vector_type(2)));
-typedef uint64_t uint64_vec4 __attribute__((ext_vector_type(4)));
-typedef uint64_t uint64_vec8 __attribute__((ext_vector_type(8)));
 
 constexpr int vec_lanes_of(float) { return 1; }
 constexpr int vec_lanes_of(float_vec2) { return 2; }
@@ -47,21 +36,10 @@ constexpr int vec_lanes_of(int32_vec4) { return 4; }
 constexpr int vec_lanes_of(int32_vec8) { return 8; }
 constexpr int vec_lanes_of(int32_vec16) { return 16; }
 
-constexpr int vec_lanes_of(uint32_t) { return 1; }
-constexpr int vec_lanes_of(uint32_vec2) { return 2; }
-constexpr int vec_lanes_of(uint32_vec4) { return 4; }
-constexpr int vec_lanes_of(uint32_vec8) { return 8; }
-constexpr int vec_lanes_of(uint32_vec16) { return 16; }
-
 constexpr int vec_lanes_of(int64_t) { return 1; }
 constexpr int vec_lanes_of(int64_vec2) { return 2; }
 constexpr int vec_lanes_of(int64_vec4) { return 4; }
 constexpr int vec_lanes_of(int64_vec8) { return 8; }
-
-constexpr int vec_lanes_of(uint64_t) { return 1; }
-constexpr int vec_lanes_of(uint64_vec2) { return 2; }
-constexpr int vec_lanes_of(uint64_vec4) { return 4; }
-constexpr int vec_lanes_of(uint64_vec8) { return 8; }
 
 template <typename T>
 struct ElementType {};
@@ -109,27 +87,6 @@ struct ElementType<int32_vec16> {
 };
 
 template <>
-struct ElementType<uint32_t> {
-    using type = uint32_t;
-};
-template <>
-struct ElementType<uint32_vec2> {
-    using type = uint32_t;
-};
-template <>
-struct ElementType<uint32_vec4> {
-    using type = uint32_t;
-};
-template <>
-struct ElementType<uint32_vec8> {
-    using type = uint32_t;
-};
-template <>
-struct ElementType<uint32_vec16> {
-    using type = uint32_t;
-};
-
-template <>
 struct ElementType<int64_t> {
     using type = int64_t;
 };
@@ -146,23 +103,6 @@ struct ElementType<int64_vec8> {
     using type = int64_t;
 };
 
-template <>
-struct ElementType<uint64_t> {
-    using type = uint64_t;
-};
-template <>
-struct ElementType<uint64_vec2> {
-    using type = uint64_t;
-};
-template <>
-struct ElementType<uint64_vec4> {
-    using type = uint64_t;
-};
-template <>
-struct ElementType<uint64_vec8> {
-    using type = uint64_t;
-};
-
 inline std::string string_of(float_vec4 x) {
     return std::to_string(x[0]) + ", " + std::to_string(x[1]) + ", " + std::to_string(x[2]) + ", " + std::to_string(x[3]);
 }
@@ -172,112 +112,240 @@ inline std::string string_of(float_vec8 x) {
            std::to_string(x[5]) + ", " + std::to_string(x[6]) + ", " + std::to_string(x[7]) + ", " + std::to_string(x[8]);
 }
 
-inline float extract_slice(float a, float b, int offset) {
-    switch (offset) {
-    case 0:
-        return a;
-    case 1:
-        return b;
-    };
-    assert(false);
-    return float{};
-}
 
-inline float_vec2 extract_slice(float_vec2 a, float_vec2 b, int offset) {
-    switch (offset) {
-    case 0:
-        return a;
-    case 1:
-        return __builtin_shufflevector(a, b, 1, 2);
-    case 2:
-        return b;
-    };
-    assert(false);
-    return float_vec2{};
-}
+#define EXTRACT_SLICE_1(type) \
+    inline type extract_slice(type a, type b, int offset) { \
+        switch (offset) { \
+        case 0: \
+            return a; \
+        case 1: \
+            return b; \
+        }; \
+        assert(false); \
+        return type{}; \
+    }
 
-inline float_vec4 extract_slice(float_vec4 a, float_vec4 b, int offset) {
-    switch (offset) {
-    case 0:
-        return a;
-    case 1:
-        return __builtin_shufflevector(a, b, 1, 2, 3, 4);
-    case 2:
-        return __builtin_shufflevector(a, b, 2, 3, 4, 5);
-    case 3:
-        return __builtin_shufflevector(a, b, 3, 4, 5, 6);
-    case 4:
-        return b;
-    };
-    assert(false);
-    return float_vec4{};
-}
+#define EXTRACT_SLICE_2(type_vec2) \
+    inline type_vec2 extract_slice(type_vec2 a, type_vec2 b, int offset) { \
+        switch (offset) { \
+        case 0: \
+            return a; \
+        case 1: \
+            return __builtin_shufflevector(a, b, 1, 2); \
+        case 2: \
+            return b; \
+        }; \
+        assert(false); \
+        return type_vec2{}; \
+    }
 
-inline float_vec8 extract_slice(float_vec8 a, float_vec8 b, int offset) {
-    switch (offset) {
-    case 0:
-        return a;
-    case 1:
-        return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8);
-    case 2:
-        return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9);
-    case 3:
-        return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10);
-    case 4:
-        return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11);
-    case 5:
-        return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12);
-    case 6:
-        return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13);
-    case 7:
-        return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14);
-    case 8:
-        return b;
-    };
-    assert(false);
-    return float_vec8{};
-}
+#define EXTRACT_SLICE_4(type_vec4) \
+    inline type_vec4 extract_slice(type_vec4 a, type_vec4 b, int offset) { \
+        switch (offset) { \
+        case 0: \
+            return a; \
+        case 1: \
+            return __builtin_shufflevector(a, b, 1, 2, 3, 4); \
+        case 2: \
+            return __builtin_shufflevector(a, b, 2, 3, 4, 5); \
+        case 3: \
+            return __builtin_shufflevector(a, b, 3, 4, 5, 6); \
+        case 4: \
+            return b; \
+        }; \
+        assert(false); \
+        return type_vec4{}; \
+    }
 
-inline float_vec16 extract_slice(float_vec16 a, float_vec16 b, int offset) {
-    switch (offset) {
-    case 0:
-        return a;
-    case 1:
-        return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
-    case 2:
-        return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17);
-    case 3:
-        return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18);
-    case 4:
-        return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19);
-    case 5:
-        return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20);
-    case 6:
-        return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21);
-    case 7:
-        return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22);
-    case 8:
-        return __builtin_shufflevector(a, b, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23);
-    case 9:
-        return __builtin_shufflevector(a, b, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24);
-    case 10:
-        return __builtin_shufflevector(a, b, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25);
-    case 11:
-        return __builtin_shufflevector(a, b, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26);
-    case 12:
-        return __builtin_shufflevector(a, b, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27);
-    case 13:
-        return __builtin_shufflevector(a, b, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28);
-    case 14:
-        return __builtin_shufflevector(a, b, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29);
-    case 15:
-        return __builtin_shufflevector(a, b, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30);
-    case 16:
-        return b;
-    };
-    assert(false);
-    return float_vec16{};
-}
+#define EXTRACT_SLICE_8(type_vec8) \
+    inline type_vec8 extract_slice(type_vec8 a, type_vec8 b, int offset) { \
+        switch (offset) { \
+        case 0: \
+            return a; \
+        case 1: \
+            return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8); \
+        case 2: \
+            return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9); \
+        case 3: \
+            return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10); \
+        case 4: \
+            return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11); \
+        case 5: \
+            return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12); \
+        case 6: \
+            return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13); \
+        case 7: \
+            return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14); \
+        case 8: \
+            return b; \
+        }; \
+        assert(false); \
+        return type_vec8{}; \
+    }
+
+#define EXTRACT_SLICE_16(type_vec16) \
+    inline type_vec16 extract_slice(type_vec16 a, type_vec16 b, int offset) { \
+        switch (offset) { \
+        case 0: \
+            return a; \
+        case 1: \
+            return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16); \
+        case 2: \
+            return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17); \
+        case 3: \
+            return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18); \
+        case 4: \
+            return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19); \
+        case 5: \
+            return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20); \
+        case 6: \
+            return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21); \
+        case 7: \
+            return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22); \
+        case 8: \
+            return __builtin_shufflevector(a, b, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23); \
+        case 9: \
+            return __builtin_shufflevector(a, b, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24); \
+        case 10: \
+            return __builtin_shufflevector(a, b, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25); \
+        case 11: \
+            return __builtin_shufflevector(a, b, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26); \
+        case 12: \
+            return __builtin_shufflevector(a, b, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27); \
+        case 13: \
+            return __builtin_shufflevector(a, b, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28); \
+        case 14: \
+            return __builtin_shufflevector(a, b, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29); \
+        case 15: \
+            return __builtin_shufflevector(a, b, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30); \
+        case 16: \
+            return b; \
+        }; \
+        assert(false); \
+        return type_vec16{}; \
+    }
+
+EXTRACT_SLICE_1(float)
+EXTRACT_SLICE_2(float_vec2)
+EXTRACT_SLICE_4(float_vec4)
+EXTRACT_SLICE_8(float_vec8)
+EXTRACT_SLICE_16(float_vec16)
+EXTRACT_SLICE_1(int32_vec1)
+EXTRACT_SLICE_2(int32_vec2)
+EXTRACT_SLICE_4(int32_vec4)
+EXTRACT_SLICE_8(int32_vec8)
+EXTRACT_SLICE_16(int32_vec16)
+EXTRACT_SLICE_1(int64_vec1)
+EXTRACT_SLICE_2(int64_vec2)
+EXTRACT_SLICE_4(int64_vec4)
+EXTRACT_SLICE_8(int64_vec8)
+
+// inline float extract_slice(float a, float b, int offset) {
+//     switch (offset) {
+//     case 0:
+//         return a;
+//     case 1:
+//         return b;
+//     };
+//     assert(false);
+//     return float{};
+// }
+
+// inline float_vec2 extract_slice(float_vec2 a, float_vec2 b, int offset) {
+//     switch (offset) {
+//     case 0:
+//         return a;
+//     case 1:
+//         return __builtin_shufflevector(a, b, 1, 2);
+//     case 2:
+//         return b;
+//     };
+//     assert(false);
+//     return float_vec2{};
+// }
+
+// inline float_vec4 extract_slice(float_vec4 a, float_vec4 b, int offset) {
+//     switch (offset) {
+//     case 0:
+//         return a;
+//     case 1:
+//         return __builtin_shufflevector(a, b, 1, 2, 3, 4);
+//     case 2:
+//         return __builtin_shufflevector(a, b, 2, 3, 4, 5);
+//     case 3:
+//         return __builtin_shufflevector(a, b, 3, 4, 5, 6);
+//     case 4:
+//         return b;
+//     };
+//     assert(false);
+//     return float_vec4{};
+// }
+
+// inline float_vec8 extract_slice(float_vec8 a, float_vec8 b, int offset) {
+//     switch (offset) {
+//     case 0:
+//         return a;
+//     case 1:
+//         return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8);
+//     case 2:
+//         return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9);
+//     case 3:
+//         return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10);
+//     case 4:
+//         return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11);
+//     case 5:
+//         return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12);
+//     case 6:
+//         return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13);
+//     case 7:
+//         return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14);
+//     case 8:
+//         return b;
+//     };
+//     assert(false);
+//     return float_vec8{};
+// }
+
+// inline float_vec16 extract_slice(float_vec16 a, float_vec16 b, int offset) {
+//     switch (offset) {
+//     case 0:
+//         return a;
+//     case 1:
+//         return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+//     case 2:
+//         return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17);
+//     case 3:
+//         return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18);
+//     case 4:
+//         return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19);
+//     case 5:
+//         return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20);
+//     case 6:
+//         return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21);
+//     case 7:
+//         return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22);
+//     case 8:
+//         return __builtin_shufflevector(a, b, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23);
+//     case 9:
+//         return __builtin_shufflevector(a, b, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24);
+//     case 10:
+//         return __builtin_shufflevector(a, b, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25);
+//     case 11:
+//         return __builtin_shufflevector(a, b, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26);
+//     case 12:
+//         return __builtin_shufflevector(a, b, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27);
+//     case 13:
+//         return __builtin_shufflevector(a, b, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28);
+//     case 14:
+//         return __builtin_shufflevector(a, b, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29);
+//     case 15:
+//         return __builtin_shufflevector(a, b, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30);
+//     case 16:
+//         return b;
+//     };
+//     assert(false);
+//     return float_vec16{};
+// }
 
 // from https://stackoverflow.com/questions/37602057/why-isnt-a-for-loop-a-compile-time-expression
 template<std::size_t N>
@@ -298,33 +366,80 @@ void for_(F func)
 template <typename vec_type_in, typename vec_type_out, int n>
 struct ExtractSubVector {};
 
-template <typename vec_type_in, int n>
-struct ExtractSubVector<vec_type_in, float_vec1, n> {
-    static float_vec1 extract_sub_vector(vec_type_in a) {
-        return a[n];
-    }
-};
+#define EXTRACT_SUB_VECTOR1(type_vec1) \
+    template <typename vec_type_in, int n> \
+    struct ExtractSubVector<vec_type_in, type_vec1, n> { \
+        static type_vec1 extract_sub_vector(vec_type_in a) { \
+            return a[n]; \
+        } \
+    };
 
-template <typename vec_type_in, int n>
-struct ExtractSubVector<vec_type_in, float_vec2, n> {
-    static float_vec2 extract_sub_vector(vec_type_in a) {
-        return __builtin_shufflevector(a, a, 2 * n, 2 * n + 1);
-    }
-};
+#define EXTRACT_SUB_VECTOR2(type_vec2) \
+    template <typename vec_type_in, int n> \
+    struct ExtractSubVector<vec_type_in, type_vec2, n> { \
+        static type_vec2 extract_sub_vector(vec_type_in a) { \
+            return __builtin_shufflevector(a, a, 2 * n, 2 * n + 1); \
+        } \
+    };
 
-template <typename vec_type_in, int n>
-struct ExtractSubVector<vec_type_in, float_vec4, n> {
-    static float_vec4 extract_sub_vector(vec_type_in a) {
-        return __builtin_shufflevector(a, a, 4 * n, 4 * n + 1, 4 * n + 2, 4 * n + 3);
-    }
-};
+#define EXTRACT_SUB_VECTOR4(type_vec4) \
+    template <typename vec_type_in, int n> \
+    struct ExtractSubVector<vec_type_in, type_vec4, n> { \
+        static type_vec4 extract_sub_vector(vec_type_in a) { \
+            return __builtin_shufflevector(a, a, 4 * n, 4 * n + 1, 4 * n + 2, 4 * n + 3); \
+        } \
+    };
 
-template <typename vec_type_in, int n>
-struct ExtractSubVector<vec_type_in, float_vec8, n> {
-    static float_vec8 extract_sub_vector(vec_type_in a) {
-        return __builtin_shufflevector(a, a, 8 * n, 8 * n + 1, 8 * n + 2, 8 * n + 3, 8 * n + 4, 8 * n + 5, 8 * n + 6, 8 * n + 7);
-    }
-};
+#define EXTRACT_SUB_VECTOR8(type_vec8) \
+    template <typename vec_type_in, int n> \
+    struct ExtractSubVector<vec_type_in, type_vec8, n> { \
+        static type_vec8 extract_sub_vector(vec_type_in a) { \
+            return __builtin_shufflevector(a, a, 8 * n, 8 * n + 1, 8 * n + 2, 8 * n + 3, 8 * n + 4, 8 * n + 5, 8 * n + 6, 8 * n + 7); \
+        } \
+    };
+
+EXTRACT_SUB_VECTOR1(float)
+EXTRACT_SUB_VECTOR2(float_vec2)
+EXTRACT_SUB_VECTOR4(float_vec4)
+EXTRACT_SUB_VECTOR8(float_vec8)
+EXTRACT_SUB_VECTOR1(int32_t)
+EXTRACT_SUB_VECTOR2(int32_vec2)
+EXTRACT_SUB_VECTOR4(int32_vec4)
+EXTRACT_SUB_VECTOR8(int32_vec8)
+EXTRACT_SUB_VECTOR1(int64_t)
+EXTRACT_SUB_VECTOR2(int64_vec2)
+EXTRACT_SUB_VECTOR4(int64_vec4)
+
+// template <typename vec_type_in, typename vec_type_out, int n>
+// struct ExtractSubVector {};
+
+// template <typename vec_type_in, int n>
+// struct ExtractSubVector<vec_type_in, float_vec1, n> {
+//     static float_vec1 extract_sub_vector(vec_type_in a) {
+//         return a[n];
+//     }
+// };
+
+// template <typename vec_type_in, int n>
+// struct ExtractSubVector<vec_type_in, float_vec2, n> {
+//     static float_vec2 extract_sub_vector(vec_type_in a) {
+//         return __builtin_shufflevector(a, a, 2 * n, 2 * n + 1);
+//     }
+// };
+
+// template <typename vec_type_in, int n>
+// struct ExtractSubVector<vec_type_in, float_vec4, n> {
+//     static float_vec4 extract_sub_vector(vec_type_in a) {
+//         return __builtin_shufflevector(a, a, 4 * n, 4 * n + 1, 4 * n + 2, 4 * n + 3);
+//     }
+// };
+
+// template <typename vec_type_in, int n>
+// struct ExtractSubVector<vec_type_in, float_vec8, n> {
+//     static float_vec8 extract_sub_vector(vec_type_in a) {
+//         return __builtin_shufflevector(a, a, 8 * n, 8 * n + 1, 8 * n + 2, 8 * n + 3, 8 * n + 4, 8 * n + 5, 8 * n + 6, 8 * n + 7);
+//     }
+// };
 
 template <int _taps, typename vec_type, const int indices[_taps], const typename ElementType<vec_type>::type vals[_taps]>
 struct TimeInvariantKernel {

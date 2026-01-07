@@ -17,3 +17,10 @@ Code generation is handled by `src/vecrec/codegen.py`, which translates the inte
 
 `src/vecrec/transform.py` contains various transformations that can be applied to signal expressions.
 These transformations are delicate and changes to it require careful consideration in order to maintain correctness.
+
+## Testing and Typechecking
+
+* `uv run mypy src`
+* `uv run mypy tests`
+* `uv run mypy benchmarks`
+* `uv run pytest`
