@@ -1,4 +1,4 @@
-from typing import List, Optional, TYPE_CHECKING, Sequence
+from typing import List, Optional, TYPE_CHECKING, Sequence, Dict
 from vecrec.expr import *
 from vecrec.util import ElementType
 import numpy as np
@@ -41,7 +41,13 @@ class CodeGen:
             case ElementType.Float:
                 return f"float_vec{lanes}"
             case ElementType.I32:
-                raise NotImplementedError
+                return f"int32_vec{lanes}"
+            case ElementType.U32:
+                return f"uint32_vec{lanes}"
+            case ElementType.I64:
+                return f"int64_vec{lanes}"
+            case ElementType.U64:
+                return f"uint64_vec{lanes}"
 
     def clear(self):
         self.counter = 0
@@ -51,7 +57,7 @@ class CodeGen:
         self.clear()
         code = self.generate_signal(expr)
         vars = self.collect_variables(expr)
-        args = ", ".join(f"const {ElementType.Float.to_str()} *{var}" for var in vars)
+        args = ", ".join(f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items()))
         text = "\n".join(
             [
                 f"auto make_{name}({args}) {{",
@@ -72,8 +78,8 @@ class CodeGen:
         match expr:
             case Num(value):
                 return Code(
-                    f"Signal1DConstant<{self.get_vec_type(ElementType.Float, expr.lanes)}>({value})",
-                    ElementType.Float,
+                    f"Signal1DConstant<{self.get_vec_type(expr.element_type, expr.lanes)}>({value})",
+                    expr.element_type,
                     expr.lanes,
                 )
             case SignalExprBinOp(a, b):
@@ -89,8 +95,8 @@ class CodeGen:
 
             case Var(name):
                 return Code(
-                    f"Signal1D<{self.get_vec_type(ElementType.Float, expr.lanes)}>({name})",
-                    ElementType.Float,
+                    f"Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({name})",
+                    expr.element_type,
                     expr.lanes,
                 )
             case Convolve(a, f):
@@ -126,7 +132,7 @@ class CodeGen:
         assert expr.lanes is not None
         match expr:
             case TIKernel(_):
-                vec_type = self.get_vec_type(ElementType.Float, expr.lanes)
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
 
                 taps, indices, values = expr.to_sparse_repr()
                 index_args = ", ".join(map(str, indices))
@@ -139,12 +145,12 @@ class CodeGen:
                     f"constexpr static int {index_var}[{taps}] = {{{index_args}}};",
                 )
                 self.prologue.append(
-                    f"constexpr static {ElementType.Float.to_str()} {value_var}[{taps}] = {{{value_args}}};",
+                    f"constexpr static {expr.element_type.to_str()} {value_var}[{taps}] = {{{value_args}}};",
                 )
 
                 return Code(
                     f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
-                    ElementType.Float,
+                    expr.element_type,
                     expr.lanes,
                     taps=taps,
                 )
@@ -215,15 +221,16 @@ class CodeGen:
             )
 
     def collect_variables(
-        self, expr: RecLang, vars: Optional[set[str]] = None
-    ) -> set[str]:
+        self, expr: RecLang, vars: Optional[Dict[str, ElementType]] = None
+    ) -> Dict[str, ElementType]:
         if vars is None:
-            vars = set()
+            vars = {}
 
         match expr:
             case Var(name):
-                # TODO: variables need have type information
-                vars.add(name)
+                if name in vars and vars[name] != expr.element_type:
+                    raise ValueError(f"Variable {name} has inconsistent element types: {vars[name]} vs {expr.element_type}")
+                vars[name] = expr.element_type
             case _:
                 for c in expr.children():
                     self.collect_variables(c, vars)
@@ -268,7 +275,7 @@ def generate_benchmark(
 ) -> None:
     """
     Generate a C++ benchmarking program for the given kernels.
-    
+
     Args:
         codegen: CodeGen instance used to generate the kernels
         exprs: List of signal expressions corresponding to each kernel
@@ -281,16 +288,16 @@ def generate_benchmark(
         benchmark_iterations: Number of iterations for timing
     """
     assert len(exprs) == len(kernel_names), "Number of expressions and kernel names must match"
-    
+
     # Collect variables from all expressions
-    all_vars = set()
+    all_vars: Dict[str, ElementType] = {}
     for expr in exprs:
-        vars = codegen.collect_variables(expr)
-        all_vars.update(vars)
-    
+        vars_dict = codegen.collect_variables(expr)
+        all_vars.update(vars_dict)
+
     # Generate the benchmark program
     benchmark_code = _generate_benchmark_code(
-        list(all_vars),
+        all_vars,
         kernel_names,
         kernel_header_path,
         include_correctness_check,
@@ -305,7 +312,7 @@ def generate_benchmark(
 
 
 def _generate_benchmark_code(
-    all_vars: List[str],
+    all_vars: Dict[str, ElementType],
     kernel_names: Sequence[str],
     header_path: str,
     include_correctness_check: bool,
@@ -315,7 +322,7 @@ def _generate_benchmark_code(
     benchmark_iterations: int,
 ) -> str:
     """Generate the complete C++ benchmark code."""
-    
+
     # Start with includes
     benchmark_text = f'#include "{header_path}"\n'
     benchmark_text += "#include <iostream>\n"
@@ -323,26 +330,46 @@ def _generate_benchmark_code(
     benchmark_text += "#include <vector>\n"
     benchmark_text += "#include <cmath>\n"
     benchmark_text += "#include <random>\n\n"
-    
+
     if include_correctness_check:
         benchmark_text += _generate_correctness_check_helper(correctness_tolerance)
-    
+
     # Generate main function
     benchmark_text += "int main() {\n"
     benchmark_text += f"    const int N = {input_size};\n"
     benchmark_text += f"    const int warmup = {warmup_iterations};\n"
     benchmark_text += f"    const int iterations = {benchmark_iterations};\n\n"
-    
+
     # Generate input data initialization
     benchmark_text += "    // Initialize input data\n"
     benchmark_text += "    std::random_device rd;\n"
     benchmark_text += "    std::mt19937 gen(rd());\n"
-    benchmark_text += "    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);\n\n"
-    
-    for var in sorted(all_vars):
-        benchmark_text += f"    std::vector<float> {var}(N);\n"
+
+    # Determine which distributions are needed
+    needs_float = any(elt_type == ElementType.Float for elt_type in all_vars.values())
+    needs_int32 = any(elt_type in (ElementType.I32, ElementType.U32) for elt_type in all_vars.values())
+    needs_int64 = any(elt_type in (ElementType.I64, ElementType.U64) for elt_type in all_vars.values())
+
+    if needs_float:
+        benchmark_text += "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
+    if needs_int32:
+        benchmark_text += "    std::uniform_int_distribution<int32_t> int32_dis(-1000, 1000);\n"
+    if needs_int64:
+        benchmark_text += "    std::uniform_int_distribution<int64_t> int64_dis(-1000000, 1000000);\n"
+    benchmark_text += "\n"
+
+    for var, elt_type in sorted(all_vars.items()):
+        cpp_type = elt_type.to_str()
+        if elt_type == ElementType.Float:
+            dist = "float_dis"
+        elif elt_type in (ElementType.I32, ElementType.U32):
+            dist = "int32_dis"
+        else:  # I64 or U64
+            dist = "int64_dis"
+
+        benchmark_text += f"    std::vector<{cpp_type}> {var}(N);\n"
         benchmark_text += f"    for (int i = 0; i < N; i++) {{\n"
-        benchmark_text += f"        {var}[i] = dis(gen);\n"
+        benchmark_text += f"        {var}[i] = {dist}(gen);\n"
         benchmark_text += f"    }}\n\n"
     
     # Generate output buffers for each kernel

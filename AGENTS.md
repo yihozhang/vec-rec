@@ -7,7 +7,7 @@ the computation of the current pixel depends on pixels that are far apart, allow
 
 ## Running VecRec
 
-VecRec is a Python library. You can run the example in `src/vecrec/__init__.py` via `uv run vecrec`.
+VecRec is a Python library. You can run the example in `src/vecrec/__init__.py` via `uv run vecrec`. There are other examples under benchmarks that can be run via `uv run python benchmarks/...`, although some have not been implemented.
 
 
 ## Internals

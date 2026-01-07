@@ -1,5 +1,6 @@
 import numpy as np
 from vecrec.expr import TIKernel, Type
+from vecrec.util import ElementType
 import pytest
 from typing import List, Tuple
 import numpy.typing as npt
@@ -8,7 +9,9 @@ __all__ = ["factorize_polynomial"]
 
 
 def factorize_polynomial(
-    coefficients: List[float] | npt.NDArray[np.float64], tolerance: float = 1e-10
+    coefficients: List[float] | npt.NDArray[np.float64],
+    element_type: ElementType,
+    tolerance: float = 1e-10,
 ) -> List[TIKernel]:
     """
     Factorize a polynomial into products of first-order and second-order factors.
@@ -96,5 +99,5 @@ def factorize_polynomial(
     elif len(second_order) > 0:
         second_order[-1][0] *= leading_coef
 
-    return [TIKernel(f, Type.Arith) for f in first_order] + [TIKernel(f, Type.Arith) for f in second_order]
+    return [TIKernel(f, Type.Arith, element_type) for f in first_order] + [TIKernel(f, Type.Arith, element_type) for f in second_order]
 

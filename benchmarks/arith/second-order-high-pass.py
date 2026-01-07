@@ -14,8 +14,8 @@ from vecrec.codegen import (
 def main():
     lanes = 512
     program = Recurse(
-        TIKernel([0, 1.6, -0.64], Type.Arith),
-        Convolve(TIKernel([1, -2, 1], Type.Arith), Var("g", Type.Arith)),
+        TIKernel([0, 1.6, -0.64], Type.Arith, ElementType.Float),
+        Convolve(TIKernel([1, -2, 1], Type.Arith, ElementType.Float), Var("g", Type.Arith, ElementType.Float)),
     )
     transforms = Seq(
         Optional(Seq(Preorder(Try(Factorize())), Preorder(Try(ConstantFold)))),

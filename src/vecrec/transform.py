@@ -128,14 +128,14 @@ class Dilate(Transform):
             even[0::stride] = k.data[0::stride]
             odd = [a - b for a, b in zip(k.data, even)]
 
-            even_k = TIKernel(even, Type.Arith)
-            odd_k = TIKernel(odd, Type.Arith)
+            even_k = TIKernel(even, Type.Arith, k.element_type)
+            odd_k = TIKernel(odd, Type.Arith, k.element_type)
 
             if len(odd_k) == 0:
                 stride *= 2
                 continue
 
-            f = TIKernel.i(Type.Arith) - even_k + odd_k
+            f = TIKernel.i(Type.Arith, k.element_type) - even_k + odd_k
             i = -even_k * even_k + 2 * even_k + odd_k * odd_k
             return f, i
 
@@ -162,11 +162,11 @@ class Delay(Transform):
                 )
                 if val == 0:
                     return []
-                coeff = TIKernel.z(Type.Arith, -pos) * val
+                coeff = TIKernel.z(Type.Arith, expr.element_type, -pos) * val
                 return [
                     Recurse(
-                        a + coeff * (a - TIKernel.i(Type.Arith)),
-                        Convolve(TIKernel.i(Type.Arith) + coeff, g),
+                        a + coeff * (a - TIKernel.i(Type.Arith, expr.element_type)),
+                        Convolve(TIKernel.i(Type.Arith, expr.element_type) + coeff, g),
                     )
                 ]
             case _:
@@ -184,8 +184,8 @@ class ComposeRecurse(Transform):
             case SAdd(Recurse(TIKernel(_) as a, g), Recurse(TIKernel(_) as b, h)):
                 c = KSub(KAdd(a, b), KConvolve(a, b))
                 w = SAdd(
-                    Convolve(KSub(TIKernel.i(Type.Arith), b), g),
-                    Convolve(KSub(TIKernel.i(Type.Arith), a), h),
+                    Convolve(KSub(TIKernel.i(Type.Arith, a.element_type), b), g),
+                    Convolve(KSub(TIKernel.i(Type.Arith, b.element_type), a), h),
                 )
                 return [Recurse(c, w)]
             case _:
@@ -198,8 +198,8 @@ class Factorize(Transform):
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
-            case Convolve(TIKernel(a), g):
-                factors: Sequence[KernelExpr] = factorize_polynomial(a)
+            case Convolve(TIKernel(a) as kernel, g):
+                factors: Sequence[KernelExpr] = factorize_polynomial(a, kernel.element_type)
                 assert len(factors) > 0
                 # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
                 e = reduce(lambda acc, factor: Convolve(factor, acc), factors, g)
@@ -214,39 +214,40 @@ class DilateTVWithSingleOddOrder(Transform):
     def all_nonzeros(self, a: Sequence[SignalExpr]) -> List[int]:
         inzs = []
         for i, v in enumerate(a):
-            if v != Num(0, Type.Arith):
+            if not (isinstance(v, Num) and v.ty.is_zero(v.value)):
                 inzs.append(i)
         return inzs
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
-            case Recurse(TVKernel(a), g):
-                even: List[SignalExpr] = [Num(0, Type.Arith)] * len(a)
-                odd: List[SignalExpr] = [Num(0, Type.Arith)] * len(a)
+            case Recurse(TVKernel(a) as kernel, g):
+                even: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
+                odd: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
                 even[0::2] = a[0::2]
                 odd[1::2] = a[1::2]
                 inzs = self.all_nonzeros(odd)
                 if len(inzs) == 1:
                     inz = inzs[0]
-                    A = TVKernel(odd, Type.Arith)
-                    B = TVKernel(even, Type.Arith)
+                    A = TVKernel(odd, Type.Arith, kernel.element_type)
+                    B = TVKernel(even, Type.Arith, kernel.element_type)
                     C = KConvolve(
                         TVKernel(
-                            [Num(0, Type.Arith)] * (inz - 1)
+                            [Num(0, Type.Arith, kernel.element_type)] * (inz - 1)
                             + [
                                 PointwiseDiv(
                                     odd[inz],
-                                    Convolve(TIKernel.z(Type.Arith, -inz), odd[inz]),
+                                    Convolve(TIKernel.z(Type.Arith, kernel.element_type, -inz), odd[inz]),
                                 )
                             ],
                             Type.Arith,
+                            kernel.element_type,
                         ),
                         B,
                     )
                     exprs = [B, C, KConvolve(A, A), KNeg(KConvolve(C, B))]
                     expr = Recurse(
                         KAdd.of(exprs),
-                        Convolve(KAdd.of([TIKernel.i(Type.Arith), A, KNeg(C)]), g),
+                        Convolve(KAdd.of([TIKernel.i(Type.Arith, kernel.element_type), A, KNeg(C)]), g),
                     )
                     return [expr]
                 elif len(inzs) == 0:
@@ -480,12 +481,12 @@ class AnnotateLanes(Transform):
             return e
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        element_type = expr.element_type
         match expr:
             case Recurse(a, g):
-                # TODO: ElementType.Float should be obtained from expr, not made up.
-                lanes, _ = a.time_delay(self.max_lanes(ElementType.Float))
+                lanes, _ = a.time_delay(self.max_lanes(element_type))
             case _:
-                lanes = self.max_lanes(ElementType.Float)
+                lanes = self.max_lanes(element_type)
 
         if expr.is_leaf():
             return [expr.with_lanes(lanes)]
@@ -500,8 +501,8 @@ class AnnotateLanes(Transform):
             return [new_expr]
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        # TODO: this should not be a made up type
-        max_lanes = self.max_lanes(ElementType.Float)
+        element_type = expr.element_type
+        max_lanes = self.max_lanes(element_type)
         if isinstance(expr, TVKernel):
             data = expr.data
 
@@ -514,7 +515,7 @@ class AnnotateLanes(Transform):
                     return e
 
             new_data = [convert_lanes(self.apply_signal(sig)[0]) for sig in data]
-            new_expr: KernelExpr = TVKernel(new_data, expr.ty)
+            new_expr: KernelExpr = TVKernel(new_data, expr.ty, element_type)
             new_expr.lanes = max_lanes
             return [new_expr]
         elif expr.is_leaf():
@@ -548,7 +549,7 @@ class PushDownConvertLanesImpl(Transform):
             return new_expr
         elif isinstance(expr, KernelExpr):
             if isinstance(expr, TIKernel):
-                new_kernel_expr: KernelExpr = TIKernel(expr.data, expr.ty)
+                new_kernel_expr: KernelExpr = TIKernel(expr.data, expr.ty, expr.element_type)
                 new_kernel_expr.lanes = lanes
                 return new_kernel_expr
             elif isinstance(expr, TVKernel):
@@ -559,7 +560,7 @@ class PushDownConvertLanesImpl(Transform):
             else:
                 assert False, "unreachable"
         elif isinstance(expr, Var):
-            new_signal_expr: SignalExpr = Var(expr.name, expr.ty)
+            new_signal_expr: SignalExpr = Var(expr.name, expr.ty, expr.element_type)
             new_signal_expr.lanes = lanes
             return new_signal_expr
         else:

@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -12,11 +13,55 @@ typedef float float_vec4 __attribute__((ext_vector_type(4)));
 typedef float float_vec8 __attribute__((ext_vector_type(8)));
 typedef float float_vec16 __attribute__((ext_vector_type(16)));
 
+typedef int32_t int32_vec1;
+typedef int32_t int32_vec2 __attribute__((ext_vector_type(2)));
+typedef int32_t int32_vec4 __attribute__((ext_vector_type(4)));
+typedef int32_t int32_vec8 __attribute__((ext_vector_type(8)));
+typedef int32_t int32_vec16 __attribute__((ext_vector_type(16)));
+
+typedef uint32_t uint32_vec1;
+typedef uint32_t uint32_vec2 __attribute__((ext_vector_type(2)));
+typedef uint32_t uint32_vec4 __attribute__((ext_vector_type(4)));
+typedef uint32_t uint32_vec8 __attribute__((ext_vector_type(8)));
+typedef uint32_t uint32_vec16 __attribute__((ext_vector_type(16)));
+
+typedef int64_t int64_vec1;
+typedef int64_t int64_vec2 __attribute__((ext_vector_type(2)));
+typedef int64_t int64_vec4 __attribute__((ext_vector_type(4)));
+typedef int64_t int64_vec8 __attribute__((ext_vector_type(8)));
+
+typedef uint64_t uint64_vec1;
+typedef uint64_t uint64_vec2 __attribute__((ext_vector_type(2)));
+typedef uint64_t uint64_vec4 __attribute__((ext_vector_type(4)));
+typedef uint64_t uint64_vec8 __attribute__((ext_vector_type(8)));
+
 constexpr int vec_lanes_of(float) { return 1; }
 constexpr int vec_lanes_of(float_vec2) { return 2; }
 constexpr int vec_lanes_of(float_vec4) { return 4; }
 constexpr int vec_lanes_of(float_vec8) { return 8; }
 constexpr int vec_lanes_of(float_vec16) { return 16; }
+
+constexpr int vec_lanes_of(int32_t) { return 1; }
+constexpr int vec_lanes_of(int32_vec2) { return 2; }
+constexpr int vec_lanes_of(int32_vec4) { return 4; }
+constexpr int vec_lanes_of(int32_vec8) { return 8; }
+constexpr int vec_lanes_of(int32_vec16) { return 16; }
+
+constexpr int vec_lanes_of(uint32_t) { return 1; }
+constexpr int vec_lanes_of(uint32_vec2) { return 2; }
+constexpr int vec_lanes_of(uint32_vec4) { return 4; }
+constexpr int vec_lanes_of(uint32_vec8) { return 8; }
+constexpr int vec_lanes_of(uint32_vec16) { return 16; }
+
+constexpr int vec_lanes_of(int64_t) { return 1; }
+constexpr int vec_lanes_of(int64_vec2) { return 2; }
+constexpr int vec_lanes_of(int64_vec4) { return 4; }
+constexpr int vec_lanes_of(int64_vec8) { return 8; }
+
+constexpr int vec_lanes_of(uint64_t) { return 1; }
+constexpr int vec_lanes_of(uint64_vec2) { return 2; }
+constexpr int vec_lanes_of(uint64_vec4) { return 4; }
+constexpr int vec_lanes_of(uint64_vec8) { return 8; }
 
 template <typename T>
 struct ElementType {};
@@ -40,6 +85,82 @@ struct ElementType<float_vec8> {
 template <>
 struct ElementType<float_vec16> {
     using type = float;
+};
+
+template <>
+struct ElementType<int32_t> {
+    using type = int32_t;
+};
+template <>
+struct ElementType<int32_vec2> {
+    using type = int32_t;
+};
+template <>
+struct ElementType<int32_vec4> {
+    using type = int32_t;
+};
+template <>
+struct ElementType<int32_vec8> {
+    using type = int32_t;
+};
+template <>
+struct ElementType<int32_vec16> {
+    using type = int32_t;
+};
+
+template <>
+struct ElementType<uint32_t> {
+    using type = uint32_t;
+};
+template <>
+struct ElementType<uint32_vec2> {
+    using type = uint32_t;
+};
+template <>
+struct ElementType<uint32_vec4> {
+    using type = uint32_t;
+};
+template <>
+struct ElementType<uint32_vec8> {
+    using type = uint32_t;
+};
+template <>
+struct ElementType<uint32_vec16> {
+    using type = uint32_t;
+};
+
+template <>
+struct ElementType<int64_t> {
+    using type = int64_t;
+};
+template <>
+struct ElementType<int64_vec2> {
+    using type = int64_t;
+};
+template <>
+struct ElementType<int64_vec4> {
+    using type = int64_t;
+};
+template <>
+struct ElementType<int64_vec8> {
+    using type = int64_t;
+};
+
+template <>
+struct ElementType<uint64_t> {
+    using type = uint64_t;
+};
+template <>
+struct ElementType<uint64_vec2> {
+    using type = uint64_t;
+};
+template <>
+struct ElementType<uint64_vec4> {
+    using type = uint64_t;
+};
+template <>
+struct ElementType<uint64_vec8> {
+    using type = uint64_t;
 };
 
 inline std::string string_of(float_vec4 x) {

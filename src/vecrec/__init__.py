@@ -9,8 +9,8 @@ from vecrec.expr import Convolve, Recurse, TIKernel, Type, Var
 
 
 def main():
-    kernel = TIKernel([0, 1.8, -0.9], Type.Arith)
-    signal = Var("x", Type.Arith)
+    kernel = TIKernel([0, 1.8, -0.9], Type.Arith, ElementType.Float)
+    signal = Var("x", Type.Arith, ElementType.Float)
     expr = Recurse(kernel, signal)
     
     constant_fold = Preorder(Try(ConstantFold))

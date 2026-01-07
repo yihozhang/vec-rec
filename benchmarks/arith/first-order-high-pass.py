@@ -19,8 +19,8 @@ def main():
 	a = 0.8
 
 	program = Recurse(
-		TIKernel([0, a], Type.Arith),
-		Convolve(TIKernel([a, -a], Type.Arith), Var("g", Type.Arith)),
+		TIKernel([0, a], Type.Arith, ElementType.Float),
+		Convolve(TIKernel([a, -a], Type.Arith, ElementType.Float), Var("g", Type.Arith, ElementType.Float)),
 	)
 
 	transforms = Seq(

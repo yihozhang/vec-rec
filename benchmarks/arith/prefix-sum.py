@@ -8,7 +8,7 @@ from vecrec.codegen import CodeGen, generate_and_run_benchmark, generate_benchma
 
 def main():
     lanes = 512
-    program = Recurse(TIKernel([0, 1], Type.Arith), Var("g", Type.Arith))
+    program = Recurse(TIKernel([0, 1], Type.Arith, ElementType.Float), Var("g", Type.Arith, ElementType.Float))
     transforms = Seq(
         Any(
             Noop(),

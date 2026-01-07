@@ -12,7 +12,7 @@ from vecrec.codegen import (
 
 
 def main():
-    program = Recurse(TIKernel([0, 1.8, -0.9], Type.Arith), Var("g", Type.Arith))
+    program = Recurse(TIKernel([0, 1.8, -0.9], Type.Arith, ElementType.Float), Var("g", Type.Arith, ElementType.Float))
     transforms = Seq(
         Optional(
             Seq(

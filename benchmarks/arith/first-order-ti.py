@@ -13,8 +13,8 @@ from vecrec.codegen import (
 
 def main():
 	for program in [
-        Recurse(TIKernel([0, 1.0, 1.0], Type.Arith), Num(1.0, Type.Arith)),
-        Recurse(TIKernel([0, 1.0, 1.0], Type.Arith), Var("x", Type.Arith)),
+        Recurse(TIKernel([0, 1.0, 1.0], Type.Arith, ElementType.Float), Num(1.0, Type.Arith, ElementType.Float)),
+        Recurse(TIKernel([0, 1.0, 1.0], Type.Arith, ElementType.Float), Var("x", Type.Arith, ElementType.Float)),
     ]:
             transforms = Seq(
                 Optional(
