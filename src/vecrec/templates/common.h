@@ -723,14 +723,20 @@ struct ConvertOne2N {
         void run(vec_type *out) { \
             vec_type left = s1.run();                       \
             vec_type right = s2.run();                      \
-            *out = left operator right;                     \
+            *out = operator(left, right);                     \
         }                                                   \
     }
 
-BinOp(SAdd, +);
-BinOp(SSub, -);
-BinOp(PointwiseMul, *);
-BinOp(PointwiseDiv, /);
+BinOp(SAdd, [] (auto left, auto right) { return left + right; });
+BinOp(SSub, [] (auto left, auto right) { return left - right; });
+BinOp(PointwiseMul, [] (auto left, auto right) { return left * right; });
+BinOp(PointwiseDiv, [] (auto left, auto right) { return left / right; });
+
+// No Sub and Div
+BinOp(SAddTropMax, [] (auto left, auto right) { return __builtin_elementwise_max(left, right); });
+BinOp(SAddTropMin, [] (auto left, auto right) { return __builtin_elementwise_min(left, right); });
+BinOp(PointwiseMulTropMax, [] (auto left, auto right) { return left + right; });
+BinOp(PointwiseMulTropMin, [] (auto left, auto right) { return left + right; });
 
 template <typename vec_type, typename S1>
 struct SNeg {

@@ -9,12 +9,14 @@ TEMPLATE = files("vecrec.templates") / "common.h"
 
 class Code:
     text: str
+    ty: Type
     element_type: ElementType
     lanes: int
     taps: int | None
 
-    def __init__(self, text, element_type, lanes, taps=None):
+    def __init__(self, text, ty, element_type, lanes, taps=None):
         self.text = text
+        self.ty = ty
         self.element_type = element_type
         self.lanes = lanes
         self.taps = taps
@@ -49,6 +51,15 @@ class CodeGen:
         self.counter = 0
         self.prologue = []
 
+    def get_sem_suffix(self, ty: Type) -> str:
+        match ty:
+            case Type.Arith:
+                return ""
+            case Type.TropMax:
+                return "TropMax"
+            case Type.TropMin:
+                return "TropMin"
+
     def generate(self, expr: SignalExpr, name: str) -> Code:
         self.clear()
         code = self.generate_signal(expr)
@@ -65,6 +76,7 @@ class CodeGen:
         )
         return Code(
             text,
+            code.ty,
             code.element_type,
             code.lanes,
         )
@@ -73,8 +85,11 @@ class CodeGen:
         assert expr.lanes is not None
         match expr:
             case Num(value):
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+                value_str = expr.element_type.val_to_str(value, expr.ty)
                 return Code(
-                    f"Signal1DConstant<{self.get_vec_type(expr.element_type, expr.lanes)}>({value})",
+                    f"Signal1DConstant<{vec_type}>({value_str})",
+                    expr.ty,
                     expr.element_type,
                     expr.lanes,
                 )
@@ -83,15 +98,19 @@ class CodeGen:
                 code_b = self.generate_signal(b)
 
                 assert code_a.element_type == code_b.element_type
+                assert code_a.ty == code_b.ty
                 element_type = code_a.element_type
+                ty = code_a.ty
 
                 constructor = type(expr).__name__
-                program = f"{constructor}({code_a.text}, {code_b.text})"
-                return Code(program, element_type, expr.lanes)
+                suffix = self.get_sem_suffix(ty)
+                program = f"{constructor}{suffix}({code_a.text}, {code_b.text})"
+                return Code(program, ty, element_type, expr.lanes)
 
             case Var(name):
                 return Code(
                     f"Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({name})",
+                    expr.ty,
                     expr.element_type,
                     expr.lanes,
                 )
@@ -100,11 +119,13 @@ class CodeGen:
                 code_f = self.generate_signal(f)
 
                 assert code_a.element_type == code_f.element_type
+                assert code_a.ty == code_f.ty
                 element_type = code_a.element_type
+                ty = code_a.ty
 
                 vec_type = self.get_vec_type(element_type, expr.lanes)
                 program = f"make_s_convolve<{vec_type}>({code_a.text}, {code_f.text})"
-                return Code(program, element_type, expr.lanes)
+                return Code(program, ty, element_type, expr.lanes)
             case Recurse(a, g):
                 time_delay, a = a.time_delay(expr.lanes)
                 assert time_delay == a.lanes
@@ -112,12 +133,14 @@ class CodeGen:
                 code_g = self.generate_signal(g)
 
                 assert code_a.element_type == code_g.element_type
+                assert code_a.ty == code_g.ty
                 element_type = code_a.element_type
+                ty = code_a.ty
 
                 vec_type = self.get_vec_type(element_type, expr.lanes)
 
                 program = f"make_s_recurse<{vec_type}>({code_a.text}, {code_g.text})"
-                return Code(program, element_type, a.lanes)
+                return Code(program, ty, element_type, a.lanes)
             case ConvertLanes(a):
                 code_a = self.generate_signal(a)
                 code_a = self.enforce_lanes(code_a, expr.lanes)
@@ -132,7 +155,7 @@ class CodeGen:
 
                 taps, indices, values = expr.to_sparse_repr()
                 index_args = ", ".join(map(str, indices))
-                value_args = ", ".join(map(lambda v: f"{expr.element_type.val_to_str(v)}", values))
+                value_args = ", ".join(map(lambda v: f"{expr.element_type.val_to_str(v, expr.ty)}", values))
 
                 index_var = self.get_new_var()
                 value_var = self.get_new_var()
@@ -146,6 +169,7 @@ class CodeGen:
 
                 return Code(
                     f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
+                    expr.ty,
                     expr.element_type,
                     expr.lanes,
                     taps=taps,
@@ -154,6 +178,7 @@ class CodeGen:
                 taps, indices, signals = expr.to_sparse_repr()
                 signal_codes = [self.generate_signal(signal) for signal in signals]
                 element_type = signal_codes[0].element_type
+                ty = signal_codes[0].ty
                 vec_type = self.get_vec_type(element_type, expr.lanes)
                 taps = len(signal_codes)
 
@@ -167,6 +192,7 @@ class CodeGen:
 
                 return Code(
                     f"TimeVaryingKernel<{taps}, {vec_type}, {index_var}>({arguments})",
+                    ty,
                     element_type,
                     expr.lanes,
                     taps=taps,
@@ -203,6 +229,7 @@ class CodeGen:
             # upscale lanes
             return Code(
                 f"{function_name}<{vec_type_in}, {vec_type_out}>({code.text})",
+                code.ty,
                 code.element_type,
                 lanes,
                 taps=code.taps,
@@ -211,6 +238,7 @@ class CodeGen:
             # downscale lanes
             return Code(
                 f"{function_name}<{vec_type_in}, {vec_type_out}>({code.text})",
+                code.ty,
                 code.element_type,
                 lanes,
                 taps=code.taps,
@@ -284,6 +312,7 @@ def generate_benchmark(
         benchmark_iterations: Number of iterations for timing
     """
     assert len(exprs) == len(kernel_names), "Number of expressions and kernel names must match"
+    assert len(exprs) > 0, "At least one expression must be provided"
 
     # Collect variables from all expressions
     all_vars: Dict[str, ElementType] = {}
@@ -294,6 +323,7 @@ def generate_benchmark(
     # Generate the benchmark program
     benchmark_code = _generate_benchmark_code(
         all_vars,
+        exprs[0].element_type,
         kernel_names,
         kernel_header_path,
         include_correctness_check,
@@ -309,6 +339,7 @@ def generate_benchmark(
 
 def _generate_benchmark_code(
     all_vars: Dict[str, ElementType],
+    output_type: ElementType,
     kernel_names: Sequence[str],
     header_path: str,
     include_correctness_check: bool,
@@ -371,7 +402,7 @@ def _generate_benchmark_code(
     # Generate output buffers for each kernel
     benchmark_text += "    // Output buffers for each kernel\n"
     for i, name in enumerate(kernel_names):
-        benchmark_text += f"    std::vector<{elt_type.to_str()}> output_{name}(N);\n"
+        benchmark_text += f"    std::vector<{output_type.to_str()}> output_{name}(N);\n"
     benchmark_text += "\n"
     
     # Generate benchmark code for each kernel

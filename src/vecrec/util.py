@@ -1,11 +1,14 @@
 from enum import Enum
+import numpy as np
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vecrec.expr import Type
 
 class ElementType(Enum):
     Float = 1
     I32 = 2
-    U32 = 3
     I64 = 4
-    U64 = 5
 
     def bit_width(self) -> int:
         match self:
@@ -25,7 +28,17 @@ class ElementType(Enum):
             case ElementType.I64:
                 return "int64_t"
     
-    def val_to_str(self, val) -> str:
+    def val_to_str(self, val: float, ty: "Type | None" = None) -> str:
+        # Handle infinity for tropical types
+        if ty is not None and np.isinf(val):
+            if self == ElementType.Float:
+                return "-INFINITY" if val < 0 else "INFINITY"
+            elif self == ElementType.I32:
+                return "INT32_MIN" if val < 0 else "INT32_MAX"
+            elif self == ElementType.I64:
+                return "INT64_MIN" if val < 0 else "INT64_MAX"
+
+        # Regular value handling
         match self:
             case ElementType.Float:
                 return f"{val}"

@@ -78,14 +78,43 @@ class ConstantFoldConvolve(Transform):
 
 def ArithTransform(cls):
     cls.apply_kernel_impl = cls.apply_kernel
+    cls.apply_signal_impl = cls.apply_signal
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:  # type: ignore
         if expr.ty == Type.Arith:
             return self.apply_kernel_impl(expr)
         else:
             return []
+    
+    def apply_signal(self, expr: SignalExpr) -> Sequence[KernelExpr]:  # type: ignore
+        if expr.ty == Type.Arith:
+            return self.apply_signal_impl(expr)
+        else:
+            return []
 
     cls.apply_kernel = apply_kernel
+    cls.apply_signal = apply_signal
+    return cls
+
+
+def TropTransform(cls):
+    cls.apply_kernel_impl = cls.apply_kernel
+    cls.apply_signal_impl = cls.apply_signal
+
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:  # type: ignore
+        if expr.ty in (Type.TropMax, Type.TropMin):
+            return self.apply_kernel_impl(expr)
+        else:
+            return []
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:  # type: ignore
+        if expr.ty in (Type.TropMax, Type.TropMin):
+            return self.apply_signal_impl(expr)
+        else:
+            return []
+
+    cls.apply_kernel = apply_kernel
+    cls.apply_signal = apply_signal
     return cls
 
 
