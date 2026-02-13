@@ -1,8 +1,7 @@
 import numpy as np
 from vecrec.expr import TIKernel, Type
 from vecrec.util import ElementType
-import pytest
-from typing import List, Tuple
+from typing import List
 import numpy.typing as npt
 
 __all__ = ["factorize_polynomial"]

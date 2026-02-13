@@ -1,17 +1,11 @@
 from __future__ import annotations
-from abc import abstractmethod
-import copy
-from dataclasses import dataclass
-from enum import Enum
 from functools import reduce
-import numbers
-from typing import Callable, List, Optional, Dict, Sequence, Tuple, overload
-import numpy as np
+from typing import List, Sequence, Tuple, overload
 
 from vecrec.expr.signal import Num
 from vecrec.expr.signal_ops import *
 from vecrec.util import allclose, ElementType
-from .base import Type, KernelExpr, KernelExpr2D, SignalExpr, SignalExpr2D
+from .base import Type, KernelExpr, KernelExpr2D, SignalExpr
 
 class TIKernel(KernelExpr):
     @staticmethod

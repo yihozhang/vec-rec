@@ -1,15 +1,8 @@
 from __future__ import annotations
-from abc import abstractmethod
-import copy
 from dataclasses import dataclass
-from enum import Enum
-from functools import reduce
-import numbers
-from typing import Callable, List, Optional, Dict, Sequence, Tuple, overload
-import numpy as np
 
 from .base import *
-from vecrec.util import allclose, ElementType
+from vecrec.util import ElementType
 
 
 class Num(SignalExpr):

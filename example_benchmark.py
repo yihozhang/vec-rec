@@ -8,7 +8,7 @@ This script shows how to:
 3. Optionally include correctness checking
 """
 
-from vecrec import CodeGen, instantiate_kernels, generate_benchmark
+from vecrec import CodeGen, instantiate_kernels
 from vecrec.codegen import generate_and_run_benchmark
 from vecrec.transform import Any, ConstantFold, Delay, Dilate, Seq, Preorder, Try
 from vecrec.expr import Recurse, TIKernel, Type, Var

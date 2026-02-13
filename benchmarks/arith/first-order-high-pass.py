@@ -9,8 +9,6 @@ from vecrec.transform import *
 from vecrec.codegen import (
 	CodeGen,
 	generate_and_run_benchmark,
-	generate_benchmark,
-	instantiate_kernels,
 )
 
 

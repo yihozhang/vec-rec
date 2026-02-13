@@ -1,10 +1,8 @@
 from __future__ import annotations
-from functools import partial, reduce
+from functools import reduce
 import itertools
 import copy
-import numpy as np
-from typing import Callable, List, Dict, Protocol, Sequence, Tuple, overload
-from abc import abstractmethod
+from typing import List, Sequence, Tuple, overload
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.factorize import factorize_polynomial

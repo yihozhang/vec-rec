@@ -1,18 +1,12 @@
 from __future__ import annotations
-from abc import abstractmethod
-import copy
 from dataclasses import dataclass
-from enum import Enum
 from functools import reduce
-import numbers
-from typing import Callable, List, Optional, Dict, Sequence, Tuple, overload
-import numpy as np
+from typing import Callable, List
 
 from vecrec.expr.signal import Var2D
-from vecrec.util import allclose, ElementType
+from vecrec.util import ElementType
 
 
-from dataclasses import dataclass
 from .base import *
 
 

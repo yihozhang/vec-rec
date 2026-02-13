@@ -1,7 +1,6 @@
-from typing import List, Optional, TYPE_CHECKING, Sequence, Dict
+from typing import List, Optional, Sequence, Dict
 from vecrec.expr import *
 from vecrec.util import ElementType
-import numpy as np
 import json
 from importlib.resources import files
 
@@ -395,9 +394,9 @@ def _generate_benchmark_code(
             dist = "int64_dis"
 
         benchmark_text += f"    std::vector<{cpp_type}> {var}(N);\n"
-        benchmark_text += f"    for (int i = 0; i < N; i++) {{\n"
+        benchmark_text += "    for (int i = 0; i < N; i++) {\n"
         benchmark_text += f"        {var}[i] = {dist}(gen);\n"
-        benchmark_text += f"    }}\n\n"
+        benchmark_text += "    }\n\n"
     
     # Generate output buffers for each kernel
     benchmark_text += "    // Output buffers for each kernel\n"
@@ -408,56 +407,56 @@ def _generate_benchmark_code(
     # Generate benchmark code for each kernel
     var_args = ", ".join(f"{var}.data()" for var in sorted(all_vars))
     
-    benchmark_text += f'    std::cout << "{{\\n";'
+    benchmark_text += '    std::cout << "{\\n";'
 
     for i, name in enumerate(kernel_names):
         benchmark_text += f"    // Benchmark {name}\n"
-        benchmark_text += f"    {{\n"
+        benchmark_text += "    {\n"
         
         benchmark_text += f"        auto kernel = make_{name}({var_args});\n"
-        benchmark_text += f"        \n"
-        benchmark_text += f"        // Warmup\n"
-        benchmark_text += f"        for (int i = 0; i < warmup; i++) {{\n"
+        benchmark_text += "        \n"
+        benchmark_text += "        // Warmup\n"
+        benchmark_text += "        for (int i = 0; i < warmup; i++) {\n"
         benchmark_text += f"            {name}_vector_type out;\n"
-        benchmark_text += f"            kernel.run(&out);\n"
-        benchmark_text += f"        }}\n\n"
+        benchmark_text += "            kernel.run(&out);\n"
+        benchmark_text += "        }\n\n"
         
-        benchmark_text += f"        // Reset kernel state\n"
+        benchmark_text += "        // Reset kernel state\n"
         benchmark_text += f"        kernel = make_{name}({var_args});\n\n"
         
-        benchmark_text += f"        // Timed run\n"
-        benchmark_text += f"        auto start = std::chrono::high_resolution_clock::now();\n"
-        benchmark_text += f"        for (int iter = 0; iter < iterations; iter++) {{\n"
-        benchmark_text += f"            // Recreate kernel for each iteration\n"
+        benchmark_text += "        // Timed run\n"
+        benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
+        benchmark_text += "            // Recreate kernel for each iteration\n"
         benchmark_text += f"            kernel = make_{name}({var_args});\n"
-        benchmark_text += f"            int pos = 0;\n"
-        benchmark_text += f"            while (pos < N) {{\n"
+        benchmark_text += "            int pos = 0;\n"
+        benchmark_text += "            while (pos < N) {\n"
         benchmark_text += f"                {name}_vector_type out;\n"
         # TODO: 16 only for avx-512 with float32.
         # This piece of code should be generalized.
-        benchmark_text += f"#pragma unroll\n"
+        benchmark_text += "#pragma unroll\n"
         benchmark_text += f"                for (int i = 0; i < 16 / vec_lanes_of({name}_vector_type{{}}); i++) {{\n"
-        benchmark_text += f"                    kernel.run(&out);\n"
+        benchmark_text += "                    kernel.run(&out);\n"
         benchmark_text += f"                    memcpy(&output_{name}[pos], &out, sizeof(out));\n"
-        benchmark_text += f"                    pos += vec_lanes_of(out);\n"
-        benchmark_text += f"                }}\n"
-        benchmark_text += f"            }}\n"
-        benchmark_text += f"        }}\n"
-        benchmark_text += f"        auto end = std::chrono::high_resolution_clock::now();\n"
-        benchmark_text += f"        \n"
-        benchmark_text += f"        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
+        benchmark_text += "                    pos += vec_lanes_of(out);\n"
+        benchmark_text += "                }\n"
+        benchmark_text += "            }\n"
+        benchmark_text += "        }\n"
+        benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += "        \n"
+        benchmark_text += "        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
         # Deciding if we need to generate the trailing comma
         if i == len(kernel_names) - 1 and not (include_correctness_check and len(kernel_names) > 1):
             benchmark_text += f'        std::cout << "  \\"{name}\\": " << duration / static_cast<double>(iterations) << "\\n";\n'
         else:
             benchmark_text += f'        std::cout << "  \\"{name}\\": " << duration / static_cast<double>(iterations) << ",\\n";\n'
-        benchmark_text += f"    }}\n\n"
+        benchmark_text += "    }\n\n"
     
     # Add correctness checking if requested
     if include_correctness_check and len(kernel_names) > 1:
         benchmark_text += _generate_correctness_check_code(kernel_names, input_size)
     
-    benchmark_text += f'    std::cout << "}}\\n";'
+    benchmark_text += '    std::cout << "}\\n";'
     
     benchmark_text += "    return 0;\n"
     benchmark_text += "}\n"
@@ -517,20 +516,20 @@ def _generate_correctness_check_code(kernel_names: Sequence[str], input_size: in
     """
     code = "    // Correctness checking\n"
     code += '    std::cout << "  \\"validation\\":{\\n";\n'
-    code += f'    int idx;'
+    code += '    int idx;'
     
     reference = kernel_names[0]
     for i in range(1, len(kernel_names)):
         name = kernel_names[i]
         code += f'    if ((idx=arrays_equal(output_{reference}, output_{name})) == output_{reference}.size()) {{\n'
         code += f'        std::cout << "    \\"{name}\\": true";\n'
-        code += f'    }} else {{\n'
+        code += '    } else {\n'
         code += f'        std::cout << "    \\"{name}\\":" << idx;\n'
-        code += f'    }}\n'
+        code += '    }\n'
         if i == len(kernel_names) - 1:
-            code += f'    std::cout << "\\n";\n'
+            code += '    std::cout << "\\n";\n'
         else:
-            code += f'    std::cout << ",\\n";\n'
+            code += '    std::cout << ",\\n";\n'
     
     code += '    std::cout << "  }\\n";\n'
     code += "\n"

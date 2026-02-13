@@ -1,5 +1,4 @@
 import pytest
-import numpy as np
 from vecrec import CodeGen, generate_and_run_benchmark
 from vecrec.transform import AnnotateLanes, PushDownConvertLanes, Seq, Preorder, Try, ConstantFold
 from vecrec.expr import Recurse, TIKernel, Type, Var, Convolve
