@@ -253,12 +253,14 @@ class TVKernel(KernelExpr):
 
 KernelConstant = TIKernel | TVKernel
 
-
+@dataclass
 class TIKernel2D(KernelExpr2D):
     """2D time-invariant kernel. data[row][col] gives the coefficient."""
     data: List[List[float]]
     ty: Type
     element_type: ElementType
+
+    __match_args__ = ("data",)
 
     def __init__(self, data: List[List[float]], ty: Type, element_type: ElementType):
         super().__init__()
@@ -283,6 +285,8 @@ class TVKernel2D(KernelExpr2D):
     ty: Type
     element_type: ElementType
 
+    __match_args__ = ("data",)
+
     def __init__(self, data: List[List[SignalExpr]], ty: Type, element_type: ElementType):
         super().__init__()
         self.data = data
@@ -291,10 +295,3 @@ class TVKernel2D(KernelExpr2D):
 
     def n_rows(self) -> int:
         return len(self.data)
-
-    def children(self) -> List[KernelExpr | SignalExpr]:
-        result: List[KernelExpr | SignalExpr] = []
-        for row in self.data:
-            for v in row:
-                result.append(v)
-        return result

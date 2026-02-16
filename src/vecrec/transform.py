@@ -5,6 +5,10 @@ import copy
 from typing import List, Sequence, Tuple, overload
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
+from vecrec.expr.base import KernelExpr2D, SignalExpr2D
+from vecrec.expr.signal import Var2D
+from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith
+from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.factorize import factorize_polynomial
 from vecrec.util import ElementType
 
@@ -14,12 +18,20 @@ class Transform:
     def apply_generic(self, expr: KernelExpr) -> Sequence[KernelExpr]: ...
     @overload
     def apply_generic(self, expr: SignalExpr) -> Sequence[SignalExpr]: ...
+    @overload
+    def apply_generic(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]: ...
+    @overload
+    def apply_generic(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]: ...
 
     def apply_generic(self, expr):
         if isinstance(expr, KernelExpr):
             return self.apply_kernel(expr)
         elif isinstance(expr, SignalExpr):
             return self.apply_signal(expr)
+        elif isinstance(expr, KernelExpr2D):
+            return self.apply_kernel2d(expr)
+        elif isinstance(expr, SignalExpr2D):
+            return self.apply_signal2d(expr)
         else:
             raise TypeError(f"Unknown expression type: {type(expr)}")
 
@@ -29,12 +41,24 @@ class Transform:
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         return []
 
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        return []
+
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        return []
+
 
 class Noop(Transform):
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         return [expr]
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        return [expr]
+    
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        return [expr]
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         return [expr]
 
 
@@ -77,6 +101,8 @@ class ConstantFoldConvolve(Transform):
 def ArithTransform(cls):
     cls.apply_kernel_impl = cls.apply_kernel
     cls.apply_signal_impl = cls.apply_signal
+    cls.apply_signal2d_impl = cls.apply_signal2d
+    cls.apply_kernel2d_impl = cls.apply_kernel2d
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:  # type: ignore
         if expr.ty == Type.Arith:
@@ -84,20 +110,36 @@ def ArithTransform(cls):
         else:
             return []
     
-    def apply_signal(self, expr: SignalExpr) -> Sequence[KernelExpr]:  # type: ignore
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:  # type: ignore
         if expr.ty == Type.Arith:
             return self.apply_signal_impl(expr)
+        else:
+            return []
+    
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:  # type: ignore
+        if expr.ty == Type.Arith:
+            return self.apply_signal2d_impl(expr)
+        else:
+            return []
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:  # type: ignore
+        if expr.ty == Type.Arith:
+            return self.apply_kernel2d_impl(expr)
         else:
             return []
 
     cls.apply_kernel = apply_kernel
     cls.apply_signal = apply_signal
+    cls.apply_signal2d = apply_signal2d
+    cls.apply_kernel2d = apply_kernel2d
     return cls
 
 
 def TropTransform(cls):
     cls.apply_kernel_impl = cls.apply_kernel
     cls.apply_signal_impl = cls.apply_signal
+    cls.apply_signal2d_impl = cls.apply_signal2d
+    cls.apply_kernel2d_impl = cls.apply_kernel2d
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:  # type: ignore
         if expr.ty in (Type.TropMax, Type.TropMin):
@@ -111,8 +153,22 @@ def TropTransform(cls):
         else:
             return []
 
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:  # type: ignore
+        if expr.ty in (Type.TropMax, Type.TropMin):
+            return self.apply_signal2d_impl(expr)
+        else:
+            return []
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:  # type: ignore
+        if expr.ty in (Type.TropMax, Type.TropMin):
+            return self.apply_kernel2d_impl(expr)
+        else:
+            return []
+
     cls.apply_kernel = apply_kernel
     cls.apply_signal = apply_signal
+    cls.apply_signal2d = apply_signal2d
+    cls.apply_kernel2d = apply_kernel2d
     return cls
 
 
@@ -302,7 +358,18 @@ class Seq(Transform):
         for transform in self.transforms:
             results = [next for res in results for next in transform.apply_signal(res)]
         return results
-
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        results: List[KernelExpr2D] = [expr]
+        for transform in self.transforms:
+            results = [next for res in results for next in transform.apply_kernel2d(res)]
+        return results
+    
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        results: List[SignalExpr2D] = [expr]
+        for transform in self.transforms:
+            results = [next for res in results for next in transform.apply_signal2d(res)]
+        return results
 
 class Repeat(Transform):
     def __init__(self, times: int, *transforms: Transform) -> None:
@@ -322,6 +389,22 @@ class Repeat(Transform):
         for _ in range(self.times):
             results = [
                 next for res in results for next in self.transform.apply_signal(res)
+            ]
+        return results
+
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        results: List[KernelExpr2D] = [expr]
+        for _ in range(self.times):
+            results = [
+                next for res in results for next in self.transform.apply_kernel2d(res)
+            ]
+        return results
+    
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        results: List[SignalExpr2D] = [expr]
+        for _ in range(self.times):
+            results = [
+                next for res in results for next in self.transform.apply_signal2d(res)
             ]
         return results
 
@@ -348,6 +431,24 @@ class RepeatUpTo(Transform):
                 new_results += self.transform.apply_signal(res)
             results.append(new_results)
         return [s for res in results for s in res]
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        results: List[List[KernelExpr2D]] = [[expr]]
+        for _ in range(self.max_times):
+            new_results: List[KernelExpr2D] = []
+            for res in results[-1]:
+                new_results += self.transform.apply_kernel2d(res)
+            results.append(new_results)
+        return [s for res in results for s in res]
+    
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        results: List[List[SignalExpr2D]] = [[expr]]
+        for _ in range(self.max_times):
+            new_results: List[SignalExpr2D] = []
+            for res in results[-1]:
+                new_results += self.transform.apply_signal2d(res)
+            results.append(new_results)
+        return [s for res in results for s in res]
 
 
 def Optional(transform: Transform) -> Transform:
@@ -364,6 +465,14 @@ class Try(Transform):
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         results = self.transform.apply_signal(expr)
+        return results if len(results) > 0 else [expr]
+
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        results = self.transform.apply_kernel2d(expr)
+        return results if len(results) > 0 else [expr]
+
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        results = self.transform.apply_signal2d(expr)
         return results if len(results) > 0 else [expr]
 
 
@@ -383,6 +492,20 @@ class Any(Transform):
             next
             for transform in self.transforms
             for next in transform.apply_signal(expr)
+        ]
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        return [
+            next
+            for transform in self.transforms
+            for next in transform.apply_kernel2d(expr)
+        ]
+
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        return [
+            next
+            for transform in self.transforms
+            for next in transform.apply_signal2d(expr)
         ]
 
 
@@ -430,12 +553,53 @@ class Preorder(Transform):
             match expr:
                 case Var(_) | Num(_):
                     results.append(expr)
+                case Ith(_):
+                    # Special handling for Ith to preserve the integer index
+                    for new_a in self.apply_generic(expr.a):
+                        new_expr = copy.copy(expr)
+                        new_expr.a = new_a
+                        results.append(new_expr)
                 case _:
                     results += cartesian(
                         type(expr),
                         [self.apply_generic(child) for child in expr.children()],
                         expr.lanes,
                     )
+        return results
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr2D]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
+
+        results: List[KernelExpr2D] = []
+        for expr in self.transform.apply_kernel2d(expr):
+            match expr:
+                case TIKernel2D(_) | TVKernel2D(_):
+                    results.append(expr)
+                case _:
+                    results += cartesian(
+                        type(expr),
+                        [self.apply_generic(child) for child in expr.children()],
+                        expr.lanes,
+                    )
+        return results
+    
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        results: List[SignalExpr2D] = []
+        for expr in self.transform.apply_signal2d(expr):
+            match expr:
+                case Var2D(_):
+                    results.append(expr)
+                case Repeater(_):
+                    for new_a in self.apply_generic(expr.a):
+                        new_expr = copy.copy(expr)
+                        new_expr.a = new_a
+                        results.append(new_expr)
+                case _:
+                    raise NotImplementedError("Preorder traversal of non-Var2D, non-Repeater SignalExpr2D not implemented")
         return results
 
 
@@ -480,7 +644,74 @@ class Postorder(Transform):
                     expr.lanes,
                 )
         return [e for result in results for e in self.transform.apply_signal(result)]
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr2D]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
 
+        results: Sequence[KernelExpr2D]
+        match expr:
+            case TIKernel2D(_) | TVKernel2D(_):
+                results = [expr]
+            case _:
+                results = cartesian(
+                    type(expr),
+                    [self.apply_generic(child) for child in expr.children()],
+                    expr.lanes,
+                )
+        return [e for result in results for e in self.transform.apply_kernel2d(result)]
+    
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr2D]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
+
+        results: List[SignalExpr2D] = []
+        match expr:
+            case Var2D(_):
+                results = [expr]
+            case Repeater(_):
+                for new_a in self.apply_generic(expr.a):
+                    new_expr = copy.copy(expr)
+                    new_expr.a = new_a
+                    results.append(new_expr)
+            case _:
+                raise NotImplementedError("Postorder traversal of non-Var2D, non-Repeater SignalExpr2D not implemented")
+        return [e for result in results for e in self.transform.apply_signal2d(result)]
+
+class Eliminate2DKernels(Noop): # Inherits from Noop to preserve expressions that don't involve 2D kernels
+    """Eliminate 2D kernels by converting them to 1D kernels and modifying the signal expressions accordingly.
+    The only places where 2D kernels appear are in Convolve2D and Recurse2D.
+    """
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        if isinstance(expr, Convolve2D):
+            assert isinstance(expr.a, TIKernel2D) or isinstance(expr.a, TVKernel2D), "Kernel should be canonicalized before 2D kernel elimination"
+            b = self.apply_signal2d(expr.b)[0]
+            if isinstance(expr.a, TIKernel2D):
+                kernels: List[KernelExpr] = [TIKernel(row, expr.a.ty, expr.a.element_type) for row in expr.a.data]
+            else:
+                kernels = [TVKernel(row, expr.a.ty, expr.a.element_type) for row in expr.a.data]
+            return [SAdd.of([Convolve(kernel, Ith(b, i)) for i, kernel in enumerate(kernels)])]
+        else:
+            return [expr]
+
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        if isinstance(expr, Recurse2D):
+            # Recurse2D(A, G) = Repeater(\f', Recurse(A[0], A[1:] x f' +  G))
+            assert isinstance(expr.a, TIKernel2D) or isinstance(expr.a, TVKernel2D), "Kernel should be canonicalized before 2D kernel elimination"
+            
+            kernel_first = TIKernel(expr.a.data[0], expr.a.ty, expr.a.element_type) if isinstance(expr.a, TIKernel2D) else TVKernel(expr.a.data[0], expr.a.ty, expr.a.element_type)
+            kernel_rest = TIKernel2D(expr.a.data[1:], expr.a.ty, expr.a.element_type) if isinstance(expr.a, TIKernel2D) else TVKernel2D(expr.a.data[1:], expr.a.ty, expr.a.element_type)
+            new_expr = Repeater(lambda f_: Recurse(kernel_first, SAdd(Convolve2D(kernel_rest, f_), expr.g)), len(expr.a.data), expr.a.ty, expr.a.element_type)
+            return self.apply_signal2d(new_expr)
+        else:
+            return [expr]
 
 class AnnotateLanes(Transform):
     max_bits: int
@@ -496,8 +727,18 @@ class AnnotateLanes(Transform):
     def convert_lanes(self, e: SignalExpr, lanes: int) -> SignalExpr: ...
     @overload
     def convert_lanes(self, e: KernelExpr, lanes: int) -> KernelExpr: ...
+    @overload
+    def convert_lanes(self, e: SignalExpr2D, lanes: int) -> SignalExpr2D: ...
 
     def convert_lanes(self, e, lanes):
+        if isinstance(e, SignalExpr2D):
+            # For 2D signal expressions, just ensure lanes are set correctly
+            # TODO: ConvertLanes2D has not been implemented
+            if e.lanes != lanes:
+                return e.with_lanes(lanes)
+            else:
+                return e
+        
         if e.lanes != lanes:
             new_expr = (
                 ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
@@ -507,8 +748,36 @@ class AnnotateLanes(Transform):
         else:
             return e
 
-    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        """Handle signal expressions that involve 2D data (Repeater, Convolve2D)."""
         element_type = expr.element_type
+        lanes = self.max_lanes(element_type)
+        
+        match expr:
+            case Repeater(a, _n_rows, prev_rows_var):
+                new_repeater: Repeater = expr.with_lanes(lanes) # type: ignore
+                new_repeater.a = self.convert_lanes(self.apply_signal(a)[0], lanes)
+                new_repeater.prev_rows_var = prev_rows_var.with_lanes(lanes) # type: ignore
+                return [new_repeater]
+            case Var2D(name):
+                return [expr.with_lanes(lanes)]
+            case _:
+                raise NotImplementedError("Lane annotation for non-Repeater, non-Var2D SignalExpr2D not implemented")
+
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        raise NotImplementedError("Lane annotation for 2D kernel expressions not implemented")
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        assert not isinstance(expr, Convolve2D), "2D convolutions should be eliminated before lane annotation"
+        element_type = expr.element_type
+
+        if isinstance(expr, Ith):
+            lanes = self.max_lanes(element_type)
+            new_a = self.convert_lanes(self.apply_generic(expr.a)[0], lanes)
+            new_ith_expr = Ith(new_a, expr.i)
+            new_ith_expr.lanes = lanes
+            return [new_ith_expr]
+        
         match expr:
             case Recurse(a, g):
                 lanes, _ = a.time_delay(self.max_lanes(element_type))
@@ -518,10 +787,11 @@ class AnnotateLanes(Transform):
         if expr.is_leaf():
             return [expr.with_lanes(lanes)]
         else:
-            args = [
-                self.convert_lanes(self.apply_generic(child)[0], lanes)
-                for child in expr.children()
-            ]
+            args = []
+            for child in expr.children():
+                assert not isinstance(child, KernelExpr2D), "2D kernels should be eliminated before lane annotation"
+                args.append(self.convert_lanes(self.apply_generic(child)[0], lanes))
+
             new_expr = type(expr)(*args)
             new_expr.lanes = lanes
 
@@ -558,16 +828,13 @@ class AnnotateLanes(Transform):
 
 class PushDownConvertLanesImpl(Transform):
     # Try to make the expression compute that many lanes at a time.
-    @overload
-    def narrow_lanes(self, expr: KernelExpr, lanes: int) -> KernelExpr: ...
-    @overload
-    def narrow_lanes(self, expr: SignalExpr, lanes: int) -> SignalExpr: ...
-
+    # (T, int) -> T for T in {SignalExpr, KernelExpr, SignalExpr2D, KernelExpr2D}
     def narrow_lanes(self, expr, lanes):
+        assert not isinstance(expr, KernelExpr2D), "2D kernels should be eliminated before pushing down lane annotations"
         assert expr.lanes is not None
         assert lanes <= expr.lanes
 
-        if isinstance(expr, ConvertLanes) or isinstance(expr, ConvertLanes):
+        if isinstance(expr, ConvertLanes) or isinstance(expr, KConvertLanes):
             if expr.a.lanes == lanes:
                 return expr.a
 
@@ -590,6 +857,12 @@ class PushDownConvertLanesImpl(Transform):
             new_signal_expr: SignalExpr = Var(expr.name, expr.ty, expr.element_type)
             new_signal_expr.lanes = lanes
             return new_signal_expr
+        elif isinstance(expr, Repeater):
+            raise NotImplementedError("TODO: This happens only after we implement ConvertLanes2D")
+        elif isinstance(expr, Ith):
+            new_ith_expr = copy.copy(expr)
+            new_ith_expr.lanes = lanes
+            return new_ith_expr
         else:
             assert isinstance(expr, SignalExpr)
             if expr.is_leaf():
@@ -622,9 +895,17 @@ class PushDownConvertLanesImpl(Transform):
             results.append(self.narrow_lanes(expr.a, expr.lanes))
 
         return results
+    
+    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        raise NotImplementedError("2D kernel should have been eliminated")
+    
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        # TODO: KConvertLanes2D has not been implemented.
+        return [expr]
+    
 
 
-def PushDownConvertLanes():
+def PushDownConvertLanes() -> Transform:
     return Postorder(PushDownConvertLanesImpl())
 
 

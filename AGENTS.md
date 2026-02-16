@@ -18,6 +18,12 @@ Code generation is handled by `src/vecrec/codegen.py`, which translates the inte
 `src/vecrec/transform.py` contains various transformations that can be applied to signal expressions.
 These transformations are delicate and changes to it require careful consideration in order to maintain correctness.
 
+ASTs are declared under `src/vecrec/expr/`: `base.py` declares the base classes, `kernel.py` and `kernel_ops.py` declare the kernel classes and the kernel operator classes, and `signal.py` and `signal_ops.py` declare the signal classes and the signal operator classes.
+
+## Testing
+
+When writing test, make sure to run the generated code using e.g., `generate_and_run_benchmark`, and assert the code compiles and runs by checking the returned value is a dictionary whose 'return_code' is 0.
+
 ## Testing and Typechecking
 
 * `uv run mypy src`

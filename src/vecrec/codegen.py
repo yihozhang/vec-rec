@@ -1,5 +1,9 @@
-from typing import List, Optional, Sequence, Dict
+from typing import List, Optional, Sequence, Dict, Union
 from vecrec.expr import *
+from vecrec.expr.base import SignalExpr2D
+from vecrec.expr.signal import Var2D
+from vecrec.expr.signal_ops import Repeater, Ith
+from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.util import ElementType
 import json
 from importlib.resources import files
@@ -24,10 +28,13 @@ class CodeGen:
     # Hardware-dependent maximum
     counter: int
     prologue: list[str]
+    # Maps Var2D names to their context variable names (str) and n_rows (int)
+    var2d_context: Dict[str, Union[str, int]]
 
     def __init__(self):
         self.counter = 0
         self.prologue = []
+        self.var2d_context = {}
 
     def get_new_var(self) -> str:
         self.counter += 1
@@ -49,6 +56,7 @@ class CodeGen:
     def clear(self):
         self.counter = 0
         self.prologue = []
+        self.var2d_context = {}
 
     def get_sem_suffix(self, ty: Type) -> str:
         match ty:
@@ -59,7 +67,7 @@ class CodeGen:
             case Type.TropMin:
                 return "TropMin"
 
-    def generate(self, expr: SignalExpr, name: str) -> Code:
+    def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> Code:
         self.clear()
         code = self.generate_signal(expr)
         vars = self.collect_variables(expr)
@@ -80,7 +88,7 @@ class CodeGen:
             code.lanes,
         )
 
-    def generate_signal(self, expr: SignalExpr) -> Code:
+    def generate_signal(self, expr: SignalExpr | SignalExpr2D) -> Code:
         assert expr.lanes is not None
         match expr:
             case Num(value):
@@ -93,6 +101,7 @@ class CodeGen:
                     expr.lanes,
                 )
             case SignalExprBinOp(a, b):
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
                 code_a = self.generate_signal(a)
                 code_b = self.generate_signal(b)
 
@@ -101,9 +110,9 @@ class CodeGen:
                 element_type = code_a.element_type
                 ty = code_a.ty
 
-                constructor = type(expr).__name__
+                constructor = "make_" + type(expr).__name__
                 suffix = self.get_sem_suffix(ty)
-                program = f"{constructor}{suffix}({code_a.text}, {code_b.text})"
+                program = f"{constructor}{suffix}<{vec_type}>({code_a.text}, {code_b.text})"
                 return Code(program, ty, element_type, expr.lanes)
 
             case Var(name):
@@ -113,6 +122,45 @@ class CodeGen:
                     expr.element_type,
                     expr.lanes,
                 )
+            case Var2D(name):
+                # Var2D should only appear within a Repeater context
+                if name not in self.var2d_context:
+                    raise ValueError(f"Var2D '{name}' used outside of Repeater context")
+                
+                context_var = self.var2d_context[name]
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+                n_rows = self.var2d_context.get(f"{name}_n_rows", 2)
+                
+                return Code(
+                    f"make_signal2d<{vec_type}, {n_rows}>({context_var})",
+                    expr.ty,
+                    expr.element_type,
+                    expr.lanes,
+                )
+            case Repeater(a, n_rows, prev_rows_var):
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+                
+                # Create a context variable
+                context_var = self.get_new_var()
+                self.prologue.append(
+                    f"RepeaterContext<{vec_type}, {n_rows}> {context_var};"
+                )
+                
+                # Add the Var2D to our context so inner signal can reference it
+                old_context = self.var2d_context.copy()
+                self.var2d_context[prev_rows_var.name] = f"&{context_var}"
+                self.var2d_context[f"{prev_rows_var.name}_n_rows"] = n_rows
+                
+                # Generate code for the inner signal (which may reference prev_rows_var)
+                code_a = self.generate_signal(a)
+                
+                # Restore context
+                self.var2d_context = old_context
+                
+                # Generate the Repeater construction
+                program = f"make_repeater<{vec_type}, {n_rows}>(&{context_var}, {code_a.text})"
+                
+                return Code(program, expr.ty, expr.element_type, expr.lanes)
             case Convolve(a, f):
                 code_a = self.generate_kernel(a)
                 code_f = self.generate_signal(f)
@@ -140,6 +188,27 @@ class CodeGen:
 
                 program = f"make_s_recurse<{vec_type}>({code_a.text}, {code_g.text})"
                 return Code(program, ty, element_type, a.lanes)
+            case Ith(signal2d, i):
+                # Ith extracts the ith row from a 2D signal
+                # Generate: make_ith_row<vec_type, n_rows, i>(signal2d_code)
+                element_type = expr.element_type
+                ty = expr.ty
+                vec_type = self.get_vec_type(element_type, expr.lanes)
+                
+                # Generate code for the 2D signal (typically Var2D -> Signal2D)
+                code_signal2d = self.generate_signal(signal2d)
+                
+                # Get n_rows from context (signal2d should be Var2D with context)
+                if isinstance(signal2d, Var2D):
+                    if signal2d.name not in self.var2d_context:
+                        raise ValueError(f"Var2D '{signal2d.name}' used outside of Repeater context")
+                    n_rows = self.var2d_context.get(f"{signal2d.name}_n_rows", 2)
+                else:
+                    raise ValueError(f"Ith expects Var2D as signal2d, got {type(signal2d)}")
+                
+                # Generate make_ith_row call
+                program = f"make_ith_row<{vec_type}, {n_rows}, {i}>({code_signal2d.text})"
+                return Code(program, ty, element_type, expr.lanes)
             case ConvertLanes(a):
                 code_a = self.generate_signal(a)
                 code_a = self.enforce_lanes(code_a, expr.lanes)
@@ -286,7 +355,7 @@ def instantiate_kernels(path: str, codes: List[Code]) -> None:
 
 def generate_benchmark(
     codegen: CodeGen,
-    exprs: Sequence[SignalExpr],
+    exprs: Sequence[SignalExpr | SignalExpr2D],
     kernel_names: Sequence[str],
     kernel_header_path: str,
     output_path: str,
@@ -538,7 +607,7 @@ def _generate_correctness_check_code(kernel_names: Sequence[str], input_size: in
 
 def generate_and_run_benchmark(
     codegen: CodeGen,
-    exprs: Sequence[SignalExpr],
+    exprs: Sequence[SignalExpr | SignalExpr2D],
     kernel_names: Sequence[str],
     include_correctness_check: bool = False,
     header_path: Optional[str] = None,

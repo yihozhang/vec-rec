@@ -116,16 +116,56 @@ class ConvertLanes(SignalExpr):
     def __repr__(self) -> str:
         return f"ConvertLanes({self.lanes}, {self.a})"
 
+@dataclass
+class Convolve2D(SignalExpr):
+    """2D convolution: convolve a 2D kernel with a 2D signal (from Repeater). Produces a 1D signal"""
+
+    a: KernelExpr2D
+    b: SignalExpr2D
+    __match_args__ = ("a", "b")
+
+    def __init__(self, a: KernelExpr2D, b: SignalExpr2D) -> None:
+        super().__init__()
+        assert a.ty == b.ty
+        assert (
+            a.element_type == b.element_type
+        ), f"ElementType mismatch in Convolve2D: {a.element_type} vs {b.element_type}"
+        self.a = a
+        self.b = b
+        self.ty = a.ty
+        self.element_type = a.element_type
+
+
+class Recurse2D(SignalExpr2D):
+    """2D version of Recurse. The callable receives a Var2D representing the output of the previous rows."""
+
+    a: KernelExpr2D
+    g: SignalExpr
+    __match_args__ = ("a", "g")
+
+    def __init__(self, a: KernelExpr2D, g: SignalExpr) -> None:
+        super().__init__()
+        assert a.ty == g.ty
+        assert (
+            a.element_type == g.element_type
+        ), f"ElementType mismatch in Recurse: {a.element_type} vs {g.element_type}"
+        self.ty = a.ty
+        self.element_type = a.element_type
+        self.a = a
+        self.g = g
 
 @dataclass
-class Repeater(SignalExpr):
+class Repeater(SignalExpr2D):
     """
-    Turns a 1D signal into 2D by storing the last `n_rows` rows.
+    Turns a 1D signal into a 2D signal by caching the last `n_rows` rows.
 
-    The callable receives a Var representing the previous rows stored in
+    The callable receives a Var2D representing the previous rows stored in
     the Repeater, with the current horizontal position aligned with the
     stream for the current row. Use Convolve2D with a 2D kernel to
     access data from multiple previous rows.
+    
+    Streams as a 2D signal: run() returns n vectors at a time (current row
+    plus the n-1 previously cached rows).
     """
 
     a: SignalExpr
@@ -148,47 +188,32 @@ class Repeater(SignalExpr):
         self.a = func(self.prev_rows_var)
         self.ty = self.a.ty
         self.element_type = self.a.element_type
+    
+    @staticmethod
+    def make(a: SignalExpr, n_rows: int, prev_rows_var: Var2D) -> Repeater:
+        repeater = Repeater.__new__(Repeater)
+        super(Repeater, repeater).__init__()
+        repeater.a = a
+        repeater.n_rows = n_rows
+        repeater.prev_rows_var = prev_rows_var
+        repeater.ty = a.ty
+        repeater.element_type = a.element_type
+        return repeater
 
-    def children(self) -> List[KernelExpr | SignalExpr]:
+    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D]:
         # Only expose the inner expression, not prev_rows_var
         # (it's an internal placeholder, not an external input)
         return [self.a]
 
-
 @dataclass
-class Convolve2D(SignalExpr):
-    """2D convolution: convolve a 2D kernel with a 2D signal (from Repeater). Produces a 1D signal"""
+class Ith(SignalExpr):
+    a: SignalExpr2D
+    i: int
+    __match_args__ = ("a", "i")
 
-    a: KernelExpr
-    b: SignalExpr
-    __match_args__ = ("a", "b")
-
-    def __init__(self, a: KernelExpr, b: SignalExpr) -> None:
+    def __init__(self, a: SignalExpr2D, i: int) -> None:
         super().__init__()
-        assert a.ty == b.ty
-        assert (
-            a.element_type == b.element_type
-        ), f"ElementType mismatch in Convolve2D: {a.element_type} vs {b.element_type}"
         self.a = a
-        self.b = b
-        self.ty = a.ty
+        self.i = i
+        self.ty = Type.Arith
         self.element_type = a.element_type
-
-
-class Recurse2D(SignalExpr):
-    """2D version of Recurse. The callable receives a Var2D representing the output of the previous rows."""
-
-    a: KernelExpr2D
-    g: SignalExpr2D
-    __match_args__ = ("a", "g")
-
-    def __init__(self, a: KernelExpr2D, g: SignalExpr2D) -> None:
-        super().__init__()
-        assert a.ty == g.ty
-        assert (
-            a.element_type == g.element_type
-        ), f"ElementType mismatch in Recurse: {a.element_type} vs {g.element_type}"
-        self.ty = a.ty
-        self.element_type = a.element_type
-        self.a = a
-        self.g = g

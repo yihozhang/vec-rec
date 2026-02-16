@@ -142,10 +142,11 @@ class RecLang:
     def __hash__(self):
         return hash((type(self), tuple(sorted(self.__dict__.items()))))
 
-    def children(self) -> List[KernelExpr | SignalExpr]:
+    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D]:
         """Return the children of the expression."""
         return [
-            v for v in self.__dict__.values() if isinstance(v, (KernelExpr, SignalExpr))
+            v for v in self.__dict__.values() 
+            if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D))
         ]
 
     def is_leaf(self) -> bool:
@@ -175,6 +176,8 @@ class SignalExpr2D(RecLang):
     ty: Type
     element_type: ElementType
 
+    def with_lanes(self, lanes: Optional[int]) -> SignalExpr2D:
+        return super().with_lanes(lanes) # type: ignore
 
 class KernelExpr(RecLang):
     ty: Type
@@ -191,3 +194,6 @@ class KernelExpr(RecLang):
 class KernelExpr2D(RecLang):
     ty: Type
     element_type: ElementType
+
+    def with_lanes(self, lanes: Optional[int]) -> KernelExpr2D:
+        return super().with_lanes(lanes)  # type: ignore
