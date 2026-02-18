@@ -158,6 +158,8 @@ class Recurse2D(SignalExpr2D):
 class Repeater(SignalExpr2D):
     """
     Turns a 1D signal into a 2D signal by caching the last `n_rows` rows.
+    The minimal number of rows to cache is 2, which stores the previous row 
+    while computing and storing the current row.
 
     The callable receives a Var2D representing the previous rows stored in
     the Repeater, with the current horizontal position aligned with the

@@ -575,7 +575,7 @@ class Preorder(Transform):
             ]
 
         results: List[KernelExpr2D] = []
-        for expr in self.transform.apply_kernel2d(expr):
+        for expr in self.transform.apply_generic(expr):
             match expr:
                 case TIKernel2D(_) | TVKernel2D(_):
                     results.append(expr)
@@ -589,7 +589,7 @@ class Preorder(Transform):
     
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         results: List[SignalExpr2D] = []
-        for expr in self.transform.apply_signal2d(expr):
+        for expr in self.transform.apply_generic(expr):
             match expr:
                 case Var2D(_):
                     results.append(expr)

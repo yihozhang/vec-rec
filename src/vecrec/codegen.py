@@ -129,7 +129,7 @@ class CodeGen:
                 
                 context_var = self.var2d_context[name]
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                n_rows = self.var2d_context.get(f"{name}_n_rows", 2)
+                n_rows = self.var2d_context[f"{name}_n_rows"]
                 
                 return Code(
                     f"make_signal2d<{vec_type}, {n_rows}>({context_var})",
@@ -143,13 +143,14 @@ class CodeGen:
                 # Create a context variable
                 context_var = self.get_new_var()
                 self.prologue.append(
-                    f"RepeaterContext<{vec_type}, {n_rows}> {context_var};"
+                    f"RepeaterContext<{vec_type}, {n_rows}>* {context_var} = new RepeaterContext<{vec_type}, {n_rows}>();"
                 )
                 
                 # Add the Var2D to our context so inner signal can reference it
                 old_context = self.var2d_context.copy()
-                self.var2d_context[prev_rows_var.name] = f"&{context_var}"
-                self.var2d_context[f"{prev_rows_var.name}_n_rows"] = n_rows
+                self.var2d_context[prev_rows_var.name] = f"{context_var}"
+                # n_rows includes the current row, so prev_rows has n_rows - 1 rows
+                self.var2d_context[f"{prev_rows_var.name}_n_rows"] = n_rows - 1
                 
                 # Generate code for the inner signal (which may reference prev_rows_var)
                 code_a = self.generate_signal(a)
@@ -158,7 +159,7 @@ class CodeGen:
                 self.var2d_context = old_context
                 
                 # Generate the Repeater construction
-                program = f"make_repeater<{vec_type}, {n_rows}>(&{context_var}, {code_a.text})"
+                program = f"make_repeater<{vec_type}, {n_rows}>({context_var}, {code_a.text})"
                 
                 return Code(program, expr.ty, expr.element_type, expr.lanes)
             case Convolve(a, f):
@@ -199,12 +200,15 @@ class CodeGen:
                 code_signal2d = self.generate_signal(signal2d)
                 
                 # Get n_rows from context (signal2d should be Var2D with context)
+                # There are two Signal2D types right now: Var2D and Repeater
                 if isinstance(signal2d, Var2D):
                     if signal2d.name not in self.var2d_context:
                         raise ValueError(f"Var2D '{signal2d.name}' used outside of Repeater context")
-                    n_rows = self.var2d_context.get(f"{signal2d.name}_n_rows", 2)
+                    n_rows = self.var2d_context[f"{signal2d.name}_n_rows"]
+                elif isinstance(signal2d, Repeater):
+                    n_rows = signal2d.n_rows
                 else:
-                    raise ValueError(f"Ith expects Var2D as signal2d, got {type(signal2d)}")
+                    raise ValueError(f"Ith expects Var2D or Repeater as signal2d, got {type(signal2d)}")
                 
                 # Generate make_ith_row call
                 program = f"make_ith_row<{vec_type}, {n_rows}, {i}>({code_signal2d.text})"
@@ -259,7 +263,7 @@ class CodeGen:
                 )
 
                 return Code(
-                    f"TimeVaryingKernel<{taps}, {vec_type}, {index_var}>({arguments})",
+                    f"make_time_varying_kernel<{taps}, {vec_type}, {index_var}>({arguments})",
                     ty,
                     element_type,
                     expr.lanes,
@@ -508,6 +512,11 @@ def _generate_benchmark_code(
         benchmark_text += "                    kernel.run(&out);\n"
         benchmark_text += f"                    memcpy(&output_{name}[pos], &out, sizeof(out));\n"
         benchmark_text += "                    pos += vec_lanes_of(out);\n"
+        
+        benchmark_text += "                    if (pos % 1024 == 0) {\n"
+        benchmark_text += "                        kernel.reset_and_next_row();\n"
+        benchmark_text += "                    }\n"
+        
         benchmark_text += "                }\n"
         benchmark_text += "            }\n"
         benchmark_text += "        }\n"
@@ -706,7 +715,8 @@ def generate_and_run_benchmark(
         text=True,
     )
 
-    print(run_result.stdout)    
+    print(executable_path)
+    print('result:', run_result.stdout)    
     json_output = json.loads(run_result.stdout)
     validation = json_output.pop("validation", None)
     # Since Python 3.7, Python dicts maintain insertion order.

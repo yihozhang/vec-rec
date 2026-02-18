@@ -327,7 +327,7 @@ void write_coeff(vec_type *coeff, std::tuple<Args...> &args) {
         vec_type result;
         std::get<curr>(args).run(&result);
         coeff[curr] = result;
-        write_coeff<vec_type, taps, curr + 1, Args...>(coeff, args);
+        write_coeff<taps, vec_type, curr + 1, Args...>(coeff, args);
     }
 }
 
@@ -340,7 +340,7 @@ struct TimeVaryingKernel {
     TimeVaryingKernel(Args... args) : args(args...) {}
 
     void run(vec_type *out) {
-        write_coeff<vec_type, _taps, 0, Args...>(out, args);
+        write_coeff<_taps, vec_type, 0, Args...>(out, args);
     }
 
     void reset_and_next_row() {
@@ -441,15 +441,15 @@ template <typename vec_type, int n_rows>
 struct Signal2D {
     using elt_type = typename ElementType<vec_type>::type;
     
-    RepeaterContext<vec_type, n_rows> *context;
+    RepeaterContext<vec_type, n_rows + 1> *context;
     
-    Signal2D(RepeaterContext<vec_type, n_rows> *ctx) : context(ctx) {
+    Signal2D(RepeaterContext<vec_type, n_rows + 1> *ctx) : context(ctx) {
     }
 
     void run(vec_type *d) {
-        // Read from each row at the current position
+        // Read from previous rows at the current position
         for (int i = 0; i < n_rows; i++) {
-            d[i] = context->get(i);
+            d[i] = context->get(i + 1);
         }
     }
 
@@ -768,74 +768,6 @@ struct SNeg {
     void reset_and_next_row() { s1.reset_and_next_row(); }
 };
 
-template <typename vec_type, int rows, int n_taps_per_row[rows], int taps, const int idxs[taps]>
-constexpr std::array<int, rows> get_buffer_size_2d() {
-    std::array<int, rows> buffer_size{};
-    int curr = 0;
-    for (int i = 0; i < rows; i++) {
-        int max_idx = 0;
-        for (int j = 0; j < n_taps_per_row[i]; j++) {
-            if (idxs[i * taps + j] > max_idx) {
-                max_idx = idxs[i * taps + j];
-            }
-            curr++;
-        }
-        buffer_size[i] = (max_idx + vec_lanes_of(vec_type{}) - 1) / vec_lanes_of(vec_type{}) + 1;
-    }
-    return buffer_size;
-}
-
-
-// template <typename vec_type, typename K, typename S>
-// struct SRecurse2D {
-//     K kernel;
-//     S signal;
-
-//     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
-//     constexpr static std::array<int, rows> buffer_size = get_buffer_size_2d<vec_type, rows, n_taps_per_row, taps, idxs>();
-
-//     vec_type prev_output[buffer_size] = {};
-
-//     SRecurse(K kernel, S signal) : kernel(kernel), signal(signal) {}
-
-//     void run(vec_type *out) {
-//         vec_type curr_input;
-//         vec_type curr_output;
-//         vec_type k[K::taps];
-
-//         kernel.run(k);
-//         signal.run(&curr_input);
-//         curr_output = curr_input;
-
-// #pragma unroll
-//         for (int i = 0; i < K::taps; i++) {
-//             int idx = (buffer_size - 1) * vec_lanes - K::idxs[i];
-//             if (idx % vec_lanes == 0) {
-//                 curr_output += prev_output[idx / vec_lanes] * k[i];
-//             } else {
-//                 auto va = prev_output[idx / vec_lanes];
-//                 auto vb = prev_output[idx / vec_lanes + 1];
-//                 curr_output += extract_slice(va, vb, idx % vec_lanes) * k[i];
-//             }
-//         }
-
-// #pragma unroll
-//         for (int i = 0; i + 1 < buffer_size; i++) {
-//             // To avoid LLVM from turning it into a memmove intrinsic
-//             asm volatile("" :::);
-//             prev_output[i] = prev_output[i + 1];
-//         }
-//         prev_output[buffer_size - 1] = curr_output;
-//         *out = curr_output;
-//     }
-
-//     void reset_and_next_row() {
-//         memset(prev_output, 0, sizeof(prev_output));
-//         kernel.reset_and_next_row();
-//         signal.reset_and_next_row();
-//     }
-// };
-
 template<typename vec_type_in, typename vec_type_out, typename Inner>
 auto make_k_convert_n2one(Inner inner) {
     return KConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
@@ -897,11 +829,16 @@ auto make_repeater(RepeaterContext<vec_type, n_rows> *ctx, Inner inner) {
 }
 
 template <typename vec_type, int n_rows>
-auto make_signal2d(RepeaterContext<vec_type, n_rows> *ctx) {
+auto make_signal2d(RepeaterContext<vec_type, n_rows + 1> *ctx) {
     return Signal2D<vec_type, n_rows>(ctx);
 }
 
 template <typename vec_type, int n_rows, int row_index, typename Signal2DType>
 auto make_ith_row(Signal2DType sig) {
     return IthRow<vec_type, n_rows, row_index, Signal2DType>(sig);
+}
+
+template <int _taps, typename vec_type, const int indices[_taps], typename... Args>
+auto make_time_varying_kernel(Args... args) {
+    return TimeVaryingKernel<_taps, vec_type, indices, Args...>(args...);
 }
