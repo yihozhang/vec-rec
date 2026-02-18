@@ -637,6 +637,8 @@ class Postorder(Transform):
         match expr:
             case Var(_) | Num(_):
                 results = [expr]
+            case Ith(e, i):
+                results = [Ith(new_e, i).with_lanes(expr.lanes) for new_e in self.apply_signal2d(e)]
             case _:
                 results = cartesian(
                     type(expr),
