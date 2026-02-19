@@ -856,7 +856,7 @@ class PushDownConvertLanesImpl(Transform):
             if isinstance(expr, TIKernel):
                 new_kernel_expr: KernelExpr = TIKernel(expr.data, expr.ty, expr.element_type)
                 new_kernel_expr.lanes = lanes
-                return new_ke
+                return new_kernel_expr
             elif isinstance(expr, TVKernel):
                 # There are two ways we can do it:
                 # 1. Narrow down the lanes of each signal

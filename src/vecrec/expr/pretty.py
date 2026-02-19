@@ -1,6 +1,7 @@
 """Pretty printer for the VecRec IR."""
 
 from __future__ import annotations
+from typing import Sequence
 
 from vecrec.expr.base import (
     RecLang, KernelExpr, KernelExpr2D, SignalExpr, SignalExpr2D,
@@ -73,7 +74,7 @@ def _fmt_num(v: float) -> str:
 def _fmt_kernel_row(row: list[float]) -> str:
     return ", ".join(_fmt_num(v) for v in row)
 
-def pps(exprs: list[RecLang]) -> list[str]:
+def pps(exprs: Sequence[RecLang]) -> list[str]:
     """Pretty-print a list of IR expressions."""
     return [pp(expr) for expr in exprs]
 
