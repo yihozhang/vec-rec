@@ -3,6 +3,7 @@ from .kernel import *
 from .kernel_ops import *
 from .signal import *
 from .signal_ops import *
+from .pretty import pp, pps
 
 __all__ = [
     "RecLang",
@@ -29,9 +30,12 @@ __all__ = [
     "Recurse",
     "Recurse2D",
     "Var",
+    "Var2D",
     "Type",
     "ConvertLanes",
     "KConvertLanes",
     "Repeater",
     "Ith",
+    "pp",
+    "pps",
 ]

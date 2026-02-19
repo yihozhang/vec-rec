@@ -9,7 +9,7 @@ from vecrec.util import ElementType
 
 from .base import *
 
-
+@dataclass
 class SignalExprBinOp(SignalExpr):
     a: SignalExpr
     b: SignalExpr
@@ -185,7 +185,7 @@ class Repeater(SignalExpr2D):
     ) -> None:
         super().__init__()
         self.n_rows = n_rows
-        self.prev_rows_var = Var2D(f"__repeater{Repeater.var_count}", ty, element_type)
+        self.prev_rows_var = Var2D(f"$f{Repeater.var_count}", ty, element_type)
         Repeater.var_count += 1
         self.a = func(self.prev_rows_var)
         self.ty = self.a.ty
