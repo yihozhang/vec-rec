@@ -135,7 +135,7 @@ class Convolve2D(SignalExpr):
         self.ty = a.ty
         self.element_type = a.element_type
 
-
+@dataclass
 class Recurse2D(SignalExpr2D):
     """2D version of Recurse. The callable receives a Var2D representing the output of the previous rows."""
 

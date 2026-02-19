@@ -23,6 +23,16 @@ class Type(Enum):
             case Type.TropMin:
                 return bool(np.isclose(value, np.inf))
         assert False, "unreachable"
+    
+    def is_one(self, value: float) -> bool:
+        match self:
+            case Type.Arith:
+                return bool(np.isclose(value, 1.0))
+            case Type.TropMax:
+                return bool(np.isclose(value, 0.0))
+            case Type.TropMin:
+                return bool(np.isclose(value, 0.0))
+        assert False, "unreachable"
 
     def zero(self) -> float:
         match self:

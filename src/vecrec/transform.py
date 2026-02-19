@@ -96,6 +96,15 @@ class ConstantFoldConvolve(Transform):
                 return [a * b]
             case _:
                 return []
+    
+    def apply_signal(self, expr):
+        match expr:
+            case Convolve(TIKernel(a), b) if expr.ty.is_one(a[0]) and all(expr.ty.is_zero(v) for v in a[1:]):
+                return [b]
+            case Convolve(TIKernel(a), b) if all(expr.ty.is_zero(v) for v in a):
+                return [Num(0, expr.ty, expr.element_type)]
+            case _:
+                return []
 
 
 def ArithTransform(cls):

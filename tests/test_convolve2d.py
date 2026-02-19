@@ -1,6 +1,6 @@
 """Test Convolve2D codegen implementation"""
 
-from vecrec.expr.base import SignalExpr, Type
+from vecrec.expr.base import SignalExpr, SignalExpr2D, Type
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.expr.signal import Var, Var2D, Num
 from vecrec.expr.signal_ops import Convolve2D, Ith, Repeater, SAdd
@@ -64,12 +64,13 @@ def test_convolve2d_tv_kernel() -> None:
     g = Var("g", Type.Arith, ElementType.Float)
     
     # Create a Repeater with a Var2D signal
-    def repeater_func(prev_rows: Var2D):
+    def repeater_func(prev_rows: Var2D) -> SignalExpr:
         # Create a Convolve2D that convolves the 2D kernel with previous rows
         conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
         return conv2d
     
     # TODO: better error handling when n_rows is too small (e.g., 2)
+    repeater: SignalExpr2D
     repeater = Repeater(repeater_func, n_rows=3, ty=Type.Arith, element_type=ElementType.Float)
     
     # Apply transforms: first eliminate 2D kernels, then annotate lanes
@@ -105,10 +106,11 @@ def test_convolve2d_single_row() -> None:
     g = Var("g", Type.Arith, ElementType.Float)
     
     # Create a Repeater with a Var2D signal
-    def repeater_func(prev_rows: Var2D):
+    def repeater_func(prev_rows: Var2D) -> SignalExpr:
         conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
         return conv2d
     
+    repeater: SignalExpr2D
     repeater = Repeater(repeater_func, n_rows=2, ty=Type.Arith, element_type=ElementType.Float)
     
     # Apply transforms: first eliminate 2D kernels, then annotate lanes
