@@ -29,7 +29,7 @@ class Var(SignalExpr):
         self.element_type = element_type
 
 @dataclass
-class Var2D(SignalExpr2D):
+class RVar2D(SignalExpr2D):
     name: str
     __match_args__ = ("name",)
 

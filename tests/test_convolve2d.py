@@ -2,7 +2,7 @@
 
 from vecrec.expr.base import SignalExpr, SignalExpr2D, Type
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
-from vecrec.expr.signal import Var, Var2D, Num
+from vecrec.expr.signal import Var, RVar2D, Num
 from vecrec.expr.signal_ops import Convolve2D, Ith, Repeater, SAdd
 from vecrec.util import ElementType
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
@@ -19,8 +19,8 @@ def test_convolve2d_ti_kernel() -> None:
     kernel2d = TIKernel2D(kernel_data, Type.Arith, ElementType.Float)
     g = Var("g", Type.Arith, ElementType.Float)
     
-    # Create a Repeater with a Var2D signal
-    def repeater_func(prev_rows: Var2D) -> SignalExpr:
+    # Create a Repeater with a RVar2D signal
+    def repeater_func(prev_rows: RVar2D) -> SignalExpr:
         # Create a Convolve2D that convolves the 2D kernel with previous rows
         conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
         return conv2d
@@ -63,8 +63,8 @@ def test_convolve2d_tv_kernel() -> None:
     kernel2d = TVKernel2D(kernel_data, Type.Arith, ElementType.Float)
     g = Var("g", Type.Arith, ElementType.Float)
     
-    # Create a Repeater with a Var2D signal
-    def repeater_func(prev_rows: Var2D) -> SignalExpr:
+    # Create a Repeater with a RVar2D signal
+    def repeater_func(prev_rows: RVar2D) -> SignalExpr:
         # Create a Convolve2D that convolves the 2D kernel with previous rows
         conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
         return conv2d
@@ -105,8 +105,8 @@ def test_convolve2d_single_row() -> None:
     kernel2d = TIKernel2D(kernel_data, Type.Arith, ElementType.Float)
     g = Var("g", Type.Arith, ElementType.Float)
     
-    # Create a Repeater with a Var2D signal
-    def repeater_func(prev_rows: Var2D) -> SignalExpr:
+    # Create a Repeater with a RVar2D signal
+    def repeater_func(prev_rows: RVar2D) -> SignalExpr:
         conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
         return conv2d
     

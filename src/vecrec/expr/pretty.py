@@ -5,7 +5,7 @@ from __future__ import annotations
 from vecrec.expr.base import (
     RecLang, KernelExpr, KernelExpr2D, SignalExpr, SignalExpr2D,
 )
-from vecrec.expr.signal import Num, Var, Var2D
+from vecrec.expr.signal import Num, Var, RVar2D
 from vecrec.expr.signal_ops import (
     SAdd, SSub, PointwiseMul, PointwiseDiv, SNeg,
     Convolve, Convolve2D, Recurse, Recurse2D,
@@ -28,7 +28,7 @@ def _prec(expr: RecLang) -> int:
     match expr:
         case Num(value=v) if v < 0:
             return _PREC_UNARY
-        case Num() | Var() | Var2D():
+        case Num() | Var() | RVar2D():
             return _PREC_ATOM
         case TIKernel() | TVKernel() | TIKernel2D() | TVKernel2D():
             return _PREC_ATOM
@@ -87,7 +87,7 @@ def pp(expr: RecLang) -> str:
         case Var(name=n):
             return n
 
-        case Var2D(name=n):
+        case RVar2D(name=n):
             return n.lstrip("$")
 
         # --- Kernels ---

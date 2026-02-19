@@ -1,7 +1,7 @@
 from typing import List, Optional, Sequence, Dict, Union
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D
-from vecrec.expr.signal import Var2D
+from vecrec.expr.signal import RVar2D
 from vecrec.expr.signal_ops import Repeater, Ith
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.util import ElementType
@@ -28,7 +28,7 @@ class CodeGen:
     # Hardware-dependent maximum
     counter: int
     prologue: list[str]
-    # Maps Var2D names to their context variable names (str) and n_rows (int)
+    # Maps RVar2D names to their context variable names (str) and n_rows (int)
     var2d_context: Dict[str, Union[str, int]]
 
     def __init__(self):
@@ -122,10 +122,10 @@ class CodeGen:
                     expr.element_type,
                     expr.lanes,
                 )
-            case Var2D(name):
-                # Var2D should only appear within a Repeater context
+            case RVar2D(name):
+                # RVar2D should only appear within a Repeater context
                 if name not in self.var2d_context:
-                    raise ValueError(f"Var2D '{name}' used outside of Repeater context")
+                    raise ValueError(f"RVar2D '{name}' used outside of Repeater context")
                 
                 context_var = self.var2d_context[name]
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
@@ -146,7 +146,7 @@ class CodeGen:
                     f"RepeaterContext<{vec_type}, {n_rows}>* {context_var} = new RepeaterContext<{vec_type}, {n_rows}>();"
                 )
                 
-                # Add the Var2D to our context so inner signal can reference it
+                # Add the RVar2D to our context so inner signal can reference it
                 old_context = self.var2d_context.copy()
                 self.var2d_context[prev_rows_var.name] = f"{context_var}"
                 # n_rows includes the current row, so prev_rows has n_rows - 1 rows
@@ -196,19 +196,19 @@ class CodeGen:
                 ty = expr.ty
                 vec_type = self.get_vec_type(element_type, expr.lanes)
                 
-                # Generate code for the 2D signal (typically Var2D -> Signal2D)
+                # Generate code for the 2D signal (typically RVar2D -> Signal2D)
                 code_signal2d = self.generate_signal(signal2d)
                 
-                # Get n_rows from context (signal2d should be Var2D with context)
-                # There are two Signal2D types right now: Var2D and Repeater
-                if isinstance(signal2d, Var2D):
+                # Get n_rows from context (signal2d should be RVar2D with context)
+                # There are two Signal2D types right now: RVar2D and Repeater
+                if isinstance(signal2d, RVar2D):
                     if signal2d.name not in self.var2d_context:
-                        raise ValueError(f"Var2D '{signal2d.name}' used outside of Repeater context")
+                        raise ValueError(f"RVar2D '{signal2d.name}' used outside of Repeater context")
                     n_rows = self.var2d_context[f"{signal2d.name}_n_rows"]
                 elif isinstance(signal2d, Repeater):
                     n_rows = signal2d.n_rows
                 else:
-                    raise ValueError(f"Ith expects Var2D or Repeater as signal2d, got {type(signal2d)}")
+                    raise ValueError(f"Ith expects RVar2D or Repeater as signal2d, got {type(signal2d)}")
                 
                 # Generate make_ith_row call
                 program = f"make_ith_row<{vec_type}, {n_rows}, {i}>({code_signal2d.text})"

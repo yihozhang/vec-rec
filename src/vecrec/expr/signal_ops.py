@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from functools import reduce
 from typing import Callable, List
 
-from vecrec.expr.signal import Var2D
+from vecrec.expr.signal import RVar2D
 from vecrec.util import ElementType
 
 
@@ -137,7 +137,7 @@ class Convolve2D(SignalExpr):
 
 @dataclass
 class Recurse2D(SignalExpr2D):
-    """2D version of Recurse. The callable receives a Var2D representing the output of the previous rows."""
+    """2D version of Recurse. The callable receives a RVar2D representing the output of the previous rows."""
 
     a: KernelExpr2D
     g: SignalExpr
@@ -161,7 +161,7 @@ class Repeater(SignalExpr2D):
     The minimal number of rows to cache is 2, which stores the previous row 
     while computing and storing the current row.
 
-    The callable receives a Var2D representing the previous rows stored in
+    The callable receives a RVar2D representing the previous rows stored in
     the Repeater, with the current horizontal position aligned with the
     stream for the current row. Use Convolve2D with a 2D kernel to
     access data from multiple previous rows.
@@ -172,27 +172,27 @@ class Repeater(SignalExpr2D):
 
     a: SignalExpr
     n_rows: int
-    prev_rows_var: Var2D
+    prev_rows_var: RVar2D
 
     var_count: int = 1
 
     def __init__(
         self,
-        func: Callable[[Var2D], SignalExpr],
+        func: Callable[[RVar2D], SignalExpr],
         n_rows: int,
         ty: Type,
         element_type: ElementType,
     ) -> None:
         super().__init__()
         self.n_rows = n_rows
-        self.prev_rows_var = Var2D(f"$f{Repeater.var_count}", ty, element_type)
+        self.prev_rows_var = RVar2D(f"$f{Repeater.var_count}", ty, element_type)
         Repeater.var_count += 1
         self.a = func(self.prev_rows_var)
         self.ty = self.a.ty
         self.element_type = self.a.element_type
     
     @staticmethod
-    def make(a: SignalExpr, n_rows: int, prev_rows_var: Var2D) -> Repeater:
+    def make(a: SignalExpr, n_rows: int, prev_rows_var: RVar2D) -> Repeater:
         repeater = Repeater.__new__(Repeater)
         super(Repeater, repeater).__init__()
         repeater.a = a
