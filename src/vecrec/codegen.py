@@ -194,11 +194,17 @@ class CodeGen:
                 # Generate: make_ith_row<vec_type, n_rows, i>(signal2d_code)
                 element_type = expr.element_type
                 ty = expr.ty
-                vec_type = self.get_vec_type(element_type, expr.lanes)
-                
+
                 # Generate code for the 2D signal (typically RVar2D -> Signal2D)
                 code_signal2d = self.generate_signal(signal2d)
-                
+
+                # IthRow's vec_type must match the Signal2D's vec_type (code_signal2d.lanes),
+                # not necessarily Ith's target lanes. After PushDownConvertLanes, Ith.lanes
+                # may be narrowed while signal2d.lanes stays at max_lanes, so we generate
+                # IthRow using signal2d_lanes and wrap with a lane converter if needed.
+                signal2d_lanes = code_signal2d.lanes
+                ith_vec_type = self.get_vec_type(element_type, signal2d_lanes)
+
                 # Get n_rows from context (signal2d should be RVar2D with context)
                 # There are two Signal2D types right now: RVar2D and Repeater
                 if isinstance(signal2d, RVar2D):
@@ -209,10 +215,15 @@ class CodeGen:
                     n_rows = signal2d.n_rows
                 else:
                     raise ValueError(f"Ith expects RVar2D or Repeater as signal2d, got {type(signal2d)}")
-                
-                # Generate make_ith_row call
-                program = f"make_ith_row<{vec_type}, {n_rows}, {i}>({code_signal2d.text})"
-                return Code(program, ty, element_type, expr.lanes)
+
+                # Generate make_ith_row call using signal2d_lanes to keep C++ types consistent
+                program = f"make_ith_row<{ith_vec_type}, {n_rows}, {i}>({code_signal2d.text})"
+                ith_code = Code(program, ty, element_type, signal2d_lanes)
+
+                # Wrap with ConvertOne2N (downscale) or ConvertN2One (upscale) if needed
+                if signal2d_lanes != expr.lanes:
+                    ith_code = self.enforce_lanes(ith_code, expr.lanes)
+                return ith_code
             case ConvertLanes(a):
                 code_a = self.generate_signal(a)
                 code_a = self.enforce_lanes(code_a, expr.lanes)
