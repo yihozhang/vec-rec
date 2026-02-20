@@ -39,7 +39,6 @@ def main():
     
     codes = [original, dilated, dilate_and_delayed]
     exprs_list = [expr, results[0], results[1]]
-    kernel_names = ["original", "dilated", "dilate_and_delayed"]
     
     # Generate kernel header file
     instantiate_kernels("output.h", codes)
@@ -48,7 +47,6 @@ def main():
     result = generate_and_run_benchmark(
         codegen=codegen,
         exprs=exprs_list,
-        kernel_names=kernel_names,
         include_correctness_check=True
     )
     print(result['output'])

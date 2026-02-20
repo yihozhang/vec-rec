@@ -32,7 +32,7 @@ def test_convolve2d_ti_kernel() -> None:
     repeater = Preorder(Eliminate2DKernels()).apply_generic(repeater)[0]
     repeater = AnnotateLanes(512).apply_generic(repeater)[0]
 
-    result = generate_and_run_benchmark(CodeGen(), [repeater], ["test_convolve2d_ti"])
+    result = generate_and_run_benchmark(CodeGen(), [repeater])
     assert result['return_code'] == 0
     print(result)
     
@@ -77,7 +77,7 @@ def test_convolve2d_tv_kernel() -> None:
     repeater = Preorder(Eliminate2DKernels()).apply_signal2d(repeater)[0]
     repeater = AnnotateLanes(512).apply_signal2d(repeater)[0]
     
-    result = generate_and_run_benchmark(CodeGen(), [repeater], ["test_convolve2d_tv"])
+    result = generate_and_run_benchmark(CodeGen(), [repeater])
     assert result['return_code'] == 0
     codegen = CodeGen()
     code = codegen.generate(repeater, "test_convolve2d_tv")
@@ -117,7 +117,7 @@ def test_convolve2d_single_row() -> None:
     repeater = Preorder(Eliminate2DKernels()).apply_signal2d(repeater)[0]
     repeater = AnnotateLanes(512).apply_signal2d(repeater)[0]
     
-    result = generate_and_run_benchmark(CodeGen(), [repeater], ["test_convolve2d_single"])
+    result = generate_and_run_benchmark(CodeGen(), [repeater])
     assert result['return_code'] == 0
     codegen = CodeGen()
     code = codegen.generate(repeater, "test_convolve2d_single")

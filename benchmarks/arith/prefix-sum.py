@@ -24,7 +24,7 @@ def main():
     )
     results = transforms.apply_signal(program)
     codegen = CodeGen()
-    benchmark_result = generate_and_run_benchmark(codegen, results, ["k" + str(i) for i in range(len(results))], True)
+    benchmark_result = generate_and_run_benchmark(codegen, results, True)
     print(benchmark_result)
 
 if __name__ == "__main__":

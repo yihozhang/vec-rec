@@ -617,7 +617,6 @@ def _generate_correctness_check_code(kernel_names: Sequence[str], input_size: in
 def generate_and_run_benchmark(
     codegen: CodeGen,
     exprs: Sequence[SignalExpr | SignalExpr2D],
-    kernel_names: Sequence[str],
     include_correctness_check: bool = False,
     header_path: Optional[str] = None,
     benchmark_path: Optional[str] = None,
@@ -635,7 +634,6 @@ def generate_and_run_benchmark(
     Args:
         codegen: CodeGen instance used to generate the kernels
         exprs: List of signal expressions corresponding to each kernel
-        kernel_names: List of names corresponding to each kernel
         header_path: Path where the kernel header file will be written
         benchmark_path: Path where the benchmark C++ file will be written (default: random file in /tmp/)
         executable_path: Path for the compiled benchmark executable (default: random file in /tmp/)
@@ -674,6 +672,8 @@ def generate_and_run_benchmark(
     if executable_path is None:
         fd, executable_path = tempfile.mkstemp(prefix='benchmark_', dir='/tmp')
         os.close(fd)  # Close the file descriptor
+
+    kernel_names = [f"k{i}" for i in range(len(exprs))]
     
     # Generate kernel code
     codes = [codegen.generate(expr, name) for expr, name in zip(exprs, kernel_names)]

@@ -19,7 +19,7 @@ def test_float_backward_compatibility():
     results = schedule.apply_signal(expr)
 
     codegen = CodeGen()
-    out = generate_and_run_benchmark(codegen, results, [f"k{i}" for i in range(len(results))], True)
+    out = generate_and_run_benchmark(codegen, results, True)
     print(out)
 
 def test_int32_support():
@@ -36,7 +36,7 @@ def test_int32_support():
     results = schedule.apply_signal(expr)
 
     codegen = CodeGen()
-    out = generate_and_run_benchmark(codegen, results, [f"k{i}" for i in range(len(results))], True)
+    out = generate_and_run_benchmark(codegen, results, True)
     assert out['return_code'] == 0, "Int32 benchmark failed"
 
 def test_multiple_types():

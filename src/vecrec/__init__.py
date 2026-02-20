@@ -37,5 +37,5 @@ def main():
     results = schedule.apply_signal(expr)
     codegen = CodeGen()
     print(len(results))
-    result = generate_and_run_benchmark(codegen, results, [f"k{i+1}" for i in range(len(results))], True)
+    result = generate_and_run_benchmark(codegen, results, True)
     print(result)

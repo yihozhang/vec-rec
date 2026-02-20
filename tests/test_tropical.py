@@ -27,7 +27,6 @@ def test_tropical(kernel_type: Type, element_type: ElementType) -> None:
     result = generate_and_run_benchmark(
         codegen=codegen,
         exprs=results,
-        kernel_names=[f"{kernel_type.name.lower()}_{element_type.name.lower()}{k}" for k in range(len(results))],
         include_correctness_check=True,
         input_size=1 << 16,
         warmup_iterations=5,

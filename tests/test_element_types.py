@@ -61,7 +61,6 @@ def test_second_order_ti_element_types(element_type, coefficients):
     benchmark_result = generate_and_run_benchmark(
         codegen,
         results,
-        ["k" + str(i) for i in range(len(results))],
         include_correctness_check=True,
         input_size=1 << 12,  # Smaller size for faster testing
         warmup_iterations=2,

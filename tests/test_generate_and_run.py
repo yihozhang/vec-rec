@@ -34,7 +34,6 @@ def test_generate_and_run():
     result = generate_and_run_benchmark(
         codegen=codegen,
         exprs=results[:3],
-        kernel_names=["original", "dilated", "dilate_and_delayed"],
         include_correctness_check=True,
         input_size=1 << 16,  # Smaller size for quick testing
         warmup_iterations=5,

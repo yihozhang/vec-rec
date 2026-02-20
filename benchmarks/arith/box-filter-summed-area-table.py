@@ -11,6 +11,11 @@ g = Var("g", Type.Arith, ElementType.Float)
 
 expr = Ith(Recurse2D(kernel, g), 0)
 
+# transforms = Seq(
+#     Preorder(Eliminate2DKernels()),
+#     Preorder(Try(Dilate())),
+# )
+
 transforms = Seq(
     Preorder(Eliminate2DKernels()),
     Preorder(Try(Dilate())),
@@ -22,7 +27,9 @@ transforms = Seq(
 )
 
 results = transforms.apply_generic(expr)
+print(pp(expr))
+print(pps(results))
 
-benchmark_result = generate_and_run_benchmark(
-    CodeGen(), results, ["k" + str(i) for i in range(len(results))], True
-)
+# benchmark_result = generate_and_run_benchmark(
+#     CodeGen(), results, ["k" + str(i) for i in range(len(results))], True
+# )
