@@ -6,6 +6,10 @@ from vecrec.expr.signal_ops import Repeater, Ith
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.util import ElementType
 import json
+import numpy as np
+import os
+import subprocess
+import tempfile
 from importlib.resources import files
 
 TEMPLATE = files("vecrec.templates") / "common.h"
@@ -711,6 +715,285 @@ def _generate_correctness_check_code(
     return code
 
 
+def _numpy_dtype_for_element_type(element_type: ElementType) -> np.dtype:
+    match element_type:
+        case ElementType.Float:
+            return np.dtype(np.float32)
+        case ElementType.I32:
+            return np.dtype(np.int32)
+        case ElementType.I64:
+            return np.dtype(np.int64)
+
+
+class KernelExecutable:
+    executable_path: str
+    variable_order: List[str]
+    variable_types: Dict[str, ElementType]
+    output_type: ElementType
+
+    def __init__(
+        self,
+        executable_path: str,
+        variable_order: List[str],
+        variable_types: Dict[str, ElementType],
+        output_type: ElementType,
+    ):
+        self.executable_path = executable_path
+        self.variable_order = variable_order
+        self.variable_types = variable_types
+        self.output_type = output_type
+
+    def _normalize_inputs(
+        self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
+    ) -> Dict[str, np.ndarray]:
+        if isinstance(inputs, np.ndarray):
+            if len(self.variable_order) != 1:
+                raise ValueError(
+                    "Expected a dictionary of named arrays for multi-input kernels"
+                )
+            return {self.variable_order[0]: inputs}
+
+        if not isinstance(inputs, dict):
+            raise TypeError("inputs must be a numpy array or a dict[str, numpy.ndarray]")
+
+        expected = set(self.variable_order)
+        actual = set(inputs.keys())
+        if expected != actual:
+            missing = sorted(expected - actual)
+            extra = sorted(actual - expected)
+            raise ValueError(
+                f"Input variable mismatch: missing={missing}, extra={extra}"
+            )
+
+        return inputs
+
+    def run(
+        self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
+    ) -> tuple[np.ndarray, float]:
+        normalized_inputs = self._normalize_inputs(inputs)
+
+        n: Optional[int] = None
+        prepared_inputs: Dict[str, np.ndarray] = {}
+        for var in self.variable_order:
+            expected_dtype = _numpy_dtype_for_element_type(self.variable_types[var])
+            arr = np.asarray(normalized_inputs[var], dtype=expected_dtype)
+            if arr.ndim != 1:
+                raise ValueError(
+                    f"Input '{var}' must be 1D, got shape {arr.shape}"
+                )
+            if not arr.flags.c_contiguous:
+                arr = np.ascontiguousarray(arr)
+
+            if n is None:
+                n = int(arr.shape[0])
+            elif int(arr.shape[0]) != n:
+                raise ValueError(
+                    f"All input arrays must have the same length, got {n} and {arr.shape[0]}"
+                )
+            prepared_inputs[var] = arr
+
+        assert n is not None
+
+        with tempfile.TemporaryDirectory(prefix="vecrec_run_", dir="/tmp") as run_dir:
+            input_paths: List[str] = []
+            for var in self.variable_order:
+                input_path = os.path.join(run_dir, f"{var}.bin")
+                prepared_inputs[var].tofile(input_path)
+                input_paths.append(input_path)
+
+            output_path = os.path.join(run_dir, "output.bin")
+
+            cmd = [self.executable_path, str(n), *input_paths, output_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Kernel execution failed with code {result.returncode}: {result.stderr}"
+                )
+
+            try:
+                metadata = json.loads(result.stdout.strip())
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"Failed to parse runner output as JSON: {result.stdout}"
+                ) from exc
+
+            elapsed_us = float(metadata["elapsed_us"])
+
+            output_dtype = _numpy_dtype_for_element_type(self.output_type)
+            output = np.fromfile(output_path, dtype=output_dtype, count=n)
+            if int(output.shape[0]) != n:
+                raise RuntimeError(
+                    f"Output size mismatch: expected {n}, got {output.shape[0]}"
+                )
+
+            return output, elapsed_us
+
+    def __call__(
+        self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
+    ) -> tuple[np.ndarray, float]:
+        return self.run(inputs)
+
+
+def _generate_kernel_runner_code(
+    all_vars: Dict[str, ElementType],
+    output_type: ElementType,
+    kernel_name: str,
+    header_path: str,
+) -> str:
+    var_items = sorted(all_vars.items())
+
+    text = f'#include "{header_path}"\n'
+    text += "#include <chrono>\n"
+    text += "#include <cstdint>\n"
+    text += "#include <cstdlib>\n"
+    text += "#include <cstring>\n"
+    text += "#include <fstream>\n"
+    text += "#include <iostream>\n"
+    text += "#include <vector>\n\n"
+
+    text += "template <typename T>\n"
+    text += "bool read_binary(const char* path, T* out, int n) {\n"
+    text += "    std::ifstream in(path, std::ios::binary);\n"
+    text += "    if (!in) return false;\n"
+    text += "    in.read(reinterpret_cast<char*>(out), static_cast<std::streamsize>(sizeof(T)) * n);\n"
+    text += "    return in.good() || in.eof();\n"
+    text += "}\n\n"
+
+    text += "template <typename T>\n"
+    text += "bool write_binary(const char* path, const T* data, int n) {\n"
+    text += "    std::ofstream out(path, std::ios::binary);\n"
+    text += "    if (!out) return false;\n"
+    text += "    out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(sizeof(T)) * n);\n"
+    text += "    return static_cast<bool>(out);\n"
+    text += "}\n\n"
+
+    text += "int main(int argc, char** argv) {\n"
+    expected_argc = len(var_items) + 3
+    text += f"    if (argc != {expected_argc}) {{\n"
+    text += '        std::cerr << "Usage: <exe> <N>'
+    for name, _ in var_items:
+        text += f" <{name}_path>"
+    text += ' <output_path>" << std::endl;\n'
+    text += "        return 1;\n"
+    text += "    }\n\n"
+
+    text += "    const int N = std::atoi(argv[1]);\n"
+    text += "    if (N < 0) {\n"
+    text += "        std::cerr << \"N must be non-negative\" << std::endl;\n"
+    text += "        return 1;\n"
+    text += "    }\n\n"
+
+    for idx, (name, elt_type) in enumerate(var_items):
+        cpp_type = elt_type.to_str()
+        arg_idx = idx + 2
+        text += f"    std::vector<{cpp_type}> {name}(N);\n"
+        text += f"    if (!read_binary<{cpp_type}>(argv[{arg_idx}], {name}.data(), N)) {{\n"
+        text += f'        std::cerr << "Failed to read input for {name}" << std::endl;\n'
+        text += "        return 2;\n"
+        text += "    }\n"
+    text += "\n"
+
+    var_args = ", ".join(f"{name}.data()" for name, _ in var_items)
+    output_cpp_type = output_type.to_str()
+
+    text += f"    auto kernel = make_{kernel_name}({var_args});\n"
+    text += f"    std::vector<{output_cpp_type}> output(N);\n\n"
+
+    text += "    auto start = std::chrono::high_resolution_clock::now();\n"
+    text += "    int pos = 0;\n"
+    text += "    while (pos < N) {\n"
+    text += f"        {kernel_name}_vector_type out;\n"
+    text += "        kernel.run(&out);\n"
+    text += "        const int lanes = vec_lanes_of(out);\n"
+    text += "        const int copy_count = (N - pos) < lanes ? (N - pos) : lanes;\n"
+    text += f"        std::memcpy(output.data() + pos, &out, sizeof({output_cpp_type}) * copy_count);\n"
+    text += "        pos += lanes;\n"
+    text += "        if (pos % 1024 == 0) {\n"
+    text += "            kernel.reset_and_next_row();\n"
+    text += "        }\n"
+    text += "    }\n"
+    text += "    auto end = std::chrono::high_resolution_clock::now();\n"
+    text += "\n"
+
+    output_arg_idx = len(var_items) + 2
+    text += f"    if (!write_binary<{output_cpp_type}>(argv[{output_arg_idx}], output.data(), N)) {{\n"
+    text += '        std::cerr << "Failed to write output" << std::endl;\n'
+    text += "        return 3;\n"
+    text += "    }\n"
+    text += "\n"
+
+    text += "    auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
+    text += '    std::cout << "{\\\"elapsed_us\\\":" << elapsed_us << "}" << std::endl;\n'
+    text += "    return 0;\n"
+    text += "}\n"
+
+    return text
+
+
+def generate_kernel_executable(
+    codegen: CodeGen,
+    expr: SignalExpr | SignalExpr2D,
+    header_path: Optional[str] = None,
+    runner_path: Optional[str] = None,
+    executable_path: Optional[str] = None,
+    compiler: str = "clang++",
+    compiler_flags: Optional[List[str]] = None,
+) -> KernelExecutable:
+    """
+    Generate and compile a single-kernel executable for Python interop.
+
+    The generated executable consumes raw binary input arrays and writes a raw
+    binary output array. The returned KernelExecutable handles Python/NumPy
+    translation and subprocess execution.
+    """
+    if compiler_flags is None:
+        compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
+
+    if header_path is None:
+        fd, header_path = tempfile.mkstemp(suffix=".h", prefix="header_", dir="/tmp")
+        os.close(fd)
+
+    if runner_path is None:
+        fd, runner_path = tempfile.mkstemp(
+            suffix=".cpp", prefix="kernel_runner_", dir="/tmp"
+        )
+        os.close(fd)
+
+    if executable_path is None:
+        fd, executable_path = tempfile.mkstemp(prefix="kernel_runner_", dir="/tmp")
+        os.close(fd)
+
+    kernel_name = "k0"
+    code = codegen.generate(expr, kernel_name)
+    instantiate_kernels(header_path, [code])
+
+    all_vars = codegen.collect_variables(expr)
+    runner_code = _generate_kernel_runner_code(
+        all_vars=all_vars,
+        output_type=expr.element_type,
+        kernel_name=kernel_name,
+        header_path=header_path,
+    )
+    with open(runner_path, "w") as f:
+        f.write(runner_code)
+
+    compile_cmd = [compiler] + compiler_flags + [runner_path, "-o", executable_path]
+    compile_result = subprocess.run(
+        compile_cmd,
+        capture_output=True,
+        text=True,
+    )
+    if compile_result.returncode != 0:
+        raise RuntimeError(f"Compilation failed: {compile_result.stderr}")
+
+    return KernelExecutable(
+        executable_path=executable_path,
+        variable_order=sorted(all_vars.keys()),
+        variable_types=all_vars,
+        output_type=expr.element_type,
+    )
+
+
 def generate_and_run_benchmark(
     codegen: CodeGen,
     exprs: Sequence[SignalExpr | SignalExpr2D],
@@ -748,10 +1031,6 @@ def generate_and_run_benchmark(
             - 'error': stderr if any errors occurred
             - 'return_code': return code from benchmark execution
     """
-    import subprocess
-    import os
-    import tempfile
-
     if compiler_flags is None:
         compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
 
