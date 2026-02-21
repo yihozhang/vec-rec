@@ -10,7 +10,7 @@ from vecrec.codegen import (
 from vecrec.util import ElementType
 
 
-def main():
+def main() -> None:
     lanes = 512
     program = Recurse(
         TIKernel([0, 1.6, -0.64], Type.Arith, ElementType.Float),

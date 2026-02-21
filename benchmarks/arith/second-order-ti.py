@@ -10,7 +10,7 @@ from vecrec.codegen import (
 from vecrec.util import ElementType
 
 
-def main():
+def main() -> None:
     program = Recurse(TIKernel([0, 1.8, -0.9], Type.Arith, ElementType.Float), Var("g", Type.Arith, ElementType.Float))
     transforms = Seq(
         Optional(
