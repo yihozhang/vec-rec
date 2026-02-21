@@ -16,15 +16,13 @@ class SignalExprBinOp(SignalExpr):
     __match_args__ = ("a", "b")
 
     def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         assert a.ty == b.ty
         assert (
             a.element_type == b.element_type
         ), f"ElementType mismatch in SignalExprBinOp: {a.element_type} vs {b.element_type}"
         self.a = a
         self.b = b
-        self.ty = a.ty
-        self.element_type = a.element_type
 
     @classmethod
     def of(cls, exprs: List[SignalExpr]) -> SignalExpr:
@@ -56,11 +54,9 @@ class SNeg(SignalExpr):
     __match_args__ = ("a",)
 
     def __init__(self, a: SignalExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         assert a.ty == Type.Arith, "Negation is only defined for arithmetic type"
         self.a = a
-        self.ty = a.ty
-        self.element_type = a.element_type
 
 
 @dataclass(unsafe_hash=True)
@@ -70,13 +66,11 @@ class Convolve(SignalExpr):
     __match_args__ = ("a", "b")
 
     def __init__(self, a: KernelExpr, b: SignalExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         assert a.ty == b.ty
         assert (
             a.element_type == b.element_type
         ), f"ElementType mismatch in Convolve: {a.element_type} vs {b.element_type}"
-        self.ty = a.ty
-        self.element_type = a.element_type
         self.a = a
         self.b = b
 
@@ -88,13 +82,11 @@ class Recurse(SignalExpr):
     __match_args__ = ("a", "g")
 
     def __init__(self, a: KernelExpr, g: SignalExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         assert a.ty == g.ty
         assert (
             a.element_type == g.element_type
         ), f"ElementType mismatch in Recurse: {a.element_type} vs {g.element_type}"
-        self.ty = a.ty
-        self.element_type = a.element_type
         self.a = a
         self.g = g
 
@@ -106,10 +98,8 @@ class ConvertLanes(SignalExpr):
     __match_args__ = ("a",)
 
     def __init__(self, a: SignalExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         self.a = a
-        self.ty = a.ty
-        self.element_type = a.element_type
         self.lanes = None
 
     def __repr__(self) -> str:
@@ -124,15 +114,13 @@ class Convolve2D(SignalExpr):
     __match_args__ = ("a", "b")
 
     def __init__(self, a: KernelExpr2D, b: SignalExpr2D) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         assert a.ty == b.ty
         assert (
             a.element_type == b.element_type
         ), f"ElementType mismatch in Convolve2D: {a.element_type} vs {b.element_type}"
         self.a = a
         self.b = b
-        self.ty = a.ty
-        self.element_type = a.element_type
 
 @dataclass(unsafe_hash=True)
 class Recurse2D(SignalExpr2D):
@@ -143,13 +131,11 @@ class Recurse2D(SignalExpr2D):
     __match_args__ = ("a", "g")
 
     def __init__(self, a: KernelExpr2D, g: SignalExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         assert a.ty == g.ty
         assert (
             a.element_type == g.element_type
         ), f"ElementType mismatch in Recurse: {a.element_type} vs {g.element_type}"
-        self.ty = a.ty
-        self.element_type = a.element_type
         self.a = a
         self.g = g
 
@@ -172,6 +158,7 @@ class Repeater(SignalExpr2D):
     a: SignalExpr
     n_rows: int
     prev_rows_var: RVar2D
+    __match_args__ = ("a", "n_rows", "prev_rows_var")
 
     var_count: int = 1
 
@@ -182,23 +169,19 @@ class Repeater(SignalExpr2D):
         ty: Type,
         element_type: ElementType,
     ) -> None:
-        super().__init__()
         self.n_rows = n_rows
         self.prev_rows_var = RVar2D(f"$f{Repeater.var_count}", ty, element_type)
         Repeater.var_count += 1
         self.a = func(self.prev_rows_var)
-        self.ty = self.a.ty
-        self.element_type = self.a.element_type
+        super().__init__(self.a.ty, self.a.element_type)
     
     @staticmethod
     def make(a: SignalExpr, n_rows: int, prev_rows_var: RVar2D) -> Repeater:
         repeater = Repeater.__new__(Repeater)
-        super(Repeater, repeater).__init__()
+        super(Repeater, repeater).__init__(a.ty, a.element_type)
         repeater.a = a
         repeater.n_rows = n_rows
         repeater.prev_rows_var = prev_rows_var
-        repeater.ty = a.ty
-        repeater.element_type = a.element_type
         return repeater
 
     def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D]:
@@ -213,8 +196,6 @@ class Ith(SignalExpr):
     __match_args__ = ("a", "i")
 
     def __init__(self, a: SignalExpr2D, i: int) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         self.a = a
         self.i = i
-        self.ty = Type.Arith
-        self.element_type = a.element_type

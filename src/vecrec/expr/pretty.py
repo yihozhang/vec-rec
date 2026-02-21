@@ -6,7 +6,7 @@ from typing import Sequence
 from vecrec.expr.base import (
     RecLang, KernelExpr, KernelExpr2D, SignalExpr, SignalExpr2D,
 )
-from vecrec.expr.signal import Num, Var, RVar2D
+from vecrec.expr.signal import Num, Impulse, Var, RVar2D
 from vecrec.expr.signal_ops import (
     SAdd, SSub, PointwiseMul, PointwiseDiv, SNeg,
     Convolve, Convolve2D, Recurse, Recurse2D,
@@ -29,7 +29,7 @@ def _prec(expr: RecLang) -> int:
     match expr:
         case Num(value=v) if v < 0:
             return _PREC_UNARY
-        case Num() | Var() | RVar2D():
+        case Num() | Impulse() | Var() | RVar2D():
             return _PREC_ATOM
         case TIKernel() | TVKernel() | TIKernel2D() | TVKernel2D():
             return _PREC_ATOM
@@ -84,6 +84,9 @@ def pp(expr: RecLang) -> str:
         # --- Leaves ---
         case Num(value=v):
             return _fmt_num(v)
+
+        case Impulse(value=v):
+            return f"δ({_fmt_num(v)})"
 
         case Var(name=n):
             return n

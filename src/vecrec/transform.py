@@ -626,7 +626,7 @@ class Preorder(Transform):
         results: List[SignalExpr] = []
         for expr in self.transform.apply_signal(expr):
             match expr:
-                case Var(_) | Num(_):
+                case Var(_) | Num(_) | Impulse(_):
                     results.append(expr)
                 case Ith(_):
                     # Special handling for Ith to preserve the integer index
@@ -712,7 +712,7 @@ class Postorder(Transform):
 
         results: Sequence[SignalExpr]
         match expr:
-            case Var(_) | Num(_):
+            case Var(_) | Num(_) | Impulse(_):
                 results = [expr]
             case Ith(e, i):
                 results = [
@@ -915,7 +915,7 @@ class AnnotateLanes(Transform):
                 ), "2D kernels should be eliminated before lane annotation"
                 args.append(self.convert_lanes(self.apply_generic(child)[0], lanes))
 
-            new_expr = type(expr)(*args)
+            new_expr = type(expr)(*args) # type: ignore
             new_expr.lanes = lanes
 
             return [new_expr]
@@ -944,7 +944,7 @@ class AnnotateLanes(Transform):
             args = [self.apply_generic(child)[0] for child in expr.children()]
             for arg in args:
                 assert arg.lanes == max_lanes
-            new_expr = type(expr)(*args)
+            new_expr = type(expr)(*args) # type: ignore
             new_expr.lanes = max_lanes
             return [new_expr]
 
@@ -974,14 +974,17 @@ class PushDownConvertLanesImpl(Transform):
                 new_kernel_expr.lanes = lanes
                 return new_kernel_expr
             elif isinstance(expr, TVKernel):
-                # There are two ways we can do it:
-                # 1. Narrow down the lanes of each signal
-                # 2. Use a ConvertLanes instead.
-                raise NotImplementedError("Narrowing lanes of TVKernel not implemented")
+                # TODO: we can also use a ConvertLanes here
+                data = [self.narrow_lanes(child, lanes) for child in expr.data]
+                return TVKernel(data, expr.ty, expr.element_type).with_lanes(lanes)
             else:
                 assert False, "unreachable"
         elif isinstance(expr, Var):
             new_signal_expr: SignalExpr = Var(expr.name, expr.ty, expr.element_type)
+            new_signal_expr.lanes = lanes
+            return new_signal_expr
+        elif isinstance(expr, Impulse):
+            new_signal_expr = Impulse(expr.value, expr.ty, expr.element_type)
             new_signal_expr.lanes = lanes
             return new_signal_expr
         elif isinstance(expr, Repeater):

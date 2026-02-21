@@ -1,6 +1,7 @@
 from __future__ import annotations
 from abc import abstractmethod
 import copy
+from dataclasses import dataclass
 from enum import Enum
 import numbers
 from typing import List, Optional, Tuple, overload
@@ -8,6 +9,7 @@ from typing import List, Optional, Tuple, overload
 import numpy as np
 
 from vecrec.util import ElementType
+
 
 class Type(Enum):
     Arith = 1
@@ -23,7 +25,7 @@ class Type(Enum):
             case Type.TropMin:
                 return bool(np.isclose(value, np.inf))
         assert False, "unreachable"
-    
+
     def is_one(self, value: float) -> bool:
         match self:
             case Type.Arith:
@@ -139,22 +141,27 @@ class Type(Enum):
         assert False, "unreachable"
 
 
+@dataclass(kw_only=True, match_args=False)
 class RecLang:
     lanes: Optional[int] = None
 
-    def __eq__(self, other):
+    def __init__(self, lanes: Optional[int] = None) -> None:
+        self.lanes = lanes
+
+    def __eq__(self, other: object) -> bool:
         if type(self) is not type(other):
             return False
 
         return self.__dict__ == other.__dict__
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash((type(self), tuple(sorted(self.__dict__.items()))))
 
     def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D]:
         """Return the children of the expression."""
         return [
-            v for v in self.__dict__.values() 
+            v
+            for v in self.__dict__.values()
             if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D))
         ]
 
@@ -173,6 +180,7 @@ class RecLang:
         return new_expr
 
 
+@dataclass(match_args=False)
 class SignalExpr(RecLang):
     ty: Type
     element_type: ElementType
@@ -181,13 +189,17 @@ class SignalExpr(RecLang):
         """Return a copy of the expression with the given number of lanes."""
         return super().with_lanes(lanes)  # type: ignore
 
+
+@dataclass(match_args=False)
 class SignalExpr2D(RecLang):
     ty: Type
     element_type: ElementType
 
     def with_lanes(self, lanes: Optional[int]) -> SignalExpr2D:
-        return super().with_lanes(lanes) # type: ignore
+        return super().with_lanes(lanes)  # type: ignore
 
+
+@dataclass(match_args=False)
 class KernelExpr(RecLang):
     ty: Type
     element_type: ElementType
@@ -200,6 +212,8 @@ class KernelExpr(RecLang):
     def with_lanes(self, lanes: Optional[int]) -> KernelExpr:
         return super().with_lanes(lanes)  # type: ignore
 
+
+@dataclass(match_args=False)
 class KernelExpr2D(RecLang):
     ty: Type
     element_type: ElementType

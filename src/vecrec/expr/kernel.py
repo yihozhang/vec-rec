@@ -7,6 +7,7 @@ from vecrec.expr.signal_ops import *
 from vecrec.util import allclose, ElementType
 from .base import Type, KernelExpr, KernelExpr2D, SignalExpr
 
+
 class TIKernel(KernelExpr):
     @staticmethod
     def z(ty: Type, element_type: ElementType, n: int = -1) -> TIKernel:
@@ -26,29 +27,33 @@ class TIKernel(KernelExpr):
     __match_args__ = ("data",)
 
     def __init__(self, data: list[float], ty: Type, element_type: ElementType):
-        super().__init__()
+        super().__init__(ty, element_type)
         for i in range(len(data)):
             if ty.is_zero(data[i]):
                 data[i] = ty.zero()
         while len(data) > 0 and ty.is_zero(data[-1]):
             data.pop()
         self.data = data
-        self.ty = ty
-        self.element_type = element_type
 
     def promote(self) -> TVKernel:
-        promoted = TVKernel([Num(x, self.ty, self.element_type) for x in self.data], self.ty, self.element_type)
+        promoted = TVKernel(
+            [Num(x, self.ty, self.element_type) for x in self.data],
+            self.ty,
+            self.element_type,
+        )
         promoted.lanes = self.lanes
         return promoted
 
     def time_delay(self, max_delay: int) -> Tuple[int, KernelExpr]:
         for i, v in enumerate(self.data[:max_delay]):
             if not self.ty.is_zero(v):
-                return i, TIKernel(self.data[i:], self.ty, self.element_type).with_lanes(self.lanes)
+                return i, TIKernel(
+                    self.data[i:], self.ty, self.element_type
+                ).with_lanes(self.lanes)
         if max_delay < len(self.data):
-            return max_delay, TIKernel(self.data[max_delay:], self.ty, self.element_type).with_lanes(
-                self.lanes
-            )
+            return max_delay, TIKernel(
+                self.data[max_delay:], self.ty, self.element_type
+            ).with_lanes(self.lanes)
         assert False, "max_delay exceeds kernel length"
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[float]]:
@@ -101,11 +106,14 @@ class TIKernel(KernelExpr):
         if isinstance(other, TVKernel):
             return self.promote() * other
         elif isinstance(other, TIKernel):
-            assert self.element_type == other.element_type, \
-                f"ElementType mismatch in TIKernel multiplication: {self.element_type} vs {other.element_type}"
+            assert (
+                self.element_type == other.element_type
+            ), f"ElementType mismatch in TIKernel multiplication: {self.element_type} vs {other.element_type}"
             if len(self) == 0 or len(other) == 0:
                 return TIKernel([], self.ty, self.element_type)
-            return TIKernel(self.ty.convolve(self.data, other.data), self.ty, self.element_type)
+            return TIKernel(
+                self.ty.convolve(self.data, other.data), self.ty, self.element_type
+            )
         else:
             return TIKernel(self.ty.mult(self.data, other), self.ty, self.element_type)
 
@@ -121,8 +129,9 @@ class TIKernel(KernelExpr):
         if isinstance(other, TVKernel):
             return self.promote() + other
         assert self.ty == other.ty
-        assert self.element_type == other.element_type, \
-            f"ElementType mismatch in TIKernel addition: {self.element_type} vs {other.element_type}"
+        assert (
+            self.element_type == other.element_type
+        ), f"ElementType mismatch in TIKernel addition: {self.element_type} vs {other.element_type}"
 
         max_len = max(len(self), len(other))
         a_data = self.data + [self.ty.zero()] * (max_len - len(self))
@@ -139,8 +148,9 @@ class TIKernel(KernelExpr):
         if isinstance(other, TVKernel):
             return self.promote() - other
         assert self.ty == other.ty
-        assert self.element_type == other.element_type, \
-            f"ElementType mismatch in TIKernel subtraction: {self.element_type} vs {other.element_type}"
+        assert (
+            self.element_type == other.element_type
+        ), f"ElementType mismatch in TIKernel subtraction: {self.element_type} vs {other.element_type}"
 
         max_len = max(len(self), len(other))
         a_data = self.data + [self.ty.zero()] * (max_len - len(self))
@@ -152,6 +162,7 @@ class TIKernel(KernelExpr):
         return TIKernel([-x for x in self.data], self.ty, self.element_type)
 
 
+@dataclass
 class TVKernel(KernelExpr):
     data: Sequence[SignalExpr]
     ty: Type
@@ -159,10 +170,11 @@ class TVKernel(KernelExpr):
     __match_args__ = ("data",)
 
     def __init__(self, data: Sequence[SignalExpr], ty: Type, element_type: ElementType):
-        super().__init__()
+        super().__init__(ty, element_type)
         self.data = data
-        self.ty = ty
-        self.element_type = element_type
+
+    def children(self):
+        return self.data
 
     def time_delay(self, max_delay: int) -> Tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
@@ -171,11 +183,13 @@ class TVKernel(KernelExpr):
                 case Num(value) if self.ty.is_zero(value):
                     continue
                 case _:
-                    return i, TVKernel(self.data[i:], self.ty, self.element_type).with_lanes(self.lanes)
+                    return i, TVKernel(
+                        self.data[i:], self.ty, self.element_type
+                    ).with_lanes(self.lanes)
         if max_delay < len(self.data):
-            return max_delay, TVKernel(self.data[max_delay:], self.ty, self.element_type).with_lanes(
-                self.lanes
-            )
+            return max_delay, TVKernel(
+                self.data[max_delay:], self.ty, self.element_type
+            ).with_lanes(self.lanes)
         assert False, "max_delay exceeds kernel length"
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[SignalExpr]]:
@@ -195,14 +209,23 @@ class TVKernel(KernelExpr):
         if isinstance(other, TIKernel):
             return self + other.promote()
         assert self.ty == other.ty
-        assert self.element_type == other.element_type, \
-            f"ElementType mismatch in TVKernel addition: {self.element_type} vs {other.element_type}"
+        assert (
+            self.element_type == other.element_type
+        ), f"ElementType mismatch in TVKernel addition: {self.element_type} vs {other.element_type}"
 
         max_len = max(len(self.data), len(other.data))
         data = []
         for i in range(max_len):
-            a = self.data[i] if i < len(self.data) else Num(self.ty.zero(), self.ty, self.element_type)
-            b = other.data[i] if i < len(other.data) else Num(self.ty.zero(), self.ty, self.element_type)
+            a = (
+                self.data[i]
+                if i < len(self.data)
+                else Num(self.ty.zero(), self.ty, self.element_type)
+            )
+            b = (
+                other.data[i]
+                if i < len(other.data)
+                else Num(self.ty.zero(), self.ty, self.element_type)
+            )
             data.append(SAdd(a, b))
         return TVKernel(data, self.ty, self.element_type)
 
@@ -218,8 +241,9 @@ class TVKernel(KernelExpr):
         if isinstance(other, TIKernel):
             return self * other.promote()
         elif isinstance(other, TVKernel):
-            assert self.element_type == other.element_type, \
-                f"ElementType mismatch in TVKernel multiplication: {self.element_type} vs {other.element_type}"
+            assert (
+                self.element_type == other.element_type
+            ), f"ElementType mismatch in TVKernel multiplication: {self.element_type} vs {other.element_type}"
             max_len = len(self.data) + len(other.data) - 1
             data = []
             for i in range(max_len):
@@ -229,7 +253,10 @@ class TVKernel(KernelExpr):
                         terms.append(
                             PointwiseMul(
                                 self.data[j],
-                                Convolve(TIKernel.z(self.ty, self.element_type, -j), other.data[i - j]),
+                                Convolve(
+                                    TIKernel.z(self.ty, self.element_type, -j),
+                                    other.data[i - j],
+                                ),
                             )
                         )
                 terms_seq: Sequence[SignalExpr] = terms
@@ -240,7 +267,10 @@ class TVKernel(KernelExpr):
                 data.append(term)
             return TVKernel(data, self.ty, self.element_type)
         else:
-            data = [PointwiseMul(Num(other, self.ty, self.element_type), x) for x in self.data]
+            data = [
+                PointwiseMul(Num(other, self.ty, self.element_type), x)
+                for x in self.data
+            ]
             return TVKernel(data, self.ty, self.element_type)
 
     def __rmul__(self, other: float) -> TVKernel:
@@ -250,12 +280,17 @@ class TVKernel(KernelExpr):
         data = ", ".join([str(x) for x in self.data])
         return f"TVKernel([ {data} ])"
 
+    def __hash__(self):
+        return hash(tuple(self.data))
+
 
 KernelConstant = TIKernel | TVKernel
+
 
 @dataclass(unsafe_hash=True)
 class TIKernel2D(KernelExpr2D):
     """2D time-invariant kernel. data[row][col] gives the coefficient."""
+
     data: List[List[float]]
     ty: Type
     element_type: ElementType
@@ -263,7 +298,7 @@ class TIKernel2D(KernelExpr2D):
     __match_args__ = ("data",)
 
     def __init__(self, data: List[List[float]], ty: Type, element_type: ElementType):
-        super().__init__()
+        super().__init__(ty, element_type)
         # Trim trailing zero rows
         while len(data) > 0 and all(ty.is_zero(v) for v in data[-1]):
             data.pop()
@@ -272,26 +307,26 @@ class TIKernel2D(KernelExpr2D):
             while len(data[i]) > 0 and ty.is_zero(data[i][-1]):
                 data[i].pop()
         self.data = data
-        self.ty = ty
-        self.element_type = element_type
 
     def n_rows(self) -> int:
         return len(self.data)
 
 
+@dataclass(unsafe_hash=True)
 class TVKernel2D(KernelExpr2D):
     """2D time-varying kernel. data[row][col] gives the signal expression."""
+
     data: List[List[SignalExpr]]
     ty: Type
     element_type: ElementType
 
     __match_args__ = ("data",)
 
-    def __init__(self, data: List[List[SignalExpr]], ty: Type, element_type: ElementType):
-        super().__init__()
+    def __init__(
+        self, data: List[List[SignalExpr]], ty: Type, element_type: ElementType
+    ):
+        super().__init__(ty, element_type)
         self.data = data
-        self.ty = ty
-        self.element_type = element_type
 
     def n_rows(self) -> int:
         return len(self.data)

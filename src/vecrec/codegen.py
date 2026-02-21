@@ -75,7 +75,7 @@ class CodeGen:
 
     def _is_trivial_expr(self, expr: SignalExpr | SignalExpr2D | KernelExpr) -> bool:
         """Check if an expression is trivial and should be inlined rather than cached."""
-        return isinstance(expr, (Num, Var, TIKernel, RVar2D))
+        return isinstance(expr, (Num, Impulse, Var, TIKernel, RVar2D))
 
     def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> Code:
         self.clear()
@@ -115,6 +115,16 @@ class CodeGen:
                 value_str = expr.element_type.val_to_str(value, expr.ty)
                 code = Code(
                     f"Signal1DConstant<{vec_type}>({value_str})",
+                    expr.ty,
+                    expr.element_type,
+                    expr.lanes,
+                )
+            case Impulse(value):
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+                value_str = expr.element_type.val_to_str(value, expr.ty)
+                zero_str = expr.element_type.val_to_str(expr.ty.zero(), expr.ty)
+                code = Code(
+                    f"Signal1DImpulse<{vec_type}>({value_str}, {zero_str})",
                     expr.ty,
                     expr.element_type,
                     expr.lanes,

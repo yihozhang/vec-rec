@@ -16,14 +16,12 @@ class KernelExprBinOp(KernelExpr):
     __match_args__ = ("a", "b")
 
     def __init__(self, a: KernelExpr, b: KernelExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         assert a.ty == b.ty
         assert a.element_type == b.element_type, \
             f"ElementType mismatch in KernelExprBinOp: {a.element_type} vs {b.element_type}"
         self.a = a
         self.b = b
-        self.ty = a.ty
-        self.element_type = a.element_type
 
     def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
@@ -66,10 +64,8 @@ class KNeg(KernelExpr):
     __match_args__ = ("a",)
 
     def __init__(self, a: KernelExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         self.a = a
-        self.ty = a.ty
-        self.element_type = a.element_type
 
     def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:
         """Return the time delay of the kernel."""
@@ -83,10 +79,8 @@ class KConvertLanes(KernelExpr):
     __match_args__ = ("a",)
 
     def __init__(self, a: KernelExpr) -> None:
-        super().__init__()
+        super().__init__(a.ty, a.element_type)
         self.a = a
-        self.ty = a.ty
-        self.element_type = a.element_type
         self.lanes = None
 
     def time_delay(self, max_delay: int) -> tuple[int, KernelExpr]:

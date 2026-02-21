@@ -377,6 +377,37 @@ struct Signal1DConstant {
     void reset_and_next_row() {}
 };
 
+// Signal1DImpulse: produces `value` in lane 0 at time 0, then `zero` (broadcast) thereafter.
+// Useful for injecting initial conditions into recurrences.
+template <typename vec_type>
+struct Signal1DImpulse {
+    using elt_type = typename ElementType<vec_type>::type;
+    constexpr static int lanes = vec_lanes_of(vec_type{});
+
+    elt_type impulse_value;
+    elt_type zero_value;
+    bool fired;
+
+    Signal1DImpulse(elt_type value, elt_type zero) : impulse_value(value), zero_value(zero), fired(false) {}
+
+    inline __attribute__((always_inline)) void run(vec_type *d) {
+        if (!fired) {
+            fired = true;
+            if constexpr (lanes == 1) {
+                *d = impulse_value;
+            } else {
+                vec_type result = zero_value;  // broadcast zero to all lanes
+                result[0] = impulse_value;     // override lane 0 with the impulse
+                *d = result;
+            }
+        } else {
+            *d = zero_value;  // broadcast zero to all lanes
+        }
+    }
+
+    void reset_and_next_row() {}
+};
+
 template <typename vec_type>
 struct Signal1D {
     using elt_type = typename ElementType<vec_type>::type;

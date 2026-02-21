@@ -19,6 +19,7 @@ __all__ = [
     "KNeg",
     "KConvolve",
     "Num",
+    "Impulse",
     "SignalExprBinOp",
     "SAdd",
     "SSub",
