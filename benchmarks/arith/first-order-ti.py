@@ -1,12 +1,12 @@
 # Fibonacci: f(x) = f(x-1) + f(x-2)
 
 from vecrec.expr import *
-from vecrec.expr import Type
 from vecrec.transform import *
 from vecrec.codegen import (
 	CodeGen,
 	generate_and_run_benchmark,
 )
+from vecrec.util import ElementType
 
 
 def main():

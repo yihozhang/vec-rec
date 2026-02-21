@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from vecrec.expr import Type
 
+__all__ = ["ElementType", "allclose"]
+
 class ElementType(Enum):
     Float = 1
     I32 = 2

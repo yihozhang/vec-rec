@@ -40,7 +40,7 @@ def test_repeater_recurse_lane_mismatch() -> None:
     expr = AnnotateLanes(512).apply_generic(expr)[0]
     expr = PushDownConvertLanes().apply_generic(expr)[0]
     print(pp(expr))
-    result = generate_and_run_benchmark(CodeGen(), [expr], ["test_lane_mismatch"])
+    result = generate_and_run_benchmark(CodeGen(), [expr])
     assert result['return_code'] == 0, f"C++ compilation/execution failed: {result}"
 
 def test_repeater_recurse_lane_mismatch2() -> None:
@@ -58,5 +58,5 @@ def test_repeater_recurse_lane_mismatch2() -> None:
     expr = AnnotateLanes(512).apply_generic(expr)[0]
     expr = PushDownConvertLanes().apply_generic(expr)[0]
     print(pp(expr))
-    result = generate_and_run_benchmark(CodeGen(), [expr], ["test_lane_mismatch"])
+    result = generate_and_run_benchmark(CodeGen(), [expr])
     assert result['return_code'] == 0, f"C++ compilation/execution failed: {result}"

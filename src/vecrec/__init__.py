@@ -6,6 +6,7 @@ import numpy as np
 from vecrec.codegen import CodeGen, instantiate_kernels, generate_benchmark, generate_and_run_benchmark
 from vecrec.transform import *
 from vecrec.expr import Convolve, Recurse, TIKernel, Type, Var
+from vecrec.util import ElementType
 
 
 def main():

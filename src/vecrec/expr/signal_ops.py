@@ -9,7 +9,7 @@ from vecrec.util import ElementType
 
 from .base import *
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class SignalExprBinOp(SignalExpr):
     a: SignalExpr
     b: SignalExpr
@@ -44,14 +44,13 @@ class SSub(SignalExprBinOp):
 class PointwiseMul(SignalExprBinOp):
     pass
 
-
 class PointwiseDiv(SignalExprBinOp):
     def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
         super().__init__(a, b)
         assert self.ty == Type.Arith, "Division is only defined for arithmetic type"
 
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class SNeg(SignalExpr):
     a: SignalExpr
     __match_args__ = ("a",)
@@ -64,7 +63,7 @@ class SNeg(SignalExpr):
         self.element_type = a.element_type
 
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class Convolve(SignalExpr):
     a: KernelExpr
     b: SignalExpr
@@ -82,7 +81,7 @@ class Convolve(SignalExpr):
         self.b = b
 
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class Recurse(SignalExpr):
     a: KernelExpr
     g: SignalExpr
@@ -101,7 +100,7 @@ class Recurse(SignalExpr):
 
 
 # Convert Lanes
-@dataclass
+@dataclass(unsafe_hash=True)
 class ConvertLanes(SignalExpr):
     a: SignalExpr
     __match_args__ = ("a",)
@@ -116,7 +115,7 @@ class ConvertLanes(SignalExpr):
     def __repr__(self) -> str:
         return f"ConvertLanes({self.lanes}, {self.a})"
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class Convolve2D(SignalExpr):
     """2D convolution: convolve a 2D kernel with a 2D signal (from Repeater). Produces a 1D signal"""
 
@@ -135,7 +134,7 @@ class Convolve2D(SignalExpr):
         self.ty = a.ty
         self.element_type = a.element_type
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class Recurse2D(SignalExpr2D):
     """2D version of Recurse. The callable receives a RVar2D representing the output of the previous rows."""
 
@@ -154,7 +153,7 @@ class Recurse2D(SignalExpr2D):
         self.a = a
         self.g = g
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class Repeater(SignalExpr2D):
     """
     Turns a 1D signal into a 2D signal by caching the last `n_rows` rows.
@@ -207,7 +206,7 @@ class Repeater(SignalExpr2D):
         # (it's an internal placeholder, not an external input)
         return [self.a]
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class Ith(SignalExpr):
     a: SignalExpr2D
     i: int

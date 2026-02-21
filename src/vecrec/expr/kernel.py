@@ -253,7 +253,7 @@ class TVKernel(KernelExpr):
 
 KernelConstant = TIKernel | TVKernel
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class TIKernel2D(KernelExpr2D):
     """2D time-invariant kernel. data[row][col] gives the coefficient."""
     data: List[List[float]]

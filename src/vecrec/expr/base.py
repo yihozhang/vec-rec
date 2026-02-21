@@ -136,7 +136,6 @@ class Type(Enum):
             return [f(a, y) for y in b]
         elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
             return f(a, b)
-        print(a, b)
         assert False, "unreachable"
 
 

@@ -9,6 +9,7 @@ from vecrec.codegen import (
     CodeGen,
     generate_and_run_benchmark,
 )
+from vecrec.util import ElementType
 
 
 def main():

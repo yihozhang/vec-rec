@@ -7,7 +7,7 @@ from vecrec.expr.kernel import TIKernel
 from vecrec.util import ElementType
 from .base import *
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class KernelExprBinOp(KernelExpr):
     a: KernelExpr
     b: KernelExpr
@@ -77,7 +77,7 @@ class KNeg(KernelExpr):
         return delay, KNeg(e).with_lanes(self.lanes)
 
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class KConvertLanes(KernelExpr):
     a: KernelExpr
     __match_args__ = ("a",)

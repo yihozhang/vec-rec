@@ -7,6 +7,7 @@ from vecrec.codegen import (
     CodeGen,
     generate_and_run_benchmark,
 )
+from vecrec.util import ElementType
 
 
 def main():
@@ -23,7 +24,7 @@ def main():
                 Any(Dilate(), Delay()),
             ),
         ),
-        AnnotateLanes(512),
+        AnnotateLanes(lanes),
         PushDownConvertLanes(),
     )
     results = transforms.apply_signal(program)

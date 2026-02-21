@@ -17,7 +17,7 @@ class Num(SignalExpr):
         self.ty = ty
         self.element_type = element_type
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class Var(SignalExpr):
     name: str
     __match_args__ = ("name",)
@@ -28,7 +28,7 @@ class Var(SignalExpr):
         self.ty = ty
         self.element_type = element_type
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class RVar2D(SignalExpr2D):
     name: str
     __match_args__ = ("name",)

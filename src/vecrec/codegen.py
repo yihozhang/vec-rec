@@ -10,6 +10,7 @@ from importlib.resources import files
 
 TEMPLATE = files("vecrec.templates") / "common.h"
 
+
 class Code:
     text: str
     ty: Type
@@ -24,17 +25,21 @@ class Code:
         self.lanes = lanes
         self.taps = taps
 
+
 class CodeGen:
     # Hardware-dependent maximum
     counter: int
     prologue: list[str]
     # Maps RVar2D names to their context variable names (str) and n_rows (int)
     var2d_context: Dict[str, Union[str, int]]
+    # Maps expressions (by structural equality) to Code object for caching identical AST structures
+    expr_cache: Optional[Dict]
 
-    def __init__(self):
+    def __init__(self, cache_cse: bool = True):
         self.counter = 0
         self.prologue = []
         self.var2d_context = {}
+        self.expr_cache = {} if cache_cse else None
 
     def get_new_var(self) -> str:
         self.counter += 1
@@ -57,6 +62,7 @@ class CodeGen:
         self.counter = 0
         self.prologue = []
         self.var2d_context = {}
+        self.expr_cache = {} if self.expr_cache is not None else None
 
     def get_sem_suffix(self, ty: Type) -> str:
         match ty:
@@ -67,18 +73,25 @@ class CodeGen:
             case Type.TropMin:
                 return "TropMin"
 
+    def _is_trivial_expr(self, expr: SignalExpr | SignalExpr2D | KernelExpr) -> bool:
+        """Check if an expression is trivial and should be inlined rather than cached."""
+        return isinstance(expr, (Num, Var, TIKernel, RVar2D))
+
     def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> Code:
         self.clear()
         code = self.generate_signal(expr)
         vars = self.collect_variables(expr)
-        args = ", ".join(f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items()))
+        args = ", ".join(
+            f"const {elt_type.to_str()} *{var}"
+            for var, elt_type in sorted(vars.items())
+        )
         text = "\n".join(
             [
                 f"auto make_{name}({args}) {{",
                 *map(lambda x: "    " + x, self.prologue),
                 f"    return {code.text};",
                 "}",
-                f"using {name}_vector_type = {self.get_vec_type(code.element_type, code.lanes)};"
+                f"using {name}_vector_type = {self.get_vec_type(code.element_type, code.lanes)};",
             ]
         )
         return Code(
@@ -89,12 +102,18 @@ class CodeGen:
         )
 
     def generate_signal(self, expr: SignalExpr | SignalExpr2D) -> Code:
+        # Check cache first (using structural equality)
+        if self.expr_cache is not None and expr in self.expr_cache:
+            return self.expr_cache[expr]
+
         assert expr.lanes is not None
+
+        # Generate code for each case
         match expr:
             case Num(value):
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
                 value_str = expr.element_type.val_to_str(value, expr.ty)
-                return Code(
+                code = Code(
                     f"Signal1DConstant<{vec_type}>({value_str})",
                     expr.ty,
                     expr.element_type,
@@ -112,11 +131,13 @@ class CodeGen:
 
                 constructor = "make_" + type(expr).__name__
                 suffix = self.get_sem_suffix(ty)
-                program = f"{constructor}{suffix}<{vec_type}>({code_a.text}, {code_b.text})"
-                return Code(program, ty, element_type, expr.lanes)
+                program = (
+                    f"{constructor}{suffix}<{vec_type}>({code_a.text}, {code_b.text})"
+                )
+                code = Code(program, ty, element_type, expr.lanes)
 
             case Var(name):
-                return Code(
+                code = Code(
                     f"Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({name})",
                     expr.ty,
                     expr.element_type,
@@ -125,13 +146,15 @@ class CodeGen:
             case RVar2D(name):
                 # RVar2D should only appear within a Repeater context
                 if name not in self.var2d_context:
-                    raise ValueError(f"RVar2D '{name}' used outside of Repeater context")
-                
+                    raise ValueError(
+                        f"RVar2D '{name}' used outside of Repeater context"
+                    )
+
                 context_var = self.var2d_context[name]
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
                 n_rows = self.var2d_context[f"{name}_n_rows"]
-                
-                return Code(
+
+                code = Code(
                     f"make_signal2d<{vec_type}, {n_rows}>({context_var})",
                     expr.ty,
                     expr.element_type,
@@ -139,29 +162,30 @@ class CodeGen:
                 )
             case Repeater(a, n_rows, prev_rows_var):
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                
+
                 # Create a context variable
                 context_var = self.get_new_var()
                 self.prologue.append(
                     f"RepeaterContext<{vec_type}, {n_rows}>* {context_var} = new RepeaterContext<{vec_type}, {n_rows}>();"
                 )
-                
+
                 # Add the RVar2D to our context so inner signal can reference it
                 old_context = self.var2d_context.copy()
                 self.var2d_context[prev_rows_var.name] = f"{context_var}"
                 # n_rows includes the current row, so prev_rows has n_rows - 1 rows
                 self.var2d_context[f"{prev_rows_var.name}_n_rows"] = n_rows - 1
-                
+
                 # Generate code for the inner signal (which may reference prev_rows_var)
                 code_a = self.generate_signal(a)
-                
+
                 # Restore context
                 self.var2d_context = old_context
-                
+
                 # Generate the Repeater construction
-                program = f"make_repeater<{vec_type}, {n_rows}>({context_var}, {code_a.text})"
-                
-                return Code(program, expr.ty, expr.element_type, expr.lanes)
+                program = (
+                    f"make_repeater<{vec_type}, {n_rows}>({context_var}, {code_a.text})"
+                )
+                code = Code(program, expr.ty, expr.element_type, expr.lanes)
             case Convolve(a, f):
                 code_a = self.generate_kernel(a)
                 code_f = self.generate_signal(f)
@@ -173,7 +197,7 @@ class CodeGen:
 
                 vec_type = self.get_vec_type(element_type, expr.lanes)
                 program = f"make_s_convolve<{vec_type}>({code_a.text}, {code_f.text})"
-                return Code(program, ty, element_type, expr.lanes)
+                code = Code(program, ty, element_type, expr.lanes)
             case Recurse(a, g):
                 time_delay, a = a.time_delay(expr.lanes)
                 assert time_delay == a.lanes
@@ -188,7 +212,7 @@ class CodeGen:
                 vec_type = self.get_vec_type(element_type, expr.lanes)
 
                 program = f"make_s_recurse<{vec_type}>({code_a.text}, {code_g.text})"
-                return Code(program, ty, element_type, a.lanes)
+                code = Code(program, ty, element_type, a.lanes)
             case Ith(signal2d, i):
                 # Ith extracts the ith row from a 2D signal
                 # Generate: make_ith_row<vec_type, n_rows, i>(signal2d_code)
@@ -209,36 +233,58 @@ class CodeGen:
                 # There are two Signal2D types right now: RVar2D and Repeater
                 if isinstance(signal2d, RVar2D):
                     if signal2d.name not in self.var2d_context:
-                        raise ValueError(f"RVar2D '{signal2d.name}' used outside of Repeater context")
+                        raise ValueError(
+                            f"RVar2D '{signal2d.name}' used outside of Repeater context"
+                        )
                     n_rows = self.var2d_context[f"{signal2d.name}_n_rows"]
                 elif isinstance(signal2d, Repeater):
                     n_rows = signal2d.n_rows
                 else:
-                    raise ValueError(f"Ith expects RVar2D or Repeater as signal2d, got {type(signal2d)}")
+                    raise ValueError(
+                        f"Ith expects RVar2D or Repeater as signal2d, got {type(signal2d)}"
+                    )
 
                 # Generate make_ith_row call using signal2d_lanes to keep C++ types consistent
-                program = f"make_ith_row<{ith_vec_type}, {n_rows}, {i}>({code_signal2d.text})"
-                ith_code = Code(program, ty, element_type, signal2d_lanes)
+                program = (
+                    f"make_ith_row<{ith_vec_type}, {n_rows}, {i}>({code_signal2d.text})"
+                )
+                code = Code(program, ty, element_type, signal2d_lanes)
 
                 # Wrap with ConvertOne2N (downscale) or ConvertN2One (upscale) if needed
                 if signal2d_lanes != expr.lanes:
-                    ith_code = self.enforce_lanes(ith_code, expr.lanes)
-                return ith_code
+                    code = self.enforce_lanes(code, expr.lanes)
             case ConvertLanes(a):
                 code_a = self.generate_signal(a)
-                code_a = self.enforce_lanes(code_a, expr.lanes)
-                return code_a
-        assert False
+                code = self.enforce_lanes(code_a, expr.lanes)
+            case _:
+                assert False
+
+        # Cache and return at the end
+        if not self._is_trivial_expr(expr):
+            var = self.get_new_var()
+            self.prologue.append(f"auto {var} = {code.text};")
+            code = Code(var, code.ty, code.element_type, code.lanes, code.taps)
+        if self.expr_cache is not None:
+            self.expr_cache[expr] = code
+        return code
 
     def generate_kernel(self, expr: KernelExpr) -> Code:
+        # Check cache first (using structural equality)
+        if self.expr_cache is not None and expr in self.expr_cache:
+            return self.expr_cache[expr]
+
         assert expr.lanes is not None
+
+        # Generate code for each case
         match expr:
             case TIKernel(_):
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
 
                 taps, indices, values = expr.to_sparse_repr()
                 index_args = ", ".join(map(str, indices))
-                value_args = ", ".join(map(lambda v: f"{expr.element_type.val_to_str(v, expr.ty)}", values))
+                value_args = ", ".join(
+                    map(lambda v: f"{expr.element_type.val_to_str(v, expr.ty)}", values)
+                )
 
                 index_var = self.get_new_var()
                 value_var = self.get_new_var()
@@ -250,7 +296,7 @@ class CodeGen:
                     f"constexpr static {expr.element_type.to_str()} {value_var}[{taps}] = {{{value_args}}};",
                 )
 
-                return Code(
+                code = Code(
                     f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
                     expr.ty,
                     expr.element_type,
@@ -273,7 +319,7 @@ class CodeGen:
                     f"constexpr static int {index_var}[{taps}] = {{{index_args}}};",
                 )
 
-                return Code(
+                code = Code(
                     f"make_time_varying_kernel<{taps}, {vec_type}, {index_var}>({arguments})",
                     ty,
                     element_type,
@@ -282,13 +328,22 @@ class CodeGen:
                 )
             case KConvertLanes(a):
                 code_a = self.generate_kernel(a)
-                code_a = self.enforce_lanes(code_a, expr.lanes)
-                return code_a
+                code = self.enforce_lanes(code_a, expr.lanes)
             case KAdd(_, _) | KSub(_, _) | KNeg(_) | KConvolve(_, _):
-                raise NotImplementedError("These apps should have been eliminated by constant folding")
+                raise NotImplementedError(
+                    "These apps should have been eliminated by constant folding"
+                )
             case _:
                 assert False
 
+        # Cache and return at the end
+        if not self._is_trivial_expr(expr):
+            var = self.get_new_var()
+            self.prologue.append(f"auto {var} = {code.text};")
+            code = Code(var, code.ty, code.element_type, code.lanes, code.taps)
+        if self.expr_cache is not None:
+            self.expr_cache[expr] = code
+        return code
 
     def enforce_lanes(self, code: Code, lanes: int) -> Code:
         """
@@ -300,7 +355,7 @@ class CodeGen:
 
         vec_type_in = self.get_vec_type(code.element_type, code.lanes)
         vec_type_out = self.get_vec_type(code.element_type, lanes)
-        
+
         function_name = {
             (True, True): "make_convert_n2one",
             (True, False): "make_convert_one2n",
@@ -336,7 +391,9 @@ class CodeGen:
         match expr:
             case Var(name):
                 if name in vars and vars[name] != expr.element_type:
-                    raise ValueError(f"Variable {name} has inconsistent element types: {vars[name]} vs {expr.element_type}")
+                    raise ValueError(
+                        f"Variable {name} has inconsistent element types: {vars[name]} vs {expr.element_type}"
+                    )
                 vars[name] = expr.element_type
             case _:
                 for c in expr.children():
@@ -359,6 +416,7 @@ class CodeGen:
             #     pass
 
         return vars
+
 
 def instantiate_kernels(path: str, codes: List[Code]) -> None:
     text = TEMPLATE.read_text()
@@ -394,7 +452,9 @@ def generate_benchmark(
         warmup_iterations: Number of warmup iterations before timing
         benchmark_iterations: Number of iterations for timing
     """
-    assert len(exprs) == len(kernel_names), "Number of expressions and kernel names must match"
+    assert len(exprs) == len(
+        kernel_names
+    ), "Number of expressions and kernel names must match"
     assert len(exprs) > 0, "At least one expression must be provided"
 
     # Collect variables from all expressions
@@ -415,7 +475,7 @@ def generate_benchmark(
         warmup_iterations,
         benchmark_iterations,
     )
-    
+
     with open(output_path, "w") as f:
         f.write(benchmark_code)
 
@@ -461,11 +521,17 @@ def _generate_benchmark_code(
     needs_int64 = any(elt_type == ElementType.I64 for elt_type in all_vars.values())
 
     if needs_float:
-        benchmark_text += "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
+        benchmark_text += (
+            "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
+        )
     if needs_int32:
-        benchmark_text += "    std::uniform_int_distribution<int32_t> int32_dis(-1000, 1000);\n"
+        benchmark_text += (
+            "    std::uniform_int_distribution<int32_t> int32_dis(-1000, 1000);\n"
+        )
     if needs_int64:
-        benchmark_text += "    std::uniform_int_distribution<int64_t> int64_dis(-1000000, 1000000);\n"
+        benchmark_text += (
+            "    std::uniform_int_distribution<int64_t> int64_dis(-1000000, 1000000);\n"
+        )
     benchmark_text += "\n"
 
     for var, elt_type in sorted(all_vars.items()):
@@ -481,22 +547,22 @@ def _generate_benchmark_code(
         benchmark_text += "    for (int i = 0; i < N; i++) {\n"
         benchmark_text += f"        {var}[i] = {dist}(gen);\n"
         benchmark_text += "    }\n\n"
-    
+
     # Generate output buffers for each kernel
     benchmark_text += "    // Output buffers for each kernel\n"
     for i, name in enumerate(kernel_names):
         benchmark_text += f"    std::vector<{output_type.to_str()}> output_{name}(N);\n"
     benchmark_text += "\n"
-    
+
     # Generate benchmark code for each kernel
     var_args = ", ".join(f"{var}.data()" for var in sorted(all_vars))
-    
+
     benchmark_text += '    std::cout << "{\\n";'
 
     for i, name in enumerate(kernel_names):
         benchmark_text += f"    // Benchmark {name}\n"
         benchmark_text += "    {\n"
-        
+
         benchmark_text += f"        auto kernel = make_{name}({var_args});\n"
         benchmark_text += "        \n"
         benchmark_text += "        // Warmup\n"
@@ -504,12 +570,14 @@ def _generate_benchmark_code(
         benchmark_text += f"            {name}_vector_type out;\n"
         benchmark_text += "            kernel.run(&out);\n"
         benchmark_text += "        }\n\n"
-        
+
         benchmark_text += "        // Reset kernel state\n"
         benchmark_text += f"        kernel = make_{name}({var_args});\n\n"
-        
+
         benchmark_text += "        // Timed run\n"
-        benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += (
+            "        auto start = std::chrono::high_resolution_clock::now();\n"
+        )
         benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
         benchmark_text += "            // Recreate kernel for each iteration\n"
         benchmark_text += f"            kernel = make_{name}({var_args});\n"
@@ -521,42 +589,48 @@ def _generate_benchmark_code(
         benchmark_text += "#pragma unroll\n"
         benchmark_text += f"                for (int i = 0; i < 16 / vec_lanes_of({name}_vector_type{{}}); i++) {{\n"
         benchmark_text += "                    kernel.run(&out);\n"
-        benchmark_text += f"                    memcpy(&output_{name}[pos], &out, sizeof(out));\n"
+        benchmark_text += (
+            f"                    memcpy(&output_{name}[pos], &out, sizeof(out));\n"
+        )
         benchmark_text += "                    pos += vec_lanes_of(out);\n"
-        
+
         benchmark_text += "                    if (pos % 1024 == 0) {\n"
         benchmark_text += "                        kernel.reset_and_next_row();\n"
         benchmark_text += "                    }\n"
-        
+
         benchmark_text += "                }\n"
         benchmark_text += "            }\n"
         benchmark_text += "        }\n"
-        benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += (
+            "        auto end = std::chrono::high_resolution_clock::now();\n"
+        )
         benchmark_text += "        \n"
         benchmark_text += "        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
         # Deciding if we need to generate the trailing comma
-        if i == len(kernel_names) - 1 and not (include_correctness_check and len(kernel_names) > 1):
+        if i == len(kernel_names) - 1 and not (
+            include_correctness_check and len(kernel_names) > 1
+        ):
             benchmark_text += f'        std::cout << "  \\"{name}\\": " << duration / static_cast<double>(iterations) << "\\n";\n'
         else:
             benchmark_text += f'        std::cout << "  \\"{name}\\": " << duration / static_cast<double>(iterations) << ",\\n";\n'
         benchmark_text += "    }\n\n"
-    
+
     # Add correctness checking if requested
     if include_correctness_check and len(kernel_names) > 1:
         benchmark_text += _generate_correctness_check_code(kernel_names, input_size)
-    
+
     benchmark_text += '    std::cout << "}\\n";'
-    
+
     benchmark_text += "    return 0;\n"
     benchmark_text += "}\n"
-    
+
     return benchmark_text
 
 
 def _generate_correctness_check_helper(tolerance: float = 1e-3) -> str:
     """
     Generate helper function for correctness checking.
-    
+
     Returns:
         C++ code for arrays_equal function with trailing newlines for proper spacing.
     """
@@ -594,32 +668,34 @@ int arrays_equal(const std::vector<int64_t>& a, const std::vector<int64_t>& b) {
 """
 
 
-def _generate_correctness_check_code(kernel_names: Sequence[str], input_size: int) -> str:
+def _generate_correctness_check_code(
+    kernel_names: Sequence[str], input_size: int
+) -> str:
     """
     Generate correctness checking code comparing all kernels.
-    
+
     Compares each kernel's output against the first kernel (reference).
-    
+
     Returns:
         C++ code for correctness checking with trailing newlines for proper spacing.
     """
     code = "    // Correctness checking\n"
     code += '    std::cout << "  \\"validation\\":{\\n";\n'
-    code += '    int idx;'
-    
+    code += "    int idx;"
+
     reference = kernel_names[0]
     for i in range(1, len(kernel_names)):
         name = kernel_names[i]
-        code += f'    if ((idx=arrays_equal(output_{reference}, output_{name})) == output_{reference}.size()) {{\n'
+        code += f"    if ((idx=arrays_equal(output_{reference}, output_{name})) == output_{reference}.size()) {{\n"
         code += f'        std::cout << "    \\"{name}\\": true";\n'
-        code += '    } else {\n'
+        code += "    } else {\n"
         code += f'        std::cout << "    \\"{name}\\":" << idx;\n'
-        code += '    }\n'
+        code += "    }\n"
         if i == len(kernel_names) - 1:
             code += '    std::cout << "\\n";\n'
         else:
             code += '    std::cout << ",\\n";\n'
-    
+
     code += '    std::cout << "  }\\n";\n'
     code += "\n"
     return code
@@ -641,7 +717,7 @@ def generate_and_run_benchmark(
 ) -> dict:
     """
     Generate, compile, and run a benchmark for the given kernels.
-    
+
     Args:
         codegen: CodeGen instance used to generate the kernels
         exprs: List of signal expressions corresponding to each kernel
@@ -655,7 +731,7 @@ def generate_and_run_benchmark(
         benchmark_iterations: Number of iterations for timing
         compiler: Compiler to use (default: clang++)
         compiler_flags: Additional compiler flags (default: ["-std=c++20", "-O2", "-march=native"])
-    
+
     Returns:
         A dictionary containing:
             - 'output': stdout from benchmark execution
@@ -665,31 +741,33 @@ def generate_and_run_benchmark(
     import subprocess
     import os
     import tempfile
-    
+
     if compiler_flags is None:
         compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
-    
+
     if header_path is None:
-        fd, header_path= tempfile.mkstemp(suffix='.h', prefix='header_', dir='/tmp')
+        fd, header_path = tempfile.mkstemp(suffix=".h", prefix="header_", dir="/tmp")
         print(header_path)
         os.close(fd)  # Close the file descriptor, we'll write to it later
 
     # Generate unique random file names if not provided
     if benchmark_path is None:
-        fd, benchmark_path = tempfile.mkstemp(suffix='.cpp', prefix='benchmark_', dir='/tmp')
+        fd, benchmark_path = tempfile.mkstemp(
+            suffix=".cpp", prefix="benchmark_", dir="/tmp"
+        )
         print(benchmark_path)
         os.close(fd)  # Close the file descriptor, we'll write to it later
-    
+
     if executable_path is None:
-        fd, executable_path = tempfile.mkstemp(prefix='benchmark_', dir='/tmp')
+        fd, executable_path = tempfile.mkstemp(prefix="benchmark_", dir="/tmp")
         os.close(fd)  # Close the file descriptor
 
     kernel_names = [f"k{i}" for i in range(len(exprs))]
-    
+
     # Generate kernel code
     codes = [codegen.generate(expr, name) for expr, name in zip(exprs, kernel_names)]
     instantiate_kernels(header_path, codes)
-    
+
     # Generate benchmark program
     generate_benchmark(
         codegen=codegen,
@@ -703,7 +781,7 @@ def generate_and_run_benchmark(
         warmup_iterations=warmup_iterations,
         benchmark_iterations=benchmark_iterations,
     )
-    
+
     # Compile benchmark
     compile_cmd = [compiler] + compiler_flags + [benchmark_path, "-o", executable_path]
     compile_result = subprocess.run(
@@ -711,14 +789,14 @@ def generate_and_run_benchmark(
         capture_output=True,
         text=True,
     )
-    
+
     if compile_result.returncode != 0:
         return {
-            'output': compile_result.stdout,
-            'error': f"Compilation failed: {compile_result.stderr}",
-            'return_code': compile_result.returncode,
+            "output": compile_result.stdout,
+            "error": f"Compilation failed: {compile_result.stderr}",
+            "return_code": compile_result.returncode,
         }
-    
+
     # Run benchmark
     run_result = subprocess.run(
         [os.path.abspath(executable_path)],
@@ -727,7 +805,7 @@ def generate_and_run_benchmark(
     )
 
     print(executable_path)
-    print('result:', run_result.stdout)    
+    print("result:", run_result.stdout)
     json_output = json.loads(run_result.stdout)
     validation = json_output.pop("validation", None)
     # Since Python 3.7, Python dicts maintain insertion order.
@@ -735,8 +813,11 @@ def generate_and_run_benchmark(
     if validation is not None:
         json_output["validation"] = validation
 
-    return {
-        'output': json_output,
-        'error': run_result.stderr if run_result.returncode != 0 else "",
-        'return_code': run_result.returncode,
+    result = {
+        "output": json_output,
+        "error": run_result.stderr if run_result.returncode != 0 else "",
+        "return_code": run_result.returncode,
     }
+    if run_result.returncode != 0:
+        raise RuntimeError(f"Benchmark execution failed: {run_result.stderr}")
+    return result

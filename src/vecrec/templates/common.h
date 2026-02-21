@@ -1,9 +1,9 @@
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cstdint>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -112,117 +112,116 @@ inline std::string string_of(float_vec8 x) {
            std::to_string(x[5]) + ", " + std::to_string(x[6]) + ", " + std::to_string(x[7]) + ", " + std::to_string(x[8]);
 }
 
-
-#define EXTRACT_SLICE_1(type) \
+#define EXTRACT_SLICE_1(type)                               \
     inline type extract_slice(type a, type b, int offset) { \
-        switch (offset) { \
-        case 0: \
-            return a; \
-        case 1: \
-            return b; \
-        }; \
-        assert(false); \
-        return type{}; \
+        switch (offset) {                                   \
+        case 0:                                             \
+            return a;                                       \
+        case 1:                                             \
+            return b;                                       \
+        };                                                  \
+        assert(false);                                      \
+        return type{};                                      \
     }
 
-#define EXTRACT_SLICE_2(type_vec2) \
+#define EXTRACT_SLICE_2(type_vec2)                                         \
     inline type_vec2 extract_slice(type_vec2 a, type_vec2 b, int offset) { \
-        switch (offset) { \
-        case 0: \
-            return a; \
-        case 1: \
-            return __builtin_shufflevector(a, b, 1, 2); \
-        case 2: \
-            return b; \
-        }; \
-        assert(false); \
-        return type_vec2{}; \
+        switch (offset) {                                                  \
+        case 0:                                                            \
+            return a;                                                      \
+        case 1:                                                            \
+            return __builtin_shufflevector(a, b, 1, 2);                    \
+        case 2:                                                            \
+            return b;                                                      \
+        };                                                                 \
+        assert(false);                                                     \
+        return type_vec2{};                                                \
     }
 
-#define EXTRACT_SLICE_4(type_vec4) \
+#define EXTRACT_SLICE_4(type_vec4)                                         \
     inline type_vec4 extract_slice(type_vec4 a, type_vec4 b, int offset) { \
-        switch (offset) { \
-        case 0: \
-            return a; \
-        case 1: \
-            return __builtin_shufflevector(a, b, 1, 2, 3, 4); \
-        case 2: \
-            return __builtin_shufflevector(a, b, 2, 3, 4, 5); \
-        case 3: \
-            return __builtin_shufflevector(a, b, 3, 4, 5, 6); \
-        case 4: \
-            return b; \
-        }; \
-        assert(false); \
-        return type_vec4{}; \
+        switch (offset) {                                                  \
+        case 0:                                                            \
+            return a;                                                      \
+        case 1:                                                            \
+            return __builtin_shufflevector(a, b, 1, 2, 3, 4);              \
+        case 2:                                                            \
+            return __builtin_shufflevector(a, b, 2, 3, 4, 5);              \
+        case 3:                                                            \
+            return __builtin_shufflevector(a, b, 3, 4, 5, 6);              \
+        case 4:                                                            \
+            return b;                                                      \
+        };                                                                 \
+        assert(false);                                                     \
+        return type_vec4{};                                                \
     }
 
-#define EXTRACT_SLICE_8(type_vec8) \
-    inline type_vec8 extract_slice(type_vec8 a, type_vec8 b, int offset) { \
-        switch (offset) { \
-        case 0: \
-            return a; \
-        case 1: \
-            return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8); \
-        case 2: \
-            return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9); \
-        case 3: \
-            return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10); \
-        case 4: \
-            return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11); \
-        case 5: \
-            return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12); \
-        case 6: \
-            return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13); \
-        case 7: \
+#define EXTRACT_SLICE_8(type_vec8)                                             \
+    inline type_vec8 extract_slice(type_vec8 a, type_vec8 b, int offset) {     \
+        switch (offset) {                                                      \
+        case 0:                                                                \
+            return a;                                                          \
+        case 1:                                                                \
+            return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8);      \
+        case 2:                                                                \
+            return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9);      \
+        case 3:                                                                \
+            return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10);     \
+        case 4:                                                                \
+            return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11);    \
+        case 5:                                                                \
+            return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12);   \
+        case 6:                                                                \
+            return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13);  \
+        case 7:                                                                \
             return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14); \
-        case 8: \
-            return b; \
-        }; \
-        assert(false); \
-        return type_vec8{}; \
+        case 8:                                                                \
+            return b;                                                          \
+        };                                                                     \
+        assert(false);                                                         \
+        return type_vec8{};                                                    \
     }
 
-#define EXTRACT_SLICE_16(type_vec16) \
-    inline type_vec16 extract_slice(type_vec16 a, type_vec16 b, int offset) { \
-        switch (offset) { \
-        case 0: \
-            return a; \
-        case 1: \
-            return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16); \
-        case 2: \
-            return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17); \
-        case 3: \
-            return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18); \
-        case 4: \
-            return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19); \
-        case 5: \
-            return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20); \
-        case 6: \
-            return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21); \
-        case 7: \
-            return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22); \
-        case 8: \
-            return __builtin_shufflevector(a, b, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23); \
-        case 9: \
-            return __builtin_shufflevector(a, b, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24); \
-        case 10: \
+#define EXTRACT_SLICE_16(type_vec16)                                                                              \
+    inline type_vec16 extract_slice(type_vec16 a, type_vec16 b, int offset) {                                     \
+        switch (offset) {                                                                                         \
+        case 0:                                                                                                   \
+            return a;                                                                                             \
+        case 1:                                                                                                   \
+            return __builtin_shufflevector(a, b, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);          \
+        case 2:                                                                                                   \
+            return __builtin_shufflevector(a, b, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17);         \
+        case 3:                                                                                                   \
+            return __builtin_shufflevector(a, b, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18);        \
+        case 4:                                                                                                   \
+            return __builtin_shufflevector(a, b, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19);       \
+        case 5:                                                                                                   \
+            return __builtin_shufflevector(a, b, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20);      \
+        case 6:                                                                                                   \
+            return __builtin_shufflevector(a, b, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21);     \
+        case 7:                                                                                                   \
+            return __builtin_shufflevector(a, b, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22);    \
+        case 8:                                                                                                   \
+            return __builtin_shufflevector(a, b, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23);   \
+        case 9:                                                                                                   \
+            return __builtin_shufflevector(a, b, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24);  \
+        case 10:                                                                                                  \
             return __builtin_shufflevector(a, b, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25); \
-        case 11: \
+        case 11:                                                                                                  \
             return __builtin_shufflevector(a, b, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26); \
-        case 12: \
+        case 12:                                                                                                  \
             return __builtin_shufflevector(a, b, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27); \
-        case 13: \
+        case 13:                                                                                                  \
             return __builtin_shufflevector(a, b, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28); \
-        case 14: \
+        case 14:                                                                                                  \
             return __builtin_shufflevector(a, b, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29); \
-        case 15: \
+        case 15:                                                                                                  \
             return __builtin_shufflevector(a, b, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30); \
-        case 16: \
-            return b; \
-        }; \
-        assert(false); \
-        return type_vec16{}; \
+        case 16:                                                                                                  \
+            return b;                                                                                             \
+        };                                                                                                        \
+        assert(false);                                                                                            \
+        return type_vec16{};                                                                                      \
     }
 
 EXTRACT_SLICE_1(float)
@@ -241,54 +240,54 @@ EXTRACT_SLICE_4(int64_vec4)
 EXTRACT_SLICE_8(int64_vec8)
 
 // from https://stackoverflow.com/questions/37602057/why-isnt-a-for-loop-a-compile-time-expression
-template<std::size_t N>
-struct num { static const constexpr auto value = N; };
+template <std::size_t N>
+struct num {
+    static const constexpr auto value = N;
+};
 
 template <class F, std::size_t... Is>
-void for_(F func, std::index_sequence<Is...>)
-{
-  (func(num<Is>{}), ...);
+void for_(F func, std::index_sequence<Is...>) {
+    (func(num<Is>{}), ...);
 }
 
 template <std::size_t N, typename F>
-void for_(F func)
-{
-  for_(func, std::make_index_sequence<N>());
+void for_(F func) {
+    for_(func, std::make_index_sequence<N>());
 }
 
 template <typename vec_type_in, typename vec_type_out, int n>
 struct ExtractSubVector {};
 
-#define EXTRACT_SUB_VECTOR1(type_vec1) \
-    template <typename vec_type_in, int n> \
-    struct ExtractSubVector<vec_type_in, type_vec1, n> { \
+#define EXTRACT_SUB_VECTOR1(type_vec1)                       \
+    template <typename vec_type_in, int n>                   \
+    struct ExtractSubVector<vec_type_in, type_vec1, n> {     \
         static type_vec1 extract_sub_vector(vec_type_in a) { \
-            return a[n]; \
-        } \
+            return a[n];                                     \
+        }                                                    \
     };
 
-#define EXTRACT_SUB_VECTOR2(type_vec2) \
-    template <typename vec_type_in, int n> \
-    struct ExtractSubVector<vec_type_in, type_vec2, n> { \
-        static type_vec2 extract_sub_vector(vec_type_in a) { \
+#define EXTRACT_SUB_VECTOR2(type_vec2)                              \
+    template <typename vec_type_in, int n>                          \
+    struct ExtractSubVector<vec_type_in, type_vec2, n> {            \
+        static type_vec2 extract_sub_vector(vec_type_in a) {        \
             return __builtin_shufflevector(a, a, 2 * n, 2 * n + 1); \
-        } \
+        }                                                           \
     };
 
-#define EXTRACT_SUB_VECTOR4(type_vec4) \
-    template <typename vec_type_in, int n> \
-    struct ExtractSubVector<vec_type_in, type_vec4, n> { \
-        static type_vec4 extract_sub_vector(vec_type_in a) { \
+#define EXTRACT_SUB_VECTOR4(type_vec4)                                                    \
+    template <typename vec_type_in, int n>                                                \
+    struct ExtractSubVector<vec_type_in, type_vec4, n> {                                  \
+        static type_vec4 extract_sub_vector(vec_type_in a) {                              \
             return __builtin_shufflevector(a, a, 4 * n, 4 * n + 1, 4 * n + 2, 4 * n + 3); \
-        } \
+        }                                                                                 \
     };
 
-#define EXTRACT_SUB_VECTOR8(type_vec8) \
-    template <typename vec_type_in, int n> \
-    struct ExtractSubVector<vec_type_in, type_vec8, n> { \
-        static type_vec8 extract_sub_vector(vec_type_in a) { \
+#define EXTRACT_SUB_VECTOR8(type_vec8)                                                                                                \
+    template <typename vec_type_in, int n>                                                                                            \
+    struct ExtractSubVector<vec_type_in, type_vec8, n> {                                                                              \
+        static type_vec8 extract_sub_vector(vec_type_in a) {                                                                          \
             return __builtin_shufflevector(a, a, 8 * n, 8 * n + 1, 8 * n + 2, 8 * n + 3, 8 * n + 4, 8 * n + 5, 8 * n + 6, 8 * n + 7); \
-        } \
+        }                                                                                                                             \
     };
 
 EXTRACT_SUB_VECTOR1(float)
@@ -311,7 +310,7 @@ struct TimeInvariantKernel {
 
     TimeInvariantKernel() {}
 
-    void run(vec_type *out) {
+    inline __attribute__((always_inline)) void run(vec_type *out) {
 #pragma unroll
         for (int i = 0; i < taps; i++) {
             out[i] = vals[i];
@@ -339,7 +338,7 @@ struct TimeVaryingKernel {
 
     TimeVaryingKernel(Args... args) : args(args...) {}
 
-    void run(vec_type *out) {
+    inline __attribute__((always_inline)) void run(vec_type *out) {
         write_coeff<_taps, vec_type, 0, Args...>(out, args);
     }
 
@@ -355,6 +354,7 @@ private:
             reset_tv_kernel<I + 1>();
         }
     }
+
 public:
 };
 
@@ -370,7 +370,7 @@ struct Signal1DConstant {
     // The caller is responsible for ensuring the array access
     // does not go out of bound
     // const vec_type *run() {
-    void run(vec_type *d) {
+    inline __attribute__((always_inline)) void run(vec_type *d) {
         *d = data;
     }
 
@@ -389,8 +389,8 @@ struct Signal1D {
     // The caller is responsible for ensuring the array access
     // does not go out of bound
     // const vec_type *run() {
-    void run(vec_type *d) {
-        memcpy((float*)d, (float*)data, sizeof(vec_type));
+    inline __attribute__((always_inline)) void run(vec_type *d) {
+        memcpy((float *)d, (float *)data, sizeof(vec_type));
         data++;
     }
 
@@ -403,51 +403,52 @@ struct Signal1D {
 template <typename vec_type, int n_rows>
 struct RepeaterContext {
     constexpr static int width = 1024;
-    
+
     vec_type buffer[n_rows][width];
     int current_row;
     int current_col;
-    
+
     RepeaterContext() : current_row(0), current_col(0) {
         memset(buffer, 0, sizeof(buffer));
     }
-    
+
     // Get the value at the given row offset and current column
     vec_type get(int row_offset) {
         int row_idx = (current_row - row_offset + n_rows) % n_rows;
         return buffer[row_idx][current_col];
     }
-    
+
     // Store a value in the current row and column
     void set(vec_type value) {
         buffer[current_row][current_col] = value;
     }
-    
+
     void advance_col() {
         current_col++;
         if (current_col >= width) {
             current_col = 0;
         }
     }
-    
+
     void next_row() {
         current_row = (current_row + 1) % n_rows;
         current_col = 0;
-        memset(buffer[current_row], 0, sizeof(buffer[current_row]));
+        // memset(buffer[current_row], 0, sizeof(buffer[current_row]));
     }
 };
 
 template <typename vec_type, int n_rows>
 struct Signal2D {
     using elt_type = typename ElementType<vec_type>::type;
-    
+
     RepeaterContext<vec_type, n_rows + 1> *context;
-    
+
     Signal2D(RepeaterContext<vec_type, n_rows + 1> *ctx) : context(ctx) {
     }
 
-    void run(vec_type *d) {
+    inline __attribute__((always_inline)) void run(vec_type *d) {
         // Read from previous rows at the current position
+#pragma unroll
         for (int i = 0; i < n_rows; i++) {
             d[i] = context->get(i + 1);
         }
@@ -461,37 +462,37 @@ struct Repeater {
     using elt_type = typename ElementType<vec_type>::type;
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
     constexpr static int width = RepeaterContext<vec_type, n_rows>::width;
-    
+
     RepeaterContext<vec_type, n_rows> *context;
     Inner inner;
-    
-    Repeater(RepeaterContext<vec_type, n_rows> *ctx, Inner inner) 
+
+    Repeater(RepeaterContext<vec_type, n_rows> *ctx, Inner inner)
         : context(ctx), inner(inner) {
     }
-    
-    void run(vec_type *out) {
+
+    inline __attribute__((always_inline)) void run(vec_type *out) {
         // Compute the current row output using the inner signal
         // (which may read from the buffered previous rows via Signal2D)
         vec_type curr_output;
         inner.run(&curr_output);
-        
+
         // Store the current output in the buffer
         context->set(curr_output);
-        
+
         // Return n_rows vectors: current row at out[0], previous rows at out[1..n-1]
         // This makes Repeater stream as a 2D signal
         for (int i = 0; i < n_rows; i++) {
             out[i] = context->get(i);
         }
-        
+
         // Advance column position
         context->advance_col();
     }
-    
+
     void reset_and_next_row() {
         // Move to the next row
         context->next_row();
-        
+
         // Reset the inner signal
         inner.reset_and_next_row();
     }
@@ -509,7 +510,7 @@ struct SConvolve {
 
     SConvolve(K kernel, S signal) : kernel(kernel), signal(signal) {}
 
-    void run(vec_type *d) {
+    inline __attribute__((always_inline)) void run(vec_type *d) {
         vec_type curr_output;
         vec_type curr_input;
 
@@ -557,7 +558,7 @@ struct SRecurse {
 
     SRecurse(K kernel, S signal) : kernel(kernel), signal(signal) {}
 
-    void run(vec_type *out) {
+    inline __attribute__((always_inline)) void run(vec_type *out) {
         vec_type curr_input;
         vec_type curr_output;
         vec_type k[K::taps];
@@ -595,7 +596,6 @@ struct SRecurse {
     }
 };
 
-
 template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct KConvertN2One {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
@@ -608,7 +608,7 @@ struct KConvertN2One {
     Inner inner;
 
     KConvertN2One(Inner inner) : inner(inner) {}
-    void run(vec_type_out *out) {
+    inline __attribute__((always_inline)) void run(vec_type_out *out) {
 
         vec_type_in *p = (vec_type_in *)out;
 #pragma unroll
@@ -636,7 +636,7 @@ struct ConvertN2One {
     Inner inner;
 
     ConvertN2One(Inner inner) : inner(inner) {}
-    void run(vec_type_out *out) {
+    inline __attribute__((always_inline)) void run(vec_type_out *out) {
 
         vec_type_in *p = (vec_type_in *)out;
 #pragma unroll
@@ -666,12 +666,12 @@ struct KConvertOne2N {
 
     KConvertOne2N(Inner inner) : inner(inner), offset(0) {}
 
-    void run(vec_type_out *out) {
+    inline __attribute__((always_inline)) void run(vec_type_out *out) {
         if (offset == 0) {
             inner.run(buffer);
 #pragma unroll
             for (int i = 0; i < taps; i++) {
-                for_<factor>([&] (auto j) {
+                for_<factor>([&](auto j) {
                     out_buffer[i][j.value] = ExtractSubVector<vec_type_in, vec_type_out, j.value>::extract_sub_vector(buffer[i]);
                 });
             }
@@ -688,7 +688,7 @@ struct KConvertOne2N {
         inner.reset_and_next_row();
     }
 };
-#include<iostream>
+#include <iostream>
 template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct ConvertOne2N {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
@@ -703,11 +703,11 @@ struct ConvertOne2N {
 
     ConvertOne2N(Inner inner) : inner(inner), offset(0) {}
 
-    void run(vec_type_out *out) {
+    inline __attribute__((always_inline)) void run(vec_type_out *out) {
         if (offset == 0) {
             inner.run(&buffer);
 
-            for_<factor>([&] (auto i) {
+            for_<factor>([&](auto i) {
                 out_buffer[i.value] = ExtractSubVector<vec_type_in, vec_type_out, i.value>::extract_sub_vector(buffer);
             });
         }
@@ -721,45 +721,45 @@ struct ConvertOne2N {
     }
 };
 
-#define BinOp(name, operator)                               \
-    template <typename vec_type, typename S1, typename S2>  \
-    struct name {                                           \
-        S1 s1;                                              \
-        S2 s2;                                              \
-        name(S1 s1, S2 s2) : s1(s1), s2(s2) {}              \
-                                                            \
-        void run(vec_type *out) {                           \
-            vec_type left, right;                           \
-            s1.run(&left);                                  \
-            s2.run(&right);                                 \
-            *out = operator(left, right);                   \
-        }                                                   \
-                                                            \
-        void reset_and_next_row() {                         \
-            s1.reset_and_next_row();                        \
-            s2.reset_and_next_row();                        \
-        }                                                   \
-    };                                                      \
-    template <typename vec_type, typename S1, typename S2>  \
+#define BinOp(name, operator)                                           \
+    template <typename vec_type, typename S1, typename S2>              \
+    struct name {                                                       \
+        S1 s1;                                                          \
+        S2 s2;                                                          \
+        name(S1 s1, S2 s2) : s1(s1), s2(s2) {}                          \
+                                                                        \
+        inline __attribute__((always_inline)) void run(vec_type *out) { \
+            vec_type left, right;                                       \
+            s1.run(&left);                                              \
+            s2.run(&right);                                             \
+            *out = operator(left, right);                               \
+        }                                                               \
+                                                                        \
+        void reset_and_next_row() {                                     \
+            s1.reset_and_next_row();                                    \
+            s2.reset_and_next_row();                                    \
+        }                                                               \
+    };                                                                  \
+    template <typename vec_type, typename S1, typename S2>              \
     auto make_##name(S1 s1, S2 s2) { return name<vec_type, S1, S2>(s1, s2); }
 
-BinOp(SAdd, [] (auto left, auto right) { return left + right; });
-BinOp(SSub, [] (auto left, auto right) { return left - right; });
-BinOp(PointwiseMul, [] (auto left, auto right) { return left * right; });
-BinOp(PointwiseDiv, [] (auto left, auto right) { return left / right; });
+BinOp(SAdd, [](auto left, auto right) { return left + right; });
+BinOp(SSub, [](auto left, auto right) { return left - right; });
+BinOp(PointwiseMul, [](auto left, auto right) { return left * right; });
+BinOp(PointwiseDiv, [](auto left, auto right) { return left / right; });
 
 // No Sub and Div
-BinOp(SAddTropMax, [] (auto left, auto right) { return __builtin_elementwise_max(left, right); });
-BinOp(SAddTropMin, [] (auto left, auto right) { return __builtin_elementwise_min(left, right); });
-BinOp(PointwiseMulTropMax, [] (auto left, auto right) { return left + right; });
-BinOp(PointwiseMulTropMin, [] (auto left, auto right) { return left + right; });
+BinOp(SAddTropMax, [](auto left, auto right) { return __builtin_elementwise_max(left, right); });
+BinOp(SAddTropMin, [](auto left, auto right) { return __builtin_elementwise_min(left, right); });
+BinOp(PointwiseMulTropMax, [](auto left, auto right) { return left + right; });
+BinOp(PointwiseMulTropMin, [](auto left, auto right) { return left + right; });
 
 template <typename vec_type, typename S1>
 struct SNeg {
     S1 s1;
     SNeg(S1 s1) : s1(s1) {}
 
-    void run(vec_type *out) {
+    inline __attribute__((always_inline)) void run(vec_type *out) {
         vec_type data;
         s1.run(&data);
         *out = -data;
@@ -768,22 +768,22 @@ struct SNeg {
     void reset_and_next_row() { s1.reset_and_next_row(); }
 };
 
-template<typename vec_type_in, typename vec_type_out, typename Inner>
+template <typename vec_type_in, typename vec_type_out, typename Inner>
 auto make_k_convert_n2one(Inner inner) {
     return KConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
 }
 
-template<typename vec_type_in, typename vec_type_out, typename Inner>
+template <typename vec_type_in, typename vec_type_out, typename Inner>
 auto make_convert_n2one(Inner inner) {
     return ConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
 }
 
-template<typename vec_type_in, typename vec_type_out, typename Inner>
+template <typename vec_type_in, typename vec_type_out, typename Inner>
 auto make_k_convert_one2n(Inner inner) {
     return KConvertOne2N<vec_type_in, vec_type_out, Inner>(inner);
 }
 
-template<typename vec_type_in, typename vec_type_out, typename Inner>
+template <typename vec_type_in, typename vec_type_out, typename Inner>
 auto make_convert_one2n(Inner inner) {
     return ConvertOne2N<vec_type_in, vec_type_out, Inner>(inner);
 }
@@ -797,22 +797,22 @@ auto make_s_convolve(K kernel, S signal) {
 template <typename vec_type, int n_rows, int row_index, typename Signal2DType>
 struct IthRow {
     using elt_type = typename ElementType<vec_type>::type;
-    
+
     Signal2DType signal2d;
-    
+
     IthRow(Signal2DType sig) : signal2d(sig) {
         static_assert(row_index >= 0 && row_index < n_rows, "row_index out of bounds");
     }
-    
-    void run(vec_type *d) {
+
+    inline __attribute__((always_inline)) void run(vec_type *d) {
         // Read all n_rows from the 2D signal
         vec_type rows[n_rows];
         signal2d.run(rows);
-        
+
         // Return only the row at row_index
         *d = rows[row_index];
     }
-    
+
     void reset_and_next_row() {
         signal2d.reset_and_next_row();
     }
