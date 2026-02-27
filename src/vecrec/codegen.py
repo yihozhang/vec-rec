@@ -210,7 +210,8 @@ class CodeGen:
                 ty = code_a.ty
 
                 vec_type = self.get_vec_type(element_type, expr.lanes)
-                program = f"make_s_convolve<{vec_type}>({code_a.text}, {code_f.text})"
+                suffix = self.get_sem_suffix(ty)
+                program = f"make_s_convolve{suffix}<{vec_type}>({code_a.text}, {code_f.text})"
                 code = Code(program, ty, element_type, expr.lanes)
             case Recurse(a, g):
                 time_delay, a = a.time_delay(expr.lanes)
@@ -225,7 +226,8 @@ class CodeGen:
 
                 vec_type = self.get_vec_type(element_type, expr.lanes)
 
-                program = f"make_s_recurse<{vec_type}>({code_a.text}, {code_g.text})"
+                suffix = self.get_sem_suffix(ty)
+                program = f"make_s_recurse{suffix}<{vec_type}>({code_a.text}, {code_g.text})"
                 code = Code(program, ty, element_type, a.lanes)
             case Ith(signal2d, i):
                 # Ith extracts the ith row from a 2D signal
