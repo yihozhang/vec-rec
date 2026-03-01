@@ -150,15 +150,16 @@ class CodeGen:
         self.clear()
         code = self.generate_signal(expr)
         vars, vars2d = self.collect_input_variables(expr)
-        args_1d = ", ".join(
+        args_1d = [
             f"const {elt_type.to_str()} *{var}"
             for var, elt_type in sorted(vars.items())
-        )
-        args_2d = ", ".join(
+        ]
+        args_2d = [
             f"const {elt_type.to_str()} *{var}, int {var}_stride"
             for var, elt_type in sorted(vars2d.items())
-        )
-        args = ", ".join(filter(None, [args_1d, args_2d]))
+        ]
+        all_args = args_1d + args_2d + ["int row_size"]
+        args = ", ".join(all_args)
         text = "\n".join(
             [
                 f"auto make_{name}({args}) {{",
@@ -260,7 +261,7 @@ class CodeGen:
                 # Create a context variable
                 context_var = self.get_new_var()
                 self.prologue.append(
-                    f"RepeaterContext<{vec_type}, {n_rows}>* {context_var} = new RepeaterContext<{vec_type}, {n_rows}>();"
+                    f"RepeaterContext<{vec_type}, {n_rows}>* {context_var} = new RepeaterContext<{vec_type}, {n_rows}>(row_size);"
                 )
 
                 # Add the RVar2D to our context so inner signal can reference it
@@ -489,6 +490,7 @@ def generate_benchmark(
     input_size: int = (1 << 20),
     warmup_iterations: int = 10,
     benchmark_iterations: int = 100,
+    row_size: int = 1024,
 ) -> None:
     """
     Generate a C++ benchmarking program for the given kernels.
@@ -503,6 +505,7 @@ def generate_benchmark(
         input_size: Size of input data for benchmarking
         warmup_iterations: Number of warmup iterations before timing
         benchmark_iterations: Number of iterations for timing
+        row_size: Number of elements per row (used to call reset_and_next_row at row boundaries)
     """
     assert len(exprs) == len(
         kernel_names
@@ -529,6 +532,7 @@ def generate_benchmark(
         input_size,
         warmup_iterations,
         benchmark_iterations,
+        row_size,
     )
 
     with open(output_path, "w") as f:
@@ -546,6 +550,7 @@ def _generate_benchmark_code(
     input_size: int,
     warmup_iterations: int,
     benchmark_iterations: int,
+    row_size: int = 1024,
 ) -> str:
     """Generate the complete C++ benchmark code."""
 
@@ -563,6 +568,7 @@ def _generate_benchmark_code(
     # Generate main function
     benchmark_text += "int main() {\n"
     benchmark_text += f"    const int N = {input_size};\n"
+    benchmark_text += f"    const int row_size = {row_size};\n"
     benchmark_text += f"    const int warmup = {warmup_iterations};\n"
     benchmark_text += f"    const int iterations = {benchmark_iterations};\n\n"
 
@@ -618,9 +624,10 @@ def _generate_benchmark_code(
     # Generate benchmark code for each kernel
     var_args_1d = [f"{var}.data()" for var in sorted(all_vars)]
     var_args_2d = [
-        f"{var}.data(), {_benchmark_row_width}" for var in sorted(all_vars2d)
+        f"{var}.data(), row_size" for var in sorted(all_vars2d)
     ]
-    var_args = ", ".join(var_args_1d + var_args_2d)
+    var_args_list = var_args_1d + var_args_2d + ["row_size"]
+    var_args = ", ".join(var_args_list)
 
     benchmark_text += '    std::cout << "{\\n";'
 
@@ -659,7 +666,7 @@ def _generate_benchmark_code(
         )
         benchmark_text += "                    pos += vec_lanes_of(out);\n"
 
-        benchmark_text += "                    if (pos % 1024 == 0) {\n"
+        benchmark_text += "                    if (pos % row_size == 0) {\n"
         benchmark_text += "                        kernel.reset_and_next_row();\n"
         benchmark_text += "                    }\n"
 
@@ -783,6 +790,7 @@ class KernelExecutable:
     vars2d_info: Dict[str, ElementType]
     vars2d_order: List[str]
     output_type: ElementType
+    row_size: int
 
     def __init__(
         self,
@@ -791,6 +799,7 @@ class KernelExecutable:
         variable_types: Dict[str, ElementType],
         output_type: ElementType,
         vars2d_info: Dict[str, ElementType],
+        row_size: int = 1024,
     ):
         self.executable_path = executable_path
         self.variable_order = variable_order
@@ -798,6 +807,7 @@ class KernelExecutable:
         self.vars2d_info = vars2d_info
         self.vars2d_order = sorted(self.vars2d_info.keys())
         self.output_type = output_type
+        self.row_size = row_size
 
     def _normalize_inputs(
         self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
@@ -859,7 +869,7 @@ class KernelExecutable:
                 )
             prepared_1d[var] = arr
 
-        # Prepare 2D inputs. stride must be 1024 (matching the runner's reset period).
+        # Prepare 2D inputs.
         prepared_2d: Dict[str, Tuple[np.ndarray, int]] = {}
         for var in self.vars2d_order:
             elt_type = self.vars2d_info[var]
@@ -870,10 +880,6 @@ class KernelExecutable:
             if not arr.flags.c_contiguous:
                 arr = np.ascontiguousarray(arr)
             H, W = arr.shape
-            if W != 1024:
-                raise ValueError(
-                    f"2D input '{var}' must have exactly 1024 columns (stride=1024), got {W}"
-                )
             stride = W
             if n is None:
                 # Infer N: with causal (look-behind) semantics all H rows produce output,
@@ -905,6 +911,7 @@ class KernelExecutable:
             cmd = [
                 self.executable_path,
                 str(n),
+                str(self.row_size),
                 *input_paths_1d,
                 *input_args_2d,
                 output_path,
@@ -975,10 +982,10 @@ def _generate_kernel_runner_code(
     text += "}\n\n"
 
     text += "int main(int argc, char** argv) {\n"
-    # argc: exe + N + n_1d + 2*n_2d (path + stride per 2D var) + output
-    expected_argc = len(var_items) + 2 * len(var2d_items) + 3
+    # argc: exe + N + row_size + n_1d + 2*n_2d (path + stride per 2D var) + output
+    expected_argc = len(var_items) + 2 * len(var2d_items) + 4
     text += f"    if (argc != {expected_argc}) {{\n"
-    text += '        std::cerr << "Usage: <exe> <N>'
+    text += '        std::cerr << "Usage: <exe> <N> <row_size>'
     for name, _ in var_items:
         text += f" <{name}_path>"
     for name, _ in var2d_items:
@@ -991,12 +998,17 @@ def _generate_kernel_runner_code(
     text += "    if (N < 0) {\n"
     text += '        std::cerr << "N must be non-negative" << std::endl;\n'
     text += "        return 1;\n"
+    text += "    }\n"
+    text += "    const int row_size = std::atoi(argv[2]);\n"
+    text += "    if (row_size <= 0) {\n"
+    text += '        std::cerr << "row_size must be positive" << std::endl;\n'
+    text += "        return 1;\n"
     text += "    }\n\n"
 
-    # 1D vars: argv[2 .. 2+n_1d-1]
+    # 1D vars: argv[3 .. 3+n_1d-1]
     for idx, (name, elt_type) in enumerate(var_items):
         cpp_type = elt_type.to_str()
-        arg_idx = idx + 2
+        arg_idx = idx + 3
         text += f"    std::vector<{cpp_type}> {name}(N);\n"
         text += (
             f"    if (!read_binary<{cpp_type}>(argv[{arg_idx}], {name}.data(), N)) {{\n"
@@ -1008,10 +1020,10 @@ def _generate_kernel_runner_code(
         text += "    }\n"
     text += "\n"
 
-    # 2D vars: argv[2+n_1d ..] in pairs (path, stride)
+    # 2D vars: argv[3+n_1d ..] in pairs (path, stride)
     # With causal (look-behind) semantics, N output elements consume exactly N input elements
     # (rows before row 0 are zero-padded by InputSignal2D, so nelem = N).
-    base_2d_arg = len(var_items) + 2
+    base_2d_arg = len(var_items) + 3
     for idx, (name, elt_type) in enumerate(var2d_items):
         cpp_type = elt_type.to_str()
         path_arg_idx = base_2d_arg + 2 * idx
@@ -1030,7 +1042,7 @@ def _generate_kernel_runner_code(
     # Build var_args: 1D args first (sorted), then 2D args (sorted), each as "name.data(), stride_name"
     var_args_1d = [f"{name}.data()" for name, _ in var_items]
     var_args_2d = [f"{name}.data(), stride_{name}" for name, _ in var2d_items]
-    var_args = ", ".join(var_args_1d + var_args_2d)
+    var_args = ", ".join(var_args_1d + var_args_2d + ["row_size"])
     output_cpp_type = output_type.to_str()
 
     text += f"    auto kernel = make_{kernel_name}({var_args});\n"
@@ -1045,14 +1057,14 @@ def _generate_kernel_runner_code(
     text += "        const int copy_count = (N - pos) < lanes ? (N - pos) : lanes;\n"
     text += f"        std::memcpy(output.data() + pos, &out, sizeof({output_cpp_type}) * copy_count);\n"
     text += "        pos += lanes;\n"
-    text += "        if (pos % 1024 == 0) {\n"
+    text += "        if (pos % row_size == 0) {\n"
     text += "            kernel.reset_and_next_row();\n"
     text += "        }\n"
     text += "    }\n"
     text += "    auto end = std::chrono::high_resolution_clock::now();\n"
     text += "\n"
 
-    output_arg_idx = len(var_items) + 2 * len(var2d_items) + 2
+    output_arg_idx = len(var_items) + 2 * len(var2d_items) + 3
     text += f"    if (!write_binary<{output_cpp_type}>(argv[{output_arg_idx}], output.data(), N)) {{\n"
     text += '        std::cerr << "Failed to write output" << std::endl;\n'
     text += "        return 3;\n"
@@ -1075,6 +1087,7 @@ def generate_kernel_executable(
     executable_path: Optional[str] = None,
     compiler: str = "clang++",
     compiler_flags: Optional[List[str]] = None,
+    row_size: int = 1024,
 ) -> KernelExecutable:
     """
     Generate and compile a single-kernel executable for Python interop.
@@ -1130,6 +1143,7 @@ def generate_kernel_executable(
         variable_types=all_vars,
         vars2d_info=all_vars2d,
         output_type=expr.element_type,
+        row_size=row_size,
     )
 
 
@@ -1146,6 +1160,7 @@ def generate_and_run_benchmark(
     benchmark_iterations: int = 100,
     compiler: str = "clang++",
     compiler_flags: Optional[List[str]] = None,
+    row_size: int = 1024,
 ) -> dict:
     """
     Generate, compile, and run a benchmark for the given kernels.
@@ -1163,6 +1178,7 @@ def generate_and_run_benchmark(
         benchmark_iterations: Number of iterations for timing
         compiler: Compiler to use (default: clang++)
         compiler_flags: Additional compiler flags (default: ["-std=c++20", "-O2", "-march=native"])
+        row_size: Number of elements per row (used to call reset_and_next_row at row boundaries)
 
     Returns:
         A dictionary containing:
@@ -1208,6 +1224,7 @@ def generate_and_run_benchmark(
         input_size=input_size,
         warmup_iterations=warmup_iterations,
         benchmark_iterations=benchmark_iterations,
+        row_size=row_size,
     )
 
     # Compile benchmark
