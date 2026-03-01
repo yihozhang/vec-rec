@@ -1,7 +1,7 @@
-from typing import List, Optional, Sequence, Dict, Union
+from typing import List, Optional, Sequence, Dict, Tuple, Union, cast
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D
-from vecrec.expr.signal import RVar2D
+from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Ith
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.util import ElementType
@@ -79,16 +79,86 @@ class CodeGen:
 
     def _is_trivial_expr(self, expr: SignalExpr | SignalExpr2D | KernelExpr) -> bool:
         """Check if an expression is trivial and should be inlined rather than cached."""
-        return isinstance(expr, (Num, Impulse, Var, TIKernel, RVar2D))
+        return isinstance(expr, (Num, Impulse, Var, TIKernel, RVar2D, Var2D))
+
+    def _generate_input_signal(self, expr: SignalExpr | SignalExpr2D) -> Code:
+        if isinstance(expr, Var):
+            assert expr.lanes is not None
+            return Code(
+                f"Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({expr.name})",
+                expr.ty,
+                expr.element_type,
+                expr.lanes,
+            )
+
+        if isinstance(expr, Var2D):
+            assert expr.lanes is not None
+            vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+            return Code(
+                f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride)",
+                expr.ty,
+                expr.element_type,
+                expr.lanes,
+            )
+
+        raise TypeError(f"Expected Var or Var2D, got {type(expr)}")
+
+    def _signal2d_n_rows(self, signal2d: SignalExpr2D) -> int:
+        if isinstance(signal2d, RVar2D):
+            if signal2d.name not in self.var2d_context:
+                raise ValueError(
+                    f"RVar2D '{signal2d.name}' used outside of Repeater context"
+                )
+            return cast(int, self.var2d_context[f"{signal2d.name}_n_rows"])
+
+        if isinstance(signal2d, (Repeater, Var2D)):
+            return signal2d.n_rows
+
+        raise ValueError(
+            f"Ith expects RVar2D, Repeater, or Var2D as signal2d, got {type(signal2d)}"
+        )
+
+    def collect_input_variables(
+        self,
+        expr: RecLang,
+        vars_1d: Optional[Dict[str, ElementType]] = None,
+        vars_2d: Optional[Dict[str, ElementType]] = None,
+    ) -> Tuple[Dict[str, ElementType], Dict[str, ElementType]]:
+        if vars_1d is None:
+            vars_1d = {}
+        if vars_2d is None:
+            vars_2d = {}
+
+        match expr:
+            case Var(name):
+                if name in vars_1d and vars_1d[name] != expr.element_type:
+                    raise ValueError(
+                        f"Variable {name} has inconsistent element types: {vars_1d[name]} vs {expr.element_type}"
+                    )
+                vars_1d[name] = expr.element_type
+            case Var2D(name, _):
+                if name in vars_2d and vars_2d[name] != expr.element_type:
+                    raise ValueError(f"Var2D '{name}' has inconsistent element_type")
+                vars_2d[name] = expr.element_type
+            case _:
+                for child in expr.children():
+                    self.collect_input_variables(child, vars_1d, vars_2d)
+
+        return vars_1d, vars_2d
 
     def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> Code:
         self.clear()
         code = self.generate_signal(expr)
-        vars = self.collect_variables(expr)
-        args = ", ".join(
+        vars, vars2d = self.collect_input_variables(expr)
+        args_1d = ", ".join(
             f"const {elt_type.to_str()} *{var}"
             for var, elt_type in sorted(vars.items())
         )
+        args_2d = ", ".join(
+            f"const {elt_type.to_str()} *{var}, int {var}_stride"
+            for var, elt_type in sorted(vars2d.items())
+        )
+        args = ", ".join(filter(None, [args_1d, args_2d]))
         text = "\n".join(
             [
                 f"auto make_{name}({args}) {{",
@@ -150,9 +220,19 @@ class CodeGen:
                 )
                 code = Code(program, ty, element_type, expr.lanes)
 
-            case Var(name):
+            case Var():
+                assert expr.lanes is not None
                 code = Code(
-                    f"Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({name})",
+                    f"Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({expr.name})",
+                    expr.ty,
+                    expr.element_type,
+                    expr.lanes,
+                )
+            case Var2D():
+                assert expr.lanes is not None
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+                code = Code(
+                    f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride)",
                     expr.ty,
                     expr.element_type,
                     expr.lanes,
@@ -166,7 +246,7 @@ class CodeGen:
 
                 context_var = self.var2d_context[name]
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                n_rows = self.var2d_context[f"{name}_n_rows"]
+                n_rows = cast(int, self.var2d_context[f"{name}_n_rows"])
 
                 code = Code(
                     f"make_signal2d<{vec_type}, {n_rows}>({context_var})",
@@ -211,7 +291,9 @@ class CodeGen:
 
                 vec_type = self.get_vec_type(element_type, expr.lanes)
                 suffix = self.get_sem_suffix(ty)
-                program = f"make_s_convolve{suffix}<{vec_type}>({code_a.text}, {code_f.text})"
+                program = (
+                    f"make_s_convolve{suffix}<{vec_type}>({code_a.text}, {code_f.text})"
+                )
                 code = Code(program, ty, element_type, expr.lanes)
             case Recurse(a, g):
                 time_delay, a = a.time_delay(expr.lanes)
@@ -227,7 +309,9 @@ class CodeGen:
                 vec_type = self.get_vec_type(element_type, expr.lanes)
 
                 suffix = self.get_sem_suffix(ty)
-                program = f"make_s_recurse{suffix}<{vec_type}>({code_a.text}, {code_g.text})"
+                program = (
+                    f"make_s_recurse{suffix}<{vec_type}>({code_a.text}, {code_g.text})"
+                )
                 code = Code(program, ty, element_type, a.lanes)
             case Ith(signal2d, i):
                 # Ith extracts the ith row from a 2D signal
@@ -245,20 +329,7 @@ class CodeGen:
                 signal2d_lanes = code_signal2d.lanes
                 ith_vec_type = self.get_vec_type(element_type, signal2d_lanes)
 
-                # Get n_rows from context (signal2d should be RVar2D with context)
-                # There are two Signal2D types right now: RVar2D and Repeater
-                if isinstance(signal2d, RVar2D):
-                    if signal2d.name not in self.var2d_context:
-                        raise ValueError(
-                            f"RVar2D '{signal2d.name}' used outside of Repeater context"
-                        )
-                    n_rows = self.var2d_context[f"{signal2d.name}_n_rows"]
-                elif isinstance(signal2d, Repeater):
-                    n_rows = signal2d.n_rows
-                else:
-                    raise ValueError(
-                        f"Ith expects RVar2D or Repeater as signal2d, got {type(signal2d)}"
-                    )
+                n_rows = self._signal2d_n_rows(signal2d)
 
                 # Generate make_ith_row call using signal2d_lanes to keep C++ types consistent
                 program = (
@@ -398,41 +469,6 @@ class CodeGen:
                 taps=code.taps,
             )
 
-    def collect_variables(
-        self, expr: RecLang, vars: Optional[Dict[str, ElementType]] = None
-    ) -> Dict[str, ElementType]:
-        if vars is None:
-            vars = {}
-
-        match expr:
-            case Var(name):
-                if name in vars and vars[name] != expr.element_type:
-                    raise ValueError(
-                        f"Variable {name} has inconsistent element types: {vars[name]} vs {expr.element_type}"
-                    )
-                vars[name] = expr.element_type
-            case _:
-                for c in expr.children():
-                    self.collect_variables(c, vars)
-            # case SignalExprBinOp(a, b):
-            #     self.collect_variables(a, vars)
-            #     self.collect_variables(b, vars)
-            # case Convolve(a, f):
-            #     self.collect_variables(a, vars)
-            #     self.collect_variables(f, vars)
-            # case Recurse(a, g):
-            #     self.collect_variables(a, vars)
-            #     self.collect_variables(g, vars)
-            # case KAdd(a, b) | KSub(a, b) | KConvolve(a, b):
-            #     self.collect_variables(a, vars)
-            #     self.collect_variables(b, vars)
-            # case KNeg(a):
-            #     self.collect_variables(a, vars)
-            # case TIKernel() | TVKernel() | Num():
-            #     pass
-
-        return vars
-
 
 def instantiate_kernels(path: str, codes: List[Code]) -> None:
     text = TEMPLATE.read_text()
@@ -475,13 +511,16 @@ def generate_benchmark(
 
     # Collect variables from all expressions
     all_vars: Dict[str, ElementType] = {}
+    all_vars2d: Dict[str, ElementType] = {}
     for expr in exprs:
-        vars_dict = codegen.collect_variables(expr)
+        vars_dict, vars2d_dict = codegen.collect_input_variables(expr)
         all_vars.update(vars_dict)
+        all_vars2d.update(vars2d_dict)
 
     # Generate the benchmark program
     benchmark_code = _generate_benchmark_code(
         all_vars,
+        all_vars2d,
         exprs[0].element_type,
         kernel_names,
         kernel_header_path,
@@ -498,6 +537,7 @@ def generate_benchmark(
 
 def _generate_benchmark_code(
     all_vars: Dict[str, ElementType],
+    all_vars2d: Dict[str, ElementType],
     output_type: ElementType,
     kernel_names: Sequence[str],
     header_path: str,
@@ -532,9 +572,10 @@ def _generate_benchmark_code(
     benchmark_text += "    std::mt19937 gen(rd());\n"
 
     # Determine which distributions are needed
-    needs_float = any(elt_type == ElementType.Float for elt_type in all_vars.values())
-    needs_int32 = any(elt_type == ElementType.I32 for elt_type in all_vars.values())
-    needs_int64 = any(elt_type == ElementType.I64 for elt_type in all_vars.values())
+    all_elt_types = list(all_vars.values()) + list(all_vars2d.values())
+    needs_float = any(elt_type == ElementType.Float for elt_type in all_elt_types)
+    needs_int32 = any(elt_type == ElementType.I32 for elt_type in all_elt_types)
+    needs_int64 = any(elt_type == ElementType.I64 for elt_type in all_elt_types)
 
     if needs_float:
         benchmark_text += (
@@ -550,7 +591,7 @@ def _generate_benchmark_code(
         )
     benchmark_text += "\n"
 
-    for var, elt_type in sorted(all_vars.items()):
+    for var, elt_type in sorted(all_vars.items()) + sorted(all_vars2d.items()):
         cpp_type = elt_type.to_str()
         if elt_type == ElementType.Float:
             dist = "float_dis"
@@ -564,6 +605,10 @@ def _generate_benchmark_code(
         benchmark_text += f"        {var}[i] = {dist}(gen);\n"
         benchmark_text += "    }\n\n"
 
+    # Allocate 2D input arrays. The benchmark row width matches RepeaterContext::width (1024).
+    # With causal (look-behind) semantics, N output elements need exactly N input elements.
+    _benchmark_row_width = 1024
+
     # Generate output buffers for each kernel
     benchmark_text += "    // Output buffers for each kernel\n"
     for i, name in enumerate(kernel_names):
@@ -571,7 +616,11 @@ def _generate_benchmark_code(
     benchmark_text += "\n"
 
     # Generate benchmark code for each kernel
-    var_args = ", ".join(f"{var}.data()" for var in sorted(all_vars))
+    var_args_1d = [f"{var}.data()" for var in sorted(all_vars)]
+    var_args_2d = [
+        f"{var}.data(), {_benchmark_row_width}" for var in sorted(all_vars2d)
+    ]
+    var_args = ", ".join(var_args_1d + var_args_2d)
 
     benchmark_text += '    std::cout << "{\\n";'
 
@@ -731,6 +780,8 @@ class KernelExecutable:
     executable_path: str
     variable_order: List[str]
     variable_types: Dict[str, ElementType]
+    vars2d_info: Dict[str, ElementType]
+    vars2d_order: List[str]
     output_type: ElementType
 
     def __init__(
@@ -739,26 +790,39 @@ class KernelExecutable:
         variable_order: List[str],
         variable_types: Dict[str, ElementType],
         output_type: ElementType,
+        vars2d_info: Dict[str, ElementType],
     ):
         self.executable_path = executable_path
         self.variable_order = variable_order
         self.variable_types = variable_types
+        self.vars2d_info = vars2d_info
+        self.vars2d_order = sorted(self.vars2d_info.keys())
         self.output_type = output_type
 
     def _normalize_inputs(
         self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
-    ) -> Dict[str, np.ndarray]:
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+        """Return (inputs_1d, inputs_2d) dicts."""
+        all_1d = set(self.variable_order)
+        all_2d = set(self.vars2d_order)
+
         if isinstance(inputs, np.ndarray):
-            if len(self.variable_order) != 1:
+            total = len(all_1d) + len(all_2d)
+            if total != 1:
                 raise ValueError(
                     "Expected a dictionary of named arrays for multi-input kernels"
                 )
-            return {self.variable_order[0]: inputs}
+            if all_1d:
+                return {self.variable_order[0]: inputs}, {}
+            else:
+                return {}, {self.vars2d_order[0]: inputs}
 
         if not isinstance(inputs, dict):
-            raise TypeError("inputs must be a numpy array or a dict[str, numpy.ndarray]")
+            raise TypeError(
+                "inputs must be a numpy array or a dict[str, numpy.ndarray]"
+            )
 
-        expected = set(self.variable_order)
+        expected = all_1d | all_2d
         actual = set(inputs.keys())
         if expected != actual:
             missing = sorted(expected - actual)
@@ -767,45 +831,84 @@ class KernelExecutable:
                 f"Input variable mismatch: missing={missing}, extra={extra}"
             )
 
-        return inputs
+        inputs_1d = {k: v for k, v in inputs.items() if k in all_1d}
+        inputs_2d = {k: v for k, v in inputs.items() if k in all_2d}
+        return inputs_1d, inputs_2d
 
     def run(
         self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
     ) -> tuple[np.ndarray, float]:
-        normalized_inputs = self._normalize_inputs(inputs)
+        inputs_1d, inputs_2d = self._normalize_inputs(inputs)
 
         n: Optional[int] = None
-        prepared_inputs: Dict[str, np.ndarray] = {}
+
+        # Prepare 1D inputs
+        prepared_1d: Dict[str, np.ndarray] = {}
         for var in self.variable_order:
             expected_dtype = _numpy_dtype_for_element_type(self.variable_types[var])
-            arr = np.asarray(normalized_inputs[var], dtype=expected_dtype)
+            arr = np.asarray(inputs_1d[var], dtype=expected_dtype)
             if arr.ndim != 1:
-                raise ValueError(
-                    f"Input '{var}' must be 1D, got shape {arr.shape}"
-                )
+                raise ValueError(f"Input '{var}' must be 1D, got shape {arr.shape}")
             if not arr.flags.c_contiguous:
                 arr = np.ascontiguousarray(arr)
-
             if n is None:
                 n = int(arr.shape[0])
             elif int(arr.shape[0]) != n:
                 raise ValueError(
                     f"All input arrays must have the same length, got {n} and {arr.shape[0]}"
                 )
-            prepared_inputs[var] = arr
+            prepared_1d[var] = arr
+
+        # Prepare 2D inputs. stride must be 1024 (matching the runner's reset period).
+        prepared_2d: Dict[str, Tuple[np.ndarray, int]] = {}
+        for var in self.vars2d_order:
+            elt_type = self.vars2d_info[var]
+            expected_dtype = _numpy_dtype_for_element_type(elt_type)
+            arr = np.asarray(inputs_2d[var], dtype=expected_dtype)
+            if arr.ndim != 2:
+                raise ValueError(f"Input '{var}' must be 2D, got shape {arr.shape}")
+            if not arr.flags.c_contiguous:
+                arr = np.ascontiguousarray(arr)
+            H, W = arr.shape
+            if W != 1024:
+                raise ValueError(
+                    f"2D input '{var}' must have exactly 1024 columns (stride=1024), got {W}"
+                )
+            stride = W
+            if n is None:
+                # Infer N: with causal (look-behind) semantics all H rows produce output,
+                # so N = H * stride.
+                n = H * stride
+            prepared_2d[var] = (arr, stride)
 
         assert n is not None
 
         with tempfile.TemporaryDirectory(prefix="vecrec_run_", dir="/tmp") as run_dir:
-            input_paths: List[str] = []
+            # Write 1D input files
+            input_paths_1d: List[str] = []
             for var in self.variable_order:
                 input_path = os.path.join(run_dir, f"{var}.bin")
-                prepared_inputs[var].tofile(input_path)
-                input_paths.append(input_path)
+                prepared_1d[var].tofile(input_path)
+                input_paths_1d.append(input_path)
+
+            # Write 2D input files and collect path+stride CLI args
+            input_args_2d: List[str] = []
+            for var in self.vars2d_order:
+                arr, stride = prepared_2d[var]
+                input_path = os.path.join(run_dir, f"{var}.bin")
+                arr.tofile(input_path)  # write entire 2D array as flat binary
+                input_args_2d.append(input_path)
+                input_args_2d.append(str(stride))
 
             output_path = os.path.join(run_dir, "output.bin")
 
-            cmd = [self.executable_path, str(n), *input_paths, output_path]
+            cmd = [
+                self.executable_path,
+                str(n),
+                *input_paths_1d,
+                *input_args_2d,
+                output_path,
+            ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise RuntimeError(
@@ -838,11 +941,13 @@ class KernelExecutable:
 
 def _generate_kernel_runner_code(
     all_vars: Dict[str, ElementType],
+    all_vars2d: Dict[str, ElementType],
     output_type: ElementType,
     kernel_name: str,
     header_path: str,
 ) -> str:
     var_items = sorted(all_vars.items())
+    var2d_items = sorted(all_vars2d.items())
 
     text = f'#include "{header_path}"\n'
     text += "#include <chrono>\n"
@@ -870,32 +975,62 @@ def _generate_kernel_runner_code(
     text += "}\n\n"
 
     text += "int main(int argc, char** argv) {\n"
-    expected_argc = len(var_items) + 3
+    # argc: exe + N + n_1d + 2*n_2d (path + stride per 2D var) + output
+    expected_argc = len(var_items) + 2 * len(var2d_items) + 3
     text += f"    if (argc != {expected_argc}) {{\n"
     text += '        std::cerr << "Usage: <exe> <N>'
     for name, _ in var_items:
         text += f" <{name}_path>"
+    for name, _ in var2d_items:
+        text += f" <{name}_path> <{name}_stride>"
     text += ' <output_path>" << std::endl;\n'
     text += "        return 1;\n"
     text += "    }\n\n"
 
     text += "    const int N = std::atoi(argv[1]);\n"
     text += "    if (N < 0) {\n"
-    text += "        std::cerr << \"N must be non-negative\" << std::endl;\n"
+    text += '        std::cerr << "N must be non-negative" << std::endl;\n'
     text += "        return 1;\n"
     text += "    }\n\n"
 
+    # 1D vars: argv[2 .. 2+n_1d-1]
     for idx, (name, elt_type) in enumerate(var_items):
         cpp_type = elt_type.to_str()
         arg_idx = idx + 2
         text += f"    std::vector<{cpp_type}> {name}(N);\n"
-        text += f"    if (!read_binary<{cpp_type}>(argv[{arg_idx}], {name}.data(), N)) {{\n"
-        text += f'        std::cerr << "Failed to read input for {name}" << std::endl;\n'
+        text += (
+            f"    if (!read_binary<{cpp_type}>(argv[{arg_idx}], {name}.data(), N)) {{\n"
+        )
+        text += (
+            f'        std::cerr << "Failed to read input for {name}" << std::endl;\n'
+        )
         text += "        return 2;\n"
         text += "    }\n"
     text += "\n"
 
-    var_args = ", ".join(f"{name}.data()" for name, _ in var_items)
+    # 2D vars: argv[2+n_1d ..] in pairs (path, stride)
+    # With causal (look-behind) semantics, N output elements consume exactly N input elements
+    # (rows before row 0 are zero-padded by InputSignal2D, so nelem = N).
+    base_2d_arg = len(var_items) + 2
+    for idx, (name, elt_type) in enumerate(var2d_items):
+        cpp_type = elt_type.to_str()
+        path_arg_idx = base_2d_arg + 2 * idx
+        stride_arg_idx = base_2d_arg + 2 * idx + 1
+        text += f"    const int stride_{name} = std::atoi(argv[{stride_arg_idx}]);\n"
+        text += f"    const int nelem_{name} = N;\n"
+        text += f"    std::vector<{cpp_type}> {name}(nelem_{name});\n"
+        text += f"    if (!read_binary<{cpp_type}>(argv[{path_arg_idx}], {name}.data(), nelem_{name})) {{\n"
+        text += (
+            f'        std::cerr << "Failed to read 2D input for {name}" << std::endl;\n'
+        )
+        text += "        return 2;\n"
+        text += "    }\n"
+    text += "\n"
+
+    # Build var_args: 1D args first (sorted), then 2D args (sorted), each as "name.data(), stride_name"
+    var_args_1d = [f"{name}.data()" for name, _ in var_items]
+    var_args_2d = [f"{name}.data(), stride_{name}" for name, _ in var2d_items]
+    var_args = ", ".join(var_args_1d + var_args_2d)
     output_cpp_type = output_type.to_str()
 
     text += f"    auto kernel = make_{kernel_name}({var_args});\n"
@@ -917,7 +1052,7 @@ def _generate_kernel_runner_code(
     text += "    auto end = std::chrono::high_resolution_clock::now();\n"
     text += "\n"
 
-    output_arg_idx = len(var_items) + 2
+    output_arg_idx = len(var_items) + 2 * len(var2d_items) + 2
     text += f"    if (!write_binary<{output_cpp_type}>(argv[{output_arg_idx}], output.data(), N)) {{\n"
     text += '        std::cerr << "Failed to write output" << std::endl;\n'
     text += "        return 3;\n"
@@ -925,7 +1060,7 @@ def _generate_kernel_runner_code(
     text += "\n"
 
     text += "    auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
-    text += '    std::cout << "{\\\"elapsed_us\\\":" << elapsed_us << "}" << std::endl;\n'
+    text += '    std::cout << "{\\"elapsed_us\\":" << elapsed_us << "}" << std::endl;\n'
     text += "    return 0;\n"
     text += "}\n"
 
@@ -969,9 +1104,10 @@ def generate_kernel_executable(
     code = codegen.generate(expr, kernel_name)
     instantiate_kernels(header_path, [code])
 
-    all_vars = codegen.collect_variables(expr)
+    all_vars, all_vars2d = codegen.collect_input_variables(expr)
     runner_code = _generate_kernel_runner_code(
         all_vars=all_vars,
+        all_vars2d=all_vars2d,
         output_type=expr.element_type,
         kernel_name=kernel_name,
         header_path=header_path,
@@ -992,6 +1128,7 @@ def generate_kernel_executable(
         executable_path=executable_path,
         variable_order=sorted(all_vars.keys()),
         variable_types=all_vars,
+        vars2d_info=all_vars2d,
         output_type=expr.element_type,
     )
 

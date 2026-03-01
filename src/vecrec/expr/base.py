@@ -191,6 +191,15 @@ class SignalExpr(RecLang):
         """Return a copy of the expression with the given number of lanes."""
         return super().with_lanes(lanes)  # type: ignore
 
+    def cache_rows(self, num_rows: int) -> SignalExpr2D:
+        from vecrec.expr.signal_ops import (
+            Repeater,
+        )  # local import to avoid circular dependency
+
+        return Repeater(
+            lambda _: self, num_rows, self.ty, self.element_type
+        ).with_lanes(self.lanes)
+
 
 @dataclass(match_args=False)
 class SignalExpr2D(RecLang):

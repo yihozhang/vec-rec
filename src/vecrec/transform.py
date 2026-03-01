@@ -6,7 +6,7 @@ from typing import List, Sequence, Tuple, overload
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D
-from vecrec.expr.signal import RVar2D
+from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.factorize import factorize_polynomial
@@ -666,7 +666,7 @@ class Preorder(Transform):
         results: List[SignalExpr2D] = []
         for expr in self.transform.apply_generic(expr):
             match expr:
-                case RVar2D(_):
+                case RVar2D(_) | Var2D(_):
                     results.append(expr)
                 case Repeater(_):
                     for new_a in self.apply_generic(expr.a):
@@ -675,7 +675,7 @@ class Preorder(Transform):
                         results.append(new_expr)
                 case _:
                     raise NotImplementedError(
-                        "Preorder traversal of non-RVar2D, non-Repeater SignalExpr2D not implemented"
+                        "Preorder traversal of non-RVar2D, non-Var2D, non-Repeater SignalExpr2D not implemented"
                     )
         return results
 
@@ -755,7 +755,7 @@ class Postorder(Transform):
 
         results: List[SignalExpr2D] = []
         match expr:
-            case RVar2D(_):
+            case RVar2D(_) | Var2D(_):
                 results = [expr]
             case Repeater(_):
                 for new_a in self.apply_generic(expr.a):
@@ -764,7 +764,7 @@ class Postorder(Transform):
                     results.append(new_expr)
             case _:
                 raise NotImplementedError(
-                    "Postorder traversal of non-RVar2D, non-Repeater SignalExpr2D not implemented"
+                    "Postorder traversal of non-RVar2D, non-Var2D, non-Repeater SignalExpr2D not implemented"
                 )
         return [e for result in results for e in self.transform.apply_signal2d(result)]
 
@@ -876,9 +876,11 @@ class AnnotateLanes(Transform):
                 return [new_repeater]
             case RVar2D(name):
                 return [expr.with_lanes(lanes)]
+            case Var2D(name, n_rows):
+                return [expr.with_lanes(lanes)]
             case _:
                 raise NotImplementedError(
-                    "Lane annotation for non-Repeater, non-RVar2D SignalExpr2D not implemented"
+                    "Lane annotation for non-Repeater, non-RVar2D, non-Var2D SignalExpr2D not implemented"
                 )
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:

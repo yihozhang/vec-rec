@@ -489,6 +489,56 @@ struct Signal2D {
     void reset_and_next_row() {}
 };
 
+// InputSignal2D: reads from a user-provided 2D array with causal (look-behind) semantics.
+// d[0] is the current row, d[1] is the previous row, ..., d[n_rows-1] is n_rows-1 rows back.
+// Rows before row 0 are treated as zero (zero-padding).
+// Row pointers are kept as elt_type* to avoid alignment assumptions; memcpy
+// is used for the actual load so that unaligned input data is handled safely.
+template <typename vec_type, int n_rows>
+struct InputSignal2D {
+    using elt_type = typename ElementType<vec_type>::type;
+    static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
+
+    // Shared zero row for all instances; stride is always 1024.
+    inline static const elt_type zero_row[1024] = {};
+
+    const elt_type *data;
+    int stride;
+    int current_row;
+    const elt_type *row_ptrs[n_rows];
+
+    InputSignal2D(const elt_type *data, int stride)
+        : data(data), stride(stride), current_row(0) {
+        // d[0] = row 0 (current); d[1..n_rows-1] = zero (no previous rows yet)
+        row_ptrs[0] = data;
+        for (int i = 1; i < n_rows; i++) {
+            row_ptrs[i] = zero_row;
+        }
+    }
+
+    inline __attribute__((always_inline)) void run(vec_type *d) {
+#pragma unroll
+        for (int i = 0; i < n_rows; i++) {
+            memcpy(&d[i], row_ptrs[i], sizeof(vec_type));
+            row_ptrs[i] += lanes;
+        }
+    }
+
+    void reset_and_next_row() {
+        current_row++;
+        // d[i] = row (current_row - i), zero-padded for rows before 0
+        for (int i = 0; i < n_rows; i++) {
+            int src_row = current_row - i;
+            row_ptrs[i] = (src_row >= 0) ? data + (size_t)src_row * stride : zero_row;
+        }
+    }
+};
+
+template <typename vec_type, int n_rows>
+auto make_input_signal2d(const typename ElementType<vec_type>::type *data, int stride) {
+    return InputSignal2D<vec_type, n_rows>(data, stride);
+}
+
 template <typename vec_type, int n_rows, typename Inner>
 struct Repeater {
     using elt_type = typename ElementType<vec_type>::type;

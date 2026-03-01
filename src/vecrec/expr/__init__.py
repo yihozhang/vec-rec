@@ -31,6 +31,7 @@ __all__ = [
     "Recurse",
     "Recurse2D",
     "Var",
+    "Var2D",
     "RVar2D",
     "Type",
     "with_types",

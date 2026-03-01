@@ -39,7 +39,7 @@ def main() -> None:
 			TVKernel([Num(0.0), a, b]),
 			Impulse(1.),
 		)
-		delayed_h = Convolve(TIKernel([0, 1.0]), h)
+		delayed_h = Convolve(TIKernel.z(), h)
 	program = PointwiseDiv(h, delayed_h)
 
 	transforms = Seq(
