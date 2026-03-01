@@ -133,7 +133,7 @@ def test_var2d_kernel_executable_ith_row() -> None:
     """
     n_rows = 2
     H = 5  # rows in input
-    W = 1024  # must equal the runner's reset period
+    W = 1024  # matches the default row_size of generate_kernel_executable
 
     with with_types(Type.Arith, ElementType.Float):
         var2d = Var2D("img", n_rows)

@@ -434,25 +434,29 @@ struct Signal1D {
 // Context struct to share state between Repeater and Signal2D
 template <typename vec_type, int n_rows>
 struct RepeaterContext {
-    constexpr static int width = 1024;
-
-    vec_type buffer[n_rows][width];
+    int width;
+    vec_type* buffer;
     int current_row;
     int current_col;
 
-    RepeaterContext() : current_row(0), current_col(0) {
-        memset(buffer, 0, sizeof(buffer));
+    RepeaterContext(int row_size) : width(row_size), current_row(0), current_col(0) {
+        buffer = new vec_type[n_rows * width];
+        memset(buffer, 0, sizeof(vec_type) * n_rows * width);
+    }
+
+    ~RepeaterContext() {
+        delete[] buffer;
     }
 
     // Get the value at the given row offset and current column
     vec_type get(int row_offset) {
         int row_idx = (current_row - row_offset + n_rows) % n_rows;
-        return buffer[row_idx][current_col];
+        return buffer[row_idx * width + current_col];
     }
 
     // Store a value in the current row and column
     void set(vec_type value) {
-        buffer[current_row][current_col] = value;
+        buffer[current_row * width + current_col] = value;
     }
 
     void advance_col() {
@@ -499,16 +503,19 @@ struct InputSignal2D {
     using elt_type = typename ElementType<vec_type>::type;
     static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
 
-    // Shared zero row for all instances; stride is always 1024.
-    inline static const elt_type zero_row[1024] = {};
-
     const elt_type *data;
     int stride;
     int current_row;
+    elt_type *zero_row;
+    // points into data for valid rows, or zero_row.get() for zero-padding rows
     const elt_type *row_ptrs[n_rows];
 
     InputSignal2D(const elt_type *data, int stride)
-        : data(data), stride(stride), current_row(0) {
+        : data(data),
+          stride(stride),
+          current_row(0),
+                    zero_row(new elt_type[stride]) {
+                memset(zero_row, 0, sizeof(elt_type) * stride);
         // d[0] = row 0 (current); d[1..n_rows-1] = zero (no previous rows yet)
         row_ptrs[0] = data;
         for (int i = 1; i < n_rows; i++) {
@@ -543,7 +550,6 @@ template <typename vec_type, int n_rows, typename Inner>
 struct Repeater {
     using elt_type = typename ElementType<vec_type>::type;
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
-    constexpr static int width = RepeaterContext<vec_type, n_rows>::width;
 
     RepeaterContext<vec_type, n_rows> *context;
     Inner inner;
