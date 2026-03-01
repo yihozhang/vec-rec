@@ -3,17 +3,17 @@ import numpy as np
 
 from vecrec import CodeGen, generate_and_run_benchmark
 from vecrec.transform import AnnotateLanes, Any, ConstantFold, Delay, Dilate, Optional, PushDownConvertLanes, Seq, Preorder, Try
-from vecrec.expr import Convolve, Impulse, Num, PointwiseDiv, Recurse, TIKernel, TVKernel, Type, Var
+from vecrec.expr import Convolve, Impulse, Num, PointwiseDiv, Recurse, TIKernel, TVKernel, Type, Var, with_types
 from vecrec.util import ElementType
 from vecrec.codegen import generate_kernel_executable
 
 
 def test_generate_and_run() -> None:
-    # Define a recursive filter kernel
-    kernel = TIKernel([0, 1.8, -0.9], Type.Arith, ElementType.Float)
-    signal = Var("x", Type.Arith, ElementType.Float)
-    expr = Recurse(kernel, signal)
-    
+    with with_types(Type.Arith, ElementType.Float):
+        kernel = TIKernel([0, 1.8, -0.9])
+        signal = Var("x")
+        expr = Recurse(kernel, signal)
+
     # Apply transformations to optimize the kernel
     schedule = Seq(
         Optional(
@@ -28,10 +28,10 @@ def test_generate_and_run() -> None:
         PushDownConvertLanes(),
     )
     results = schedule.apply_signal(expr)
-    
+
     # Create code generator
     codegen = CodeGen()
-    
+
     # Generate, compile, and run benchmark
     print("Generating, compiling, and running benchmark...")
     result = generate_and_run_benchmark(
@@ -42,7 +42,7 @@ def test_generate_and_run() -> None:
         warmup_iterations=5,
         benchmark_iterations=10,
     )
-    
+
     if result['return_code'] == 0:
         print("\n✓ Benchmark completed successfully!\n")
         print("Output:")
@@ -56,9 +56,10 @@ def test_generate_and_run() -> None:
 
 
 def test_generate_kernel_executable_roundtrip() -> None:
-    kernel = TIKernel([1], Type.Arith, ElementType.Float)
-    signal = Var("x", Type.Arith, ElementType.Float)
-    expr = Convolve(kernel, signal)
+    with with_types(Type.Arith, ElementType.Float):
+        kernel = TIKernel([1])
+        signal = Var("x")
+        expr = Convolve(kernel, signal)
 
     schedule = Seq(
         AnnotateLanes(512),
@@ -80,14 +81,15 @@ def test_generate_kernel_executable_roundtrip() -> None:
 
 
 def test_generate_kernel_executable_fibonacci_sum() -> None:
-    fib = Recurse(
-        TIKernel([0, 1, 1], Type.Arith, ElementType.I64),
-        Var("x", Type.Arith, ElementType.I64),
-    )
-    fib_sum = Recurse(
-        TIKernel([0, 1], Type.Arith, ElementType.I64),
-        fib,
-    )
+    with with_types(Type.Arith, ElementType.I64):
+        fib = Recurse(
+            TIKernel([0, 1, 1]),
+            Var("x"),
+        )
+        fib_sum = Recurse(
+            TIKernel([0, 1]),
+            fib,
+        )
 
     schedule = Seq(
         Preorder(Try(ConstantFold)),
@@ -119,17 +121,14 @@ def test_generate_kernel_executable_fibonacci_sum() -> None:
 
 
 def test_generate_kernel_executable_continued_fraction() -> None:
-    a = Var("a", Type.Arith, ElementType.Float)
-    b = Var("b", Type.Arith, ElementType.Float)
-    h = Recurse(
-        TVKernel(
-            [Num(0.0, Type.Arith, ElementType.Float), a, b],
-            Type.Arith,
-            ElementType.Float,
-        ),
-        Impulse(1.0, Type.Arith, ElementType.Float),
-    )
-    delayed_h = Convolve(TIKernel([0, 1.0], Type.Arith, ElementType.Float), h)
+    with with_types(Type.Arith, ElementType.Float):
+        a = Var("a")
+        b = Var("b")
+        h = Recurse(
+            TVKernel([Num(0.0), a, b]),
+            Impulse(1.0),
+        )
+        delayed_h = Convolve(TIKernel([0, 1.0]), h)
     program = PointwiseDiv(h, delayed_h)
 
     schedule = Seq(

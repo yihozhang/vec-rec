@@ -33,6 +33,7 @@ __all__ = [
     "Var",
     "RVar2D",
     "Type",
+    "with_types",
     "ConvertLanes",
     "KConvertLanes",
     "Repeater",

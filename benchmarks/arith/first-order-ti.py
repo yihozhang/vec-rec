@@ -10,29 +10,30 @@ from vecrec.util import ElementType
 
 
 def main():
-	for program in [
-        Recurse(TIKernel([0, 1.0, 1.0], Type.Arith, ElementType.Float), Num(1.0, Type.Arith, ElementType.Float)),
-        Recurse(TIKernel([0, 1.0, 1.0], Type.Arith, ElementType.Float), Var("x", Type.Arith, ElementType.Float)),
-    ]:
-            transforms = Seq(
-                Optional(
-                    Seq(
-                        RepeatUpTo(3, Dilate(), Preorder(Try(ConstantFold))),
-                        Any(Dilate(), Delay()),
-                    ),
-                ),
-                AnnotateLanes(512),
-                PushDownConvertLanes(),
-            )
+	with with_types(Type.Arith, ElementType.Float):
+		programs = [
+			Recurse(TIKernel([0, 1.0, 1.0]), Num(1.0)),
+			Recurse(TIKernel([0, 1.0, 1.0]), Var("x")),
+		]
+	for program in programs:
+		transforms = Seq(
+			Optional(
+				Seq(
+					RepeatUpTo(3, Dilate(), Preorder(Try(ConstantFold))),
+					Any(Dilate(), Delay()),
+				),
+			),
+			AnnotateLanes(512),
+			PushDownConvertLanes(),
+		)
 
-            results = transforms.apply_signal(program)
-            codegen = CodeGen()
-            benchmark_result = generate_and_run_benchmark(
-                codegen, results, True
-            )
-            print(benchmark_result)
+		results = transforms.apply_signal(program)
+		codegen = CodeGen()
+		benchmark_result = generate_and_run_benchmark(
+			codegen, results, True
+		)
+		print(benchmark_result)
 
 
 if __name__ == "__main__":
 	main()
-

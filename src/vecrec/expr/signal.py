@@ -1,7 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import Optional
 
 from .base import *
+from .base import _resolve_types
 from vecrec.util import ElementType
 
 @dataclass(unsafe_hash=True)
@@ -11,8 +13,9 @@ class Num(SignalExpr):
     element_type: ElementType
     __match_args__ = ("value",)
 
-    def __init__(self, value: float, ty: Type, element_type: ElementType = ElementType.Float) -> None:
-        super().__init__(ty, element_type)
+    def __init__(self, value: float, ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> None:
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        super().__init__(resolved_ty, resolved_et)
         self.value = value
 
 @dataclass(unsafe_hash=True)
@@ -24,8 +27,9 @@ class Impulse(SignalExpr):
     element_type: ElementType
     __match_args__ = ("value",)
 
-    def __init__(self, value: float, ty: Type, element_type: ElementType = ElementType.Float) -> None:
-        super().__init__(ty, element_type)
+    def __init__(self, value: float, ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> None:
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        super().__init__(resolved_ty, resolved_et)
         self.value = value
 
 @dataclass(unsafe_hash=True)
@@ -33,8 +37,9 @@ class Var(SignalExpr):
     name: str
     __match_args__ = ("name",)
 
-    def __init__(self, name: str, ty: Type, element_type: ElementType) -> None:
-        super().__init__(ty, element_type)
+    def __init__(self, name: str, ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> None:
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        super().__init__(resolved_ty, resolved_et)
         self.name = name
 
 @dataclass(unsafe_hash=True)
@@ -42,6 +47,7 @@ class RVar2D(SignalExpr2D):
     name: str
     __match_args__ = ("name",)
 
-    def __init__(self, name: str, ty: Type, element_type: ElementType) -> None:
-        super().__init__(ty, element_type)
+    def __init__(self, name: str, ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> None:
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        super().__init__(resolved_ty, resolved_et)
         self.name = name

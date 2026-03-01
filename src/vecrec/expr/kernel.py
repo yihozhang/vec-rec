@@ -1,37 +1,40 @@
 from __future__ import annotations
 from functools import reduce
-from typing import List, Sequence, Tuple, overload
+from typing import List, Optional, Sequence, Tuple, overload
 
 from vecrec.expr.signal import Num
 from vecrec.expr.signal_ops import *
 from vecrec.util import allclose, ElementType
-from .base import Type, KernelExpr, KernelExpr2D, SignalExpr
+from .base import Type, KernelExpr, KernelExpr2D, SignalExpr, _resolve_types
 
 
 class TIKernel(KernelExpr):
     @staticmethod
-    def z(ty: Type, element_type: ElementType, n: int = -1) -> TIKernel:
+    def z(ty: Optional[Type] = None, element_type: Optional[ElementType] = None, n: int = -1) -> TIKernel:
         """Return the delay kernel z^n."""
         if n >= 0:
             raise ValueError("n must be negative")
-        return TIKernel([0.0] * (-n) + [ty.one()], ty, element_type)
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        return TIKernel([0.0] * (-n) + [resolved_ty.one()], resolved_ty, resolved_et)
 
     @staticmethod
-    def i(ty: Type, element_type: ElementType) -> TIKernel:
+    def i(ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> TIKernel:
         """Return the identity kernel."""
-        return TIKernel([ty.one()], ty, element_type)
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        return TIKernel([resolved_ty.one()], resolved_ty, resolved_et)
 
     ty: Type
     element_type: ElementType
     data: List[float]
     __match_args__ = ("data",)
 
-    def __init__(self, data: list[float], ty: Type, element_type: ElementType):
-        super().__init__(ty, element_type)
+    def __init__(self, data: list[float], ty: Optional[Type] = None, element_type: Optional[ElementType] = None):
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        super().__init__(resolved_ty, resolved_et)
         for i in range(len(data)):
-            if ty.is_zero(data[i]):
-                data[i] = ty.zero()
-        while len(data) > 0 and ty.is_zero(data[-1]):
+            if resolved_ty.is_zero(data[i]):
+                data[i] = resolved_ty.zero()
+        while len(data) > 0 and resolved_ty.is_zero(data[-1]):
             data.pop()
         self.data = data
 
@@ -169,8 +172,9 @@ class TVKernel(KernelExpr):
     element_type: ElementType
     __match_args__ = ("data",)
 
-    def __init__(self, data: Sequence[SignalExpr], ty: Type, element_type: ElementType):
-        super().__init__(ty, element_type)
+    def __init__(self, data: Sequence[SignalExpr], ty: Optional[Type] = None, element_type: Optional[ElementType] = None):
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        super().__init__(resolved_ty, resolved_et)
         self.data = data
 
     def children(self):
@@ -297,14 +301,15 @@ class TIKernel2D(KernelExpr2D):
 
     __match_args__ = ("data",)
 
-    def __init__(self, data: List[List[float]], ty: Type, element_type: ElementType):
-        super().__init__(ty, element_type)
+    def __init__(self, data: List[List[float]], ty: Optional[Type] = None, element_type: Optional[ElementType] = None):
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        super().__init__(resolved_ty, resolved_et)
         # Trim trailing zero rows
-        while len(data) > 0 and all(ty.is_zero(v) for v in data[-1]):
+        while len(data) > 0 and all(resolved_ty.is_zero(v) for v in data[-1]):
             data.pop()
         # Trim trailing zero cols in each row
         for i in range(len(data)):
-            while len(data[i]) > 0 and ty.is_zero(data[i][-1]):
+            while len(data[i]) > 0 and resolved_ty.is_zero(data[i][-1]):
                 data[i].pop()
         self.data = data
 
@@ -323,9 +328,10 @@ class TVKernel2D(KernelExpr2D):
     __match_args__ = ("data",)
 
     def __init__(
-        self, data: List[List[SignalExpr]], ty: Type, element_type: ElementType
+        self, data: List[List[SignalExpr]], ty: Optional[Type] = None, element_type: Optional[ElementType] = None
     ):
-        super().__init__(ty, element_type)
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        super().__init__(resolved_ty, resolved_et)
         self.data = data
 
     def n_rows(self) -> int:

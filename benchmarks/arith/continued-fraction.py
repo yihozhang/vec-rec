@@ -1,9 +1,9 @@
-# The continued fraction thing: One big use of continued fractions is getting a very good 
-# rational approximation to a real number. This can be done by just skipping the final division 
-# in that second-order IIR conversion trick. Nifty. Actually I guess treating the number as a 
+# The continued fraction thing: One big use of continued fractions is getting a very good
+# rational approximation to a real number. This can be done by just skipping the final division
+# in that second-order IIR conversion trick. Nifty. Actually I guess treating the number as a
 # rational and working through the arithmetic is precisely what gives you the transformation.
 
-# the second-order IIR transformation is known as the wallis-euler recurrence. Lentz's algorithm is 
+# the second-order IIR transformation is known as the wallis-euler recurrence. Lentz's algorithm is
 # more popular, which turns it into a top-down evaluation using a different similar recurrence
 
 
@@ -16,7 +16,6 @@
 # We we take f(x) = h(x)/h(x-1), this recovers the original definition of f
 
 from vecrec.expr import *
-from vecrec.expr import Type
 from vecrec.transform import *
 from vecrec.codegen import (
 	CodeGen,
@@ -33,13 +32,14 @@ def main() -> None:
 	# Convert to second-order recurrence:
 	#   h(x) = a(x) * h(x-1) + b(x) * h(x-2)
 	# and recover f from f(x) = h(x) / h(x-1).
-	a = Var("a", Type.Arith, ElementType.Float)
-	b = Var("b", Type.Arith, ElementType.Float)
-	h = Recurse(
-		TVKernel([Num(0.0, Type.Arith, ElementType.Float), a, b], Type.Arith, ElementType.Float),
-		Impulse(1., Type.Arith, ElementType.Float),
-	)
-	delayed_h = Convolve(TIKernel([0, 1.0], Type.Arith, ElementType.Float), h)
+	with with_types(Type.Arith, ElementType.Float):
+		a = Var("a")
+		b = Var("b")
+		h = Recurse(
+			TVKernel([Num(0.0), a, b]),
+			Impulse(1.),
+		)
+		delayed_h = Convolve(TIKernel([0, 1.0]), h)
 	program = PointwiseDiv(h, delayed_h)
 
 	transforms = Seq(

@@ -1,10 +1,12 @@
 from __future__ import annotations
 from abc import abstractmethod
 import copy
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import numbers
-from typing import List, Optional, Tuple, overload
+import threading
+from typing import Generator, List, Optional, Tuple, overload
 
 import numpy as np
 
@@ -220,3 +222,53 @@ class KernelExpr2D(RecLang):
 
     def with_lanes(self, lanes: Optional[int]) -> KernelExpr2D:
         return super().with_lanes(lanes)  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# Default-type context manager
+# ---------------------------------------------------------------------------
+
+_type_context: threading.local = threading.local()
+
+
+def _resolve_types(
+    ty: Optional[Type], element_type: Optional[ElementType]
+) -> Tuple[Type, ElementType]:
+    """Resolve ty/element_type, falling back to the current with_types() context."""
+    resolved_ty = ty if ty is not None else getattr(_type_context, "ty", None)
+    resolved_et = (
+        element_type
+        if element_type is not None
+        else getattr(_type_context, "element_type", None)
+    )
+    if resolved_ty is None:
+        raise ValueError(
+            "Type must be specified explicitly or via the with_types() context manager"
+        )
+    if resolved_et is None:
+        raise ValueError(
+            "ElementType must be specified explicitly or via the with_types() context manager"
+        )
+    return resolved_ty, resolved_et
+
+
+@contextmanager
+def with_types(ty: Type, element_type: ElementType) -> Generator[None, None, None]:
+    """Context manager that sets default Type and ElementType for leaf AST nodes.
+
+    Example::
+
+        with with_types(Type.Arith, ElementType.Float):
+            kernel = TIKernel([0, 1.8, -0.9])
+            signal = Var("x")
+            expr = Recurse(kernel, signal)
+    """
+    old_ty: Optional[Type] = getattr(_type_context, "ty", None)
+    old_et: Optional[ElementType] = getattr(_type_context, "element_type", None)
+    _type_context.ty = ty
+    _type_context.element_type = element_type
+    try:
+        yield
+    finally:
+        _type_context.ty = old_ty
+        _type_context.element_type = old_et

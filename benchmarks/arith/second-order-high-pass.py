@@ -1,7 +1,6 @@
 # f(x) = f(x-1) * 1.6 + f(x-2) * -0.64 + g(x) - 2 * g(x-1) + g(x-2)
 
 from vecrec.expr import *
-from vecrec.expr import Type
 from vecrec.transform import *
 from vecrec.codegen import (
     CodeGen,
@@ -12,10 +11,11 @@ from vecrec.util import ElementType
 
 def main() -> None:
     lanes = 512
-    program = Recurse(
-        TIKernel([0, 1.6, -0.64], Type.Arith, ElementType.Float),
-        Convolve(TIKernel([1, -2, 1], Type.Arith, ElementType.Float), Var("g", Type.Arith, ElementType.Float)),
-    )
+    with with_types(Type.Arith, ElementType.Float):
+        program = Recurse(
+            TIKernel([0, 1.6, -0.64]),
+            Convolve(TIKernel([1, -2, 1]), Var("g")),
+        )
     transforms = Seq(
         Optional(Seq(Preorder(Try(Factorize())), Preorder(Try(ConstantFold)))),
         Optional(

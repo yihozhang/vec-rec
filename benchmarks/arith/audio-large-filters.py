@@ -3,7 +3,6 @@
 # f(x) = f(x-1) * 1.8 + f(x-2) * -0.9 + g(x)
 
 from vecrec.expr import *
-from vecrec.expr import Type
 from vecrec.transform import *
 from vecrec.codegen import (
     CodeGen,
@@ -13,21 +12,9 @@ from vecrec.util import ElementType
 
 
 def main():
-    kernel = TIKernel([0, 1.8, -0.9], Type.Arith, ElementType.Float)
-    program = Recurse(kernel, Recurse(kernel, Var("g", Type.Arith, ElementType.Float)))
-    # transforms = Seq(
-    #     Any(
-    #         Noop(),
-    #         Seq(
-    #             Dilate(),
-    #             Dilate(),
-    #             Dilate(),
-    #             Any(Noop(), Dilate()),
-    #         ),
-    #     ),
-    #     AnnotateLanes(512),
-    #     PushDownConvertLanes(),
-    # )
+    with with_types(Type.Arith, ElementType.Float):
+        kernel = TIKernel([0, 1.8, -0.9])
+        program = Recurse(kernel, Recurse(kernel, Var("g")))
     transforms = Seq(
         Optional(Preorder(Try(FuseRecurse()))),
         # Preorder(Try(FuseRecurse())),
@@ -49,7 +36,7 @@ def main():
         AnnotateLanes(512),
         PushDownConvertLanes(),
     )
-    
+
     results = transforms.apply_signal(program)
     # print(results)
     codegen = CodeGen()

@@ -7,8 +7,9 @@ from vecrec.transform import *
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
 
 def test_float_backward_compatibility():
-    kernel = TIKernel([0, 1.8, -0.9], Type.Arith, ElementType.Float)
-    signal = Var("x", Type.Arith, ElementType.Float)
+    with with_types(Type.Arith, ElementType.Float):
+        kernel = TIKernel([0, 1.8, -0.9])
+        signal = Var("x")
     expr = Recurse(kernel, signal)
 
     schedule = Seq(
@@ -24,8 +25,9 @@ def test_float_backward_compatibility():
 
 def test_int32_support():
     # Create an int32 prefix sum
-    kernel = TIKernel([0, 1], Type.Arith, ElementType.I32)
-    signal = Var("g", Type.Arith, ElementType.I32)
+    with with_types(Type.Arith, ElementType.I32):
+        kernel = TIKernel([0, 1])
+        signal = Var("g")
     expr = Recurse(kernel, signal)
 
     schedule = Seq(

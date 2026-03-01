@@ -6,7 +6,7 @@ The codegen must wrap make_ith_row with a lane converter (ConvertOne2N) to bridg
 the type mismatch, rather than generating make_ith_row<vec_type_r>(make_signal2d<vec_type_max>(...)).
 """
 
-from vecrec.expr.base import SignalExpr, Type
+from vecrec.expr.base import SignalExpr, Type, with_types
 from vecrec.expr.pretty import pp
 from vecrec.expr.signal import Var, RVar2D
 from vecrec.expr.signal_ops import Convolve, Ith, Recurse, Repeater, SAdd
@@ -24,16 +24,17 @@ def test_repeater_recurse_lane_mismatch() -> None:
     After AnnotateLanes + PushDownConvertLanes, Ith.lanes = 4 but RVar2D.lanes = 16.
     The codegen fix wraps IthRow with ConvertOne2N to bridge the type mismatch.
     """
-    # Kernel with time delay = 4 → Recurse.lanes = 4 when max_lanes = 16
-    feedback_kernel = TIKernel([0, 0, 0, 0, 1.8, -0.9], Type.Arith, ElementType.Float)
-    row_kernel = TIKernel([1.0], Type.Arith, ElementType.Float)
-    g = Var("x", Type.Arith, ElementType.Float)
+    with with_types(Type.Arith, ElementType.Float):
+        # Kernel with time delay = 4 → Recurse.lanes = 4 when max_lanes = 16
+        feedback_kernel = TIKernel([0, 0, 0, 0, 1.8, -0.9])
+        row_kernel = TIKernel([1.0])
+        g = Var("x")
 
-    def make_inner(rvar: RVar2D) -> SignalExpr:
-        prev_row = Ith(rvar, 0)
-        return Recurse(feedback_kernel, SAdd(g, Convolve(row_kernel, prev_row)))
+        def make_inner(rvar: RVar2D) -> SignalExpr:
+            prev_row = Ith(rvar, 0)
+            return Recurse(feedback_kernel, SAdd(g, Convolve(row_kernel, prev_row)))
 
-    repeater = Repeater(make_inner, n_rows=2, ty=Type.Arith, element_type=ElementType.Float)
+        repeater = Repeater(make_inner, n_rows=2)
 
     expr: SignalExpr
     expr = Ith(repeater, 0)
@@ -44,14 +45,15 @@ def test_repeater_recurse_lane_mismatch() -> None:
     assert result['return_code'] == 0, f"C++ compilation/execution failed: {result}"
 
 def test_repeater_recurse_lane_mismatch2() -> None:
-    # Kernel with time delay = 4 → Recurse.lanes = 4 when max_lanes = 16
-    feedback_kernel = TIKernel([0, 0, 0, 0, 1.8, -0.9], Type.Arith, ElementType.Float)
+    with with_types(Type.Arith, ElementType.Float):
+        # Kernel with time delay = 4 → Recurse.lanes = 4 when max_lanes = 16
+        feedback_kernel = TIKernel([0, 0, 0, 0, 1.8, -0.9])
 
-    def make_inner(rvar: RVar2D) -> SignalExpr:
-        prev_row = Ith(rvar, 0)
-        return Recurse(feedback_kernel, prev_row)
+        def make_inner(rvar: RVar2D) -> SignalExpr:
+            prev_row = Ith(rvar, 0)
+            return Recurse(feedback_kernel, prev_row)
 
-    repeater = Repeater(make_inner, n_rows=2, ty=Type.Arith, element_type=ElementType.Float)
+        repeater = Repeater(make_inner, n_rows=2)
 
     expr: SignalExpr
     expr = Ith(repeater, 0)

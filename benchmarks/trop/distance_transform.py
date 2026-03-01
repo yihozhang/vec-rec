@@ -9,8 +9,6 @@ from vecrec.util import *
 
 INF = float("inf")
 
-g = Var("g", Type.TropMin, ElementType.Float)
-
 # Kernel for Recurse2D(A, g) in the TropMin semiring (mul = +, add = min):
 #   A[0] = same-row feedback:    f(x-1, y) has weight 1.0
 #   A[1] = 1 row back:           f(x, y-1)+1, f(x-1, y-1)+sqrt(2), f(x-2, y-1)+sqrt(5)
@@ -22,7 +20,9 @@ kernel_data = [
     [INF, math.sqrt(5)],                  # row 2 (2 rows back)
 ]
 
-expr = Recurse2D(TIKernel2D(kernel_data, Type.TropMin, ElementType.Float), g)
+with with_types(Type.TropMin, ElementType.Float):
+    g = Var("g")
+    expr = Recurse2D(TIKernel2D(kernel_data), g)
 
 transforms = Seq(
     Preorder(Eliminate2DKernels()),

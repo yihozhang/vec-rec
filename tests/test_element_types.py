@@ -1,5 +1,5 @@
 import pytest
-from vecrec.expr import Recurse, TIKernel, Type, Var
+from vecrec.expr import Recurse, TIKernel, Type, Var, with_types
 from vecrec.transform import (
     AnnotateLanes,
     Any,
@@ -31,11 +31,11 @@ def test_second_order_ti_element_types(element_type, coefficients):
     This test mimics benchmarks/arith/second-order-ti.py but validates all element types.
     Uses appropriate coefficients for each type (floats for Float, integers for integer types).
     """
-    # Create the same program as in the benchmark, but with parameterized element type
-    program = Recurse(
-        TIKernel(coefficients, Type.Arith, element_type),
-        Var("g", Type.Arith, element_type),
-    )
+    with with_types(Type.Arith, element_type):
+        program = Recurse(
+            TIKernel(coefficients),
+            Var("g"),
+        )
 
     # Apply the same transformations as in the benchmark
     # TODO: the number of dilation/delay that can be performed depends on the element type

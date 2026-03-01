@@ -5,13 +5,14 @@ import numpy as np
 
 from vecrec.codegen import CodeGen, instantiate_kernels, generate_benchmark, generate_and_run_benchmark
 from vecrec.transform import *
-from vecrec.expr import Convolve, Recurse, TIKernel, Type, Var
+from vecrec.expr import Convolve, Recurse, TIKernel, Type, Var, with_types
 from vecrec.util import ElementType
 
 
 def main():
-    kernel = TIKernel([0, 1.8, -0.9], Type.Arith, ElementType.Float)
-    signal = Var("x", Type.Arith, ElementType.Float)
+    with with_types(Type.Arith, ElementType.Float):
+        kernel = TIKernel([0, 1.8, -0.9])
+        signal = Var("x")
     expr = Recurse(kernel, signal)
     
     constant_fold = Preorder(Try(ConstantFold))

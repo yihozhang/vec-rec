@@ -1,7 +1,7 @@
 import pytest
 from vecrec import CodeGen, generate_and_run_benchmark
 from vecrec.transform import AnnotateLanes, PushDownConvertLanes, Seq, Preorder, Try, ConstantFold
-from vecrec.expr import Recurse, TIKernel, Type, Var, Convolve
+from vecrec.expr import Recurse, TIKernel, Type, Var, Convolve, with_types
 from vecrec.util import ElementType
 
 @pytest.mark.parametrize("kernel_type, element_type", [
@@ -11,9 +11,10 @@ from vecrec.util import ElementType
     (Type.TropMax, ElementType.I64),
 ])
 def test_tropical(kernel_type: Type, element_type: ElementType) -> None:
-    kernel = TIKernel([1.0, 1.0], kernel_type, element_type)
-    kernel2 = TIKernel([kernel_type.zero(), -1.0], kernel_type, element_type)
-    signal = Var("x", kernel_type, element_type)
+    with with_types(kernel_type, element_type):
+        kernel = TIKernel([1.0, 1.0])
+        kernel2 = TIKernel([kernel_type.zero(), -1.0])
+        signal = Var("x")
     expr = Recurse(kernel2, Convolve(kernel, signal))
 
     schedule = Seq(

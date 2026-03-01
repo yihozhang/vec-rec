@@ -1,13 +1,13 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import reduce
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 from vecrec.expr.signal import RVar2D
 from vecrec.util import ElementType
 
-
 from .base import *
+from .base import _resolve_types
 
 @dataclass(unsafe_hash=True)
 class SignalExprBinOp(SignalExpr):
@@ -166,11 +166,12 @@ class Repeater(SignalExpr2D):
         self,
         func: Callable[[RVar2D], SignalExpr],
         n_rows: int,
-        ty: Type,
-        element_type: ElementType,
+        ty: Optional[Type] = None,
+        element_type: Optional[ElementType] = None,
     ) -> None:
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
         self.n_rows = n_rows
-        self.prev_rows_var = RVar2D(f"$f{Repeater.var_count}", ty, element_type)
+        self.prev_rows_var = RVar2D(f"$f{Repeater.var_count}", resolved_ty, resolved_et)
         Repeater.var_count += 1
         self.a = func(self.prev_rows_var)
         super().__init__(self.a.ty, self.a.element_type)

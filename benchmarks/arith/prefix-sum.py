@@ -7,8 +7,8 @@ from vecrec.util import ElementType
 
 
 def main():
-    lanes = 512
-    program = Recurse(TIKernel([0, 1], Type.Arith, ElementType.Float), Var("g", Type.Arith, ElementType.Float))
+    with with_types(Type.Arith, ElementType.Float):
+        program = Recurse(TIKernel([0, 1]), Var("g"))
     transforms = Seq(
         Any(
             Noop(),
