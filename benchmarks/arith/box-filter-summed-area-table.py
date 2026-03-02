@@ -4,6 +4,7 @@
 
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.expr import *
+from vecrec.expr.base import SignalExpr2D
 from vecrec.transform import *
 from vecrec.util import *
 
@@ -13,19 +14,32 @@ def next_power_of_2(x: int) -> int:
 
 
 # More optimal way to compute: do the four-tap filter first, and then do a prefix sum, because this only needs to cache the last row.
-def box_filter_sat(input_signal: SignalExpr, D: int) -> SignalExpr:
+def box_filter_naive(input_signal: SignalExpr, D: int) -> SignalExpr:
     sat = Repeater(lambda f1: Recurse(TIKernel.z(), SAdd(f1.at(0), input_signal)), next_power_of_2(D+1))
     kernel = [[0.] * D for i in range(D)]
     kernel[0][0] = kernel[D-1][D-1] = 1.
     kernel[D-1][0] = kernel[0][D-1] = -1.
     return PointwiseDiv(Convolve2D(TIKernel2D(kernel), sat), Num(float(D * D)))
 
-with with_types(Type.Arith, ElementType.Float):
-    g = Var("g")
 
+def box_filter_optimized(input_signal: SignalExpr2D, D: int) -> SignalExpr:
+    with with_types(Type.Arith, ElementType.Float):
+        kernel_x = [1.0] + [0.0] * (D - 2) + [-1.0]
+        kernel_y = [[1.0], [0.0] * (D - 2) + [-1.0]]
+        fir_y = Convolve2D(TIKernel2D(kernel_y), input_signal)
+        fir = Convolve(TIKernel(kernel_x), fir_y)
+
+        sat_kernel = TIKernel2D([[0.0, 1.0], [1.0]])
+        iir = Recurse2D(sat_kernel, fir).at(0)
+
+        return iir
+
+
+with with_types(Type.Arith, ElementType.Float):
     for D in [3, 5, 7, 9, 11, 13, 15]:
         print(f"D = {D}")
-        expr = box_filter_sat(g, D)
+        # expr = box_filter_naive(Var("g"), D)
+        expr = box_filter_optimized(Var2D("g", D), D)
 
         # print(pp(expr))
 

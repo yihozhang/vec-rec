@@ -57,14 +57,15 @@ def optimized_box_filter(input_signal: SignalExpr2D, D: int) -> SignalExpr:
         fir_y = Convolve2D(TIKernel2D(kernel_y), input_signal)
         fir_y = Convolve2D(TIKernel2D(kernel_y), fir_y.cache_rows(D))
         fir_y = Convolve2D(TIKernel2D(kernel_y), fir_y.cache_rows(D))
-        fir = Convolve(TIKernel(kernel_x), fir_y)
+        fir: SignalExpr = Convolve(TIKernel(kernel_x), fir_y)
         fir = Convolve(TIKernel(kernel_x), fir)
         fir = Convolve(TIKernel(kernel_x), fir)
+        fir = PointwiseDiv(fir, Num(float(D ** 6)))
 
         sat_kernel = TIKernel2D([[0.0, 1.0], [1.0]])
         iir = Recurse2D(sat_kernel, fir).at(0)
-        iir = Recurse2D(sat_kernel, fir).at(0)
-        iir = Recurse2D(sat_kernel, fir).at(0)
+        iir = Recurse2D(sat_kernel, iir).at(0)
+        iir = Recurse2D(sat_kernel, iir).at(0)
 
         return iir
 
