@@ -24,7 +24,7 @@ def naive_box_filter(input_signal: SignalExpr, D: int) -> SignalExpr:
     def box_filter_sat(input_signal: SignalExpr, D: int) -> SignalExpr:
         with with_types(Type.Arith, ElementType.Float):
             sat = Repeater(
-                lambda f1: Recurse(TIKernel.z(), SAdd(Ith(f1, 0), input_signal)),
+                lambda f1: Recurse(TIKernel.z(), SAdd(f1.at(0), input_signal)),
                 next_power_of_2(D + 1),
             )
             return PointwiseDiv(Convolve2D(TIKernel2D(kernel), sat), Num(float(D * D)))
@@ -43,9 +43,9 @@ def naive_box_filter(input_signal: SignalExpr, D: int) -> SignalExpr:
 #         fir = Convolve2D(TIKernel2D(kernel), fir.cache_rows(D))
 
 #         sat_kernel = TIKernel2D([[0.0, 1.0], [1.0]])
-#         iir = Ith(Recurse2D(sat_kernel, fir), 0)
-#         iir = Ith(Recurse2D(sat_kernel, fir), 0)
-#         iir = Ith(Recurse2D(sat_kernel, fir), 0)
+#         iir = Recurse2D(sat_kernel, fir).at(0)
+#         iir = Recurse2D(sat_kernel, fir).at(0)
+#         iir = Recurse2D(sat_kernel, fir).at(0)
 
 #         return iir
 
@@ -62,9 +62,9 @@ def optimized_box_filter(input_signal: SignalExpr2D, D: int) -> SignalExpr:
         fir = Convolve(TIKernel(kernel_x), fir)
 
         sat_kernel = TIKernel2D([[0.0, 1.0], [1.0]])
-        iir = Ith(Recurse2D(sat_kernel, fir), 0)
-        iir = Ith(Recurse2D(sat_kernel, fir), 0)
-        iir = Ith(Recurse2D(sat_kernel, fir), 0)
+        iir = Recurse2D(sat_kernel, fir).at(0)
+        iir = Recurse2D(sat_kernel, fir).at(0)
+        iir = Recurse2D(sat_kernel, fir).at(0)
 
         return iir
 

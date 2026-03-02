@@ -61,7 +61,7 @@ class ApplyToAllRecurse(Transform):
     def _walk_signal(self, expr: SignalExpr) -> SignalExpr:
         if expr.is_leaf():
             return expr
-        new_children = [self._walk_generic(c) for c in expr.children()]
+        new_children = [self._walk_generic(c) for c in expr.children()] # type: ignore
         rebuilt = type(expr)(*new_children)  # type: ignore
         rebuilt.lanes = expr.lanes
         results = self.transform.apply_signal(rebuilt)
@@ -70,7 +70,7 @@ class ApplyToAllRecurse(Transform):
     def _walk_kernel(self, expr: KernelExpr) -> KernelExpr:
         if isinstance(expr, (TIKernel, TVKernel)):
             return expr
-        new_children = [self._walk_generic(c) for c in expr.children()]
+        new_children = [self._walk_generic(c) for c in expr.children()] # type: ignore
         rebuilt = type(expr)(*new_children)  # type: ignore
         rebuilt.lanes = expr.lanes
         return rebuilt

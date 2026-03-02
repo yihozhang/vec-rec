@@ -14,7 +14,7 @@ def next_power_of_2(x: int) -> int:
 
 # More optimal way to compute: do the four-tap filter first, and then do a prefix sum, because this only needs to cache the last row.
 def box_filter_sat(input_signal: SignalExpr, D: int) -> SignalExpr:
-    sat = Repeater(lambda f1: Recurse(TIKernel([0., 1.]), SAdd(Ith(f1, 0), input_signal)), next_power_of_2(D+1))
+    sat = Repeater(lambda f1: Recurse(TIKernel.z(), SAdd(f1.at(0), input_signal)), next_power_of_2(D+1))
     kernel = [[0.] * D for i in range(D)]
     kernel[0][0] = kernel[D-1][D-1] = 1.
     kernel[D-1][0] = kernel[0][D-1] = -1.

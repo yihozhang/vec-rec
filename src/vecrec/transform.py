@@ -23,6 +23,7 @@ __all__ = [
     "ConstantFold",
     "FuseRecurse",
     "Dilate",
+    "DilateTrop",
     "Delay",
     "ComposeRecurse",
     "Factorize",
@@ -280,6 +281,40 @@ class Dilate(Transform):
             case _:
                 return []
 
+@TropTransform
+class DilateTrop(Transform):
+    """Dilate a tropical IIR"""
+    def op(self, k: TIKernel) -> Tuple[TIKernel, TIKernel]:
+        assert k.ty == Type.TropMax or k.ty == Type.TropMin
+        stride = 2
+        while True:
+            even = [k.ty.zero()] * len(k)
+            even[0::stride] = k.data[0::stride]
+            print(even)
+            print(k.data)
+            odd = [k.ty.zero() if a == b else a for a, b in zip(k.data, even)]
+
+            even_k = TIKernel(even, k.ty, k.element_type)
+            odd_k = TIKernel(odd, k.ty, k.element_type)
+
+            if len(odd_k) == 0:
+                stride *= 2
+                continue
+
+            f = TIKernel.i(k.ty, k.element_type) + odd_k
+            i = even_k + odd_k * odd_k
+            return f, i
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Recurse(a, g) if isinstance(a, TIKernel):
+                f, i = self.op(a)
+                return [Recurse(i, Convolve(f, g))]
+            case _:
+                return []
+
+# TODO: dilation for 2D IIRs
+# TODO: delay for tropical IIRs
 
 @ArithTransform
 class Delay(Transform):

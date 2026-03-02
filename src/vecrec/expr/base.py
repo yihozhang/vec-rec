@@ -206,6 +206,10 @@ class SignalExpr2D(RecLang):
     ty: Type
     element_type: ElementType
 
+    def at(self, r: int) -> SignalExpr:
+        from vecrec.expr.signal_ops import Ith
+        return Ith(self, r)
+
     def with_lanes(self, lanes: Optional[int]) -> SignalExpr2D:
         return super().with_lanes(lanes)  # type: ignore
 
