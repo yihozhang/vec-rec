@@ -170,7 +170,7 @@ class RecLang:
     def is_leaf(self) -> bool:
         """Return whether the expression is a leaf node."""
         for v in self.__dict__.values():
-            if isinstance(v, (KernelExpr, SignalExpr)):
+            if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D)):
                 return False
         return True
 

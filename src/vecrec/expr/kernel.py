@@ -76,7 +76,7 @@ class TIKernel(KernelExpr):
         return self.data[index]
 
     def __hash__(self):
-        return hash(tuple(self.data))
+        return hash((self.lanes, tuple(self.data)))
 
     def copy(self) -> TIKernel:
         copied = TIKernel(self.data.copy(), self.ty, self.element_type)
@@ -88,7 +88,10 @@ class TIKernel(KernelExpr):
 
     def __repr__(self) -> str:
         data = " ".join([f"{x:.8f}" for x in self.data])
-        return f"TIKernel([ {data} ])"
+        if self.lanes is not None:
+            return f"TIKernel(lanes={self.lanes}, [ {data} ])"
+        else:
+            return f"TIKernel([ {data} ])"
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, TIKernel):
@@ -282,10 +285,13 @@ class TVKernel(KernelExpr):
 
     def __repr__(self) -> str:
         data = ", ".join([str(x) for x in self.data])
-        return f"TVKernel([ {data} ])"
+        if self.lanes is not None:
+            return f"TVKernel(lanes={self.lanes}, [ {data} ])"
+        else:
+            return f"TVKernel([ {data} ])"
 
     def __hash__(self):
-        return hash(tuple(self.data))
+        return hash((self.lanes, tuple(self.data)))
 
 
 KernelConstant = TIKernel | TVKernel

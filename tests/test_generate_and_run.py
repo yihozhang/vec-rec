@@ -2,6 +2,7 @@
 import numpy as np
 
 from vecrec import CodeGen, generate_and_run_benchmark
+from vecrec.expr.signal_ops import SAdd
 from vecrec.transform import AnnotateLanes, Any, ConstantFold, Delay, Dilate, Optional, PushDownConvertLanes, Seq, Preorder, Try
 from vecrec.expr import Convolve, Impulse, Num, PointwiseDiv, Recurse, TIKernel, TVKernel, Type, Var, with_types
 from vecrec.util import ElementType
@@ -125,11 +126,11 @@ def test_generate_kernel_executable_continued_fraction() -> None:
         a = Var("a")
         b = Var("b")
         h = Recurse(
-            TVKernel([Num(0.0), a, b]),
-            Impulse(1.0),
+            TVKernel([Num(0.0), Convolve(TIKernel.z(n=-2), a), (Convolve(TIKernel.z(n=-2), b))]),
+            SAdd(Impulse(1.), Convolve(TIKernel.z(), Impulse(1.))),
         )
-        delayed_h = Convolve(TIKernel([0, 1.0]), h)
-    program = PointwiseDiv(h, delayed_h)
+        delayed_h = Convolve(TIKernel.z(), h)
+        program = PointwiseDiv(h, delayed_h)
 
     schedule = Seq(
         Preorder(Try(ConstantFold)),
@@ -155,7 +156,4 @@ def test_generate_kernel_executable_continued_fraction() -> None:
     f_expected[0] = 1.0
     for i in range(1, n):
         f_expected[i] = a_in[i] + b_in[i]/f_expected[i-1]
-    print()
-    print(output[1:])
-    print(f_expected[:-2])
-    # assert np.allclose(output[1:], f_expected[:-1], atol=1e-3, rtol=1e-3)
+    assert np.allclose(output[2:], f_expected[1:-2], atol=1e-3, rtol=1e-3)

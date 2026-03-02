@@ -1236,33 +1236,35 @@ def generate_and_run_benchmark(
     )
 
     if compile_result.returncode != 0:
-        return {
+        result = {
             "output": compile_result.stdout,
             "error": f"Compilation failed: {compile_result.stderr}",
             "return_code": compile_result.returncode,
         }
+    else:
 
-    # Run benchmark
-    run_result = subprocess.run(
-        [os.path.abspath(executable_path)],
-        capture_output=True,
-        text=True,
-    )
+        # Run benchmark
+        run_result = subprocess.run(
+            [os.path.abspath(executable_path)],
+            capture_output=True,
+            text=True,
+        )
 
-    print(executable_path)
-    print("result:", run_result.stdout)
-    json_output = json.loads(run_result.stdout)
-    validation = json_output.pop("validation", None)
-    # Since Python 3.7, Python dicts maintain insertion order.
-    json_output = dict(sorted(json_output.items(), key=lambda item: item[1]))
-    if validation is not None:
-        json_output["validation"] = validation
+        print(executable_path)
+        print("result:", run_result.stdout)
+        json_output = json.loads(run_result.stdout)
+        validation = json_output.pop("validation", None)
+        # Since Python 3.7, Python dicts maintain insertion order.
+        json_output = dict(sorted(json_output.items(), key=lambda item: item[1]))
+        if validation is not None:
+            json_output["validation"] = validation
 
-    result = {
-        "output": json_output,
-        "error": run_result.stderr if run_result.returncode != 0 else "",
-        "return_code": run_result.returncode,
-    }
-    if run_result.returncode != 0:
-        raise RuntimeError(f"Benchmark execution failed: {run_result.stderr}")
+        result = {
+            "output": json_output,
+            "error": run_result.stderr if run_result.returncode != 0 else "",
+            "return_code": run_result.returncode,
+        }
+
+    if result["return_code"] != 0:
+        raise RuntimeError(f"Benchmark execution failed: {result['error']}")
     return result
