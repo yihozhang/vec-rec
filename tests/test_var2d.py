@@ -12,7 +12,7 @@ from vecrec.codegen import (
     generate_and_run_benchmark,
     generate_kernel_executable,
 )
-from vecrec.transform import AnnotateLanes, Preorder, Eliminate2DKernels
+from vecrec.transform import AnnotateLanes, Preorder, Eliminate2DKernels, Try
 
 
 # expr = Convolve2D(TIKernel2D([[1.], [1.]]), Var2D("img", 2))
@@ -62,7 +62,7 @@ def test_var2d_with_convolve2d_compiles_and_runs() -> None:
         var2d = Var2D("img", 2)
 
         expr: SignalExpr = Convolve2D(kernel2d, var2d)
-        expr = Preorder(Eliminate2DKernels()).apply_generic(expr)[0]
+        expr = Preorder(Try(Eliminate2DKernels())).apply_generic(expr)[0]
         expr = AnnotateLanes(512).apply_generic(expr)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [expr])

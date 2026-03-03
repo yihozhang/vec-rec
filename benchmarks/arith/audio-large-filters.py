@@ -8,6 +8,7 @@ from vecrec.codegen import (
     CodeGen,
     generate_and_run_benchmark,
 )
+from vecrec.transform import SaturatePreorder
 from vecrec.util import ElementType
 
 
@@ -18,9 +19,7 @@ def main():
     transforms = Seq(
         Optional(Preorder(Try(FuseRecurse()))),
         # Preorder(Try(FuseRecurse())),
-        Preorder(Try(ConstantFold)),
-        Preorder(Try(ConstantFold)),
-        Preorder(Try(ConstantFold)),
+        SaturatePreorder(ConstantFold),
         Any(
             Noop(),
             Seq(
@@ -30,9 +29,7 @@ def main():
                 Any(Noop(), Dilate()),
             ),
         ),
-        Preorder(Try(ConstantFold)),
-        Preorder(Try(ConstantFold)),
-        Preorder(Try(ConstantFold)),
+        SaturatePreorder(ConstantFold),
         AnnotateLanes(512),
         PushDownConvertLanes(),
     )

@@ -3,7 +3,7 @@ import numpy as np
 
 from vecrec import CodeGen, generate_and_run_benchmark
 from vecrec.expr.signal_ops import SAdd
-from vecrec.transform import AnnotateLanes, Any, ConstantFold, Delay, Dilate, Optional, PushDownConvertLanes, Seq, Preorder, Try
+from vecrec.transform import AnnotateLanes, Any, ConstantFold, Delay, Dilate, Optional, PushDownConvertLanes, SaturatePreorder, Seq, Preorder, Try
 from vecrec.expr import Convolve, Impulse, Num, PointwiseDiv, Recurse, TIKernel, TVKernel, Type, Var, with_types
 from vecrec.util import ElementType
 from vecrec.codegen import generate_kernel_executable
@@ -22,7 +22,7 @@ def test_generate_and_run() -> None:
                 Dilate(),
                 Dilate(),
                 Any(Dilate(), Delay()),
-                Preorder(Try(ConstantFold)),
+                SaturatePreorder(ConstantFold),
             )
         ),
         AnnotateLanes(512),
@@ -93,7 +93,7 @@ def test_generate_kernel_executable_fibonacci_sum() -> None:
         )
 
     schedule = Seq(
-        Preorder(Try(ConstantFold)),
+        SaturatePreorder(ConstantFold),
         AnnotateLanes(512),
         PushDownConvertLanes(),
     )
@@ -133,7 +133,7 @@ def test_generate_kernel_executable_continued_fraction() -> None:
         program = PointwiseDiv(h, delayed_h)
 
     schedule = Seq(
-        Preorder(Try(ConstantFold)),
+        SaturatePreorder(ConstantFold),
         AnnotateLanes(512),
         PushDownConvertLanes(),
     )

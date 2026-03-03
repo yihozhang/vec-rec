@@ -15,7 +15,7 @@ def main():
         signal = Var("x")
     expr = Recurse(kernel, signal)
     
-    constant_fold = Preorder(Try(ConstantFold))
+    constant_fold = SaturatePreorder(ConstantFold)
     schedule = Seq(
         Any(
             Noop(),

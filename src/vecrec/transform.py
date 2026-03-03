@@ -35,6 +35,7 @@ __all__ = [
     "Try",
     "Any",
     "Preorder",
+    "SaturatePreorder",
     "Postorder",
     "AnnotateLanes",
     "PushDownConvertLanes",
@@ -281,9 +282,11 @@ class Dilate(Transform):
             case _:
                 return []
 
+
 @TropTransform
 class DilateTrop(Transform):
     """Dilate a tropical IIR"""
+
     def op(self, k: TIKernel) -> Tuple[TIKernel, TIKernel]:
         assert k.ty == Type.TropMax or k.ty == Type.TropMin
         stride = 2
@@ -313,8 +316,10 @@ class DilateTrop(Transform):
             case _:
                 return []
 
+
 # TODO: dilation for 2D IIRs
 # TODO: delay for tropical IIRs
+
 
 @ArithTransform
 class Delay(Transform):
@@ -568,21 +573,10 @@ def Optional(transform: Transform) -> Transform:
 class Try(Transform):
     def __init__(self, transform: Transform) -> None:
         self.transform = transform
+        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        results = self.transform.apply_kernel(expr)
-        return results if len(results) > 0 else [expr]
-
-    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        results = self.transform.apply_signal(expr)
-        return results if len(results) > 0 else [expr]
-
-    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
-        results = self.transform.apply_kernel2d(expr)
-        return results if len(results) > 0 else [expr]
-
-    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
-        results = self.transform.apply_signal2d(expr)
+    def apply_generic(self, expr):
+        results = self.transform.apply_generic(expr)
         return results if len(results) > 0 else [expr]
 
 
@@ -804,9 +798,42 @@ class Postorder(Transform):
         return [e for result in results for e in self.transform.apply_signal2d(result)]
 
 
-class Eliminate2DKernels(
-    Noop
-):  # Inherits from Noop to preserve expressions that don't involve 2D kernels
+class SaturatePreorder(Transform):
+    transform: Transform
+
+    class TryWithTag(Transform):
+        def __init__(self, transform: Transform) -> None:
+            self.transform = transform
+            self.success = False
+            self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
+
+        def apply_generic(self, expr):
+            results = self.transform.apply_generic(expr)
+            if len(results) > 0:
+                self.success = True
+                return results
+            else:
+                return [expr]
+
+    def __init__(self, transform: Transform) -> None:
+        self.transform = transform
+        self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
+
+    def apply_generic(self, expr):
+        worklist = [expr]
+        results = []
+        while worklist:
+            expr = worklist.pop()
+            try_ = self.TryWithTag(self.transform)
+            rewritten = Preorder(try_).apply_generic(expr)
+            if not try_.success:
+                results.append(expr)
+            else:
+                worklist.extend(rewritten)
+        return results
+
+
+class Eliminate2DKernels(Transform):
     """Eliminate 2D kernels by converting them to 1D kernels and modifying the signal expressions accordingly.
     The only places where 2D kernels appear are in Convolve2D and Recurse2D.
     """
@@ -816,7 +843,6 @@ class Eliminate2DKernels(
             assert isinstance(expr.a, TIKernel2D) or isinstance(
                 expr.a, TVKernel2D
             ), "Kernel should be canonicalized before 2D kernel elimination"
-            b = self.apply_signal2d(expr.b)[0]
             if isinstance(expr.a, TIKernel2D):
                 kernels: List[KernelExpr] = [
                     TIKernel(row, expr.a.ty, expr.a.element_type) for row in expr.a.data
@@ -827,11 +853,14 @@ class Eliminate2DKernels(
                 ]
             return [
                 SAdd.of(
-                    [Convolve(kernel, Ith(b, i)) for i, kernel in enumerate(kernels)]
+                    [
+                        Convolve(kernel, Ith(expr.b, i))
+                        for i, kernel in enumerate(kernels)
+                    ]
                 )
             ]
         else:
-            return [expr]
+            return []
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         if isinstance(expr, Recurse2D):
@@ -860,7 +889,7 @@ class Eliminate2DKernels(
             )
             return self.apply_signal2d(new_expr)
         else:
-            return [expr]
+            return []
 
 
 class AnnotateLanes(Transform):
@@ -952,7 +981,7 @@ class AnnotateLanes(Transform):
                 ), "2D kernels should be eliminated before lane annotation"
                 args.append(self.convert_lanes(self.apply_generic(child)[0], lanes))
 
-            new_expr = type(expr)(*args) # type: ignore
+            new_expr = type(expr)(*args)  # type: ignore
             new_expr.lanes = lanes
 
             return [new_expr]
@@ -981,7 +1010,7 @@ class AnnotateLanes(Transform):
             args = [self.apply_generic(child)[0] for child in expr.children()]
             for arg in args:
                 assert arg.lanes == max_lanes
-            new_expr = type(expr)(*args) # type: ignore
+            new_expr = type(expr)(*args)  # type: ignore
             new_expr.lanes = max_lanes
             return [new_expr]
 

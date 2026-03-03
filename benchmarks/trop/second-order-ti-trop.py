@@ -16,7 +16,7 @@ def main() -> None:
     transforms = Seq(
         Optional(
             Seq(
-                RepeatUpTo(4, DilateTrop(), Preorder(Try(ConstantFold))),
+                RepeatUpTo(4, DilateTrop(), SaturatePreorder(ConstantFold)),
             ),
         ),
         AnnotateLanes(512),

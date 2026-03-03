@@ -10,6 +10,7 @@ from vecrec.transform import (
     Preorder,
     PushDownConvertLanes,
     RepeatUpTo,
+    SaturatePreorder,
     Seq,
     Try,
 )
@@ -42,7 +43,7 @@ def test_second_order_ti_element_types(element_type, coefficients):
     transforms = Seq(
         Optional(
             Seq(
-                RepeatUpTo(2, Dilate(), Preorder(Try(ConstantFold))),
+                RepeatUpTo(2, Dilate(), SaturatePreorder(ConstantFold)),
                 Any(Dilate(), Delay()),
             ),
         ),

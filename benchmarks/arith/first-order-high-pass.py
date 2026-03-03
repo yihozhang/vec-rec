@@ -23,10 +23,10 @@ def main():
 		)
 
 	transforms = Seq(
-		Optional(Seq(Preorder(Try(Factorize())), Preorder(Try(ConstantFold)))),
+		Optional(Seq(Preorder(Try(Factorize())), SaturatePreorder(ConstantFold))),
 		Optional(
 			Seq(
-				RepeatUpTo(3, Dilate(), Preorder(Try(ConstantFold))),
+				RepeatUpTo(3, Dilate(), SaturatePreorder(ConstantFold)),
 				Any(Dilate(), Delay()),
 			),
 		),

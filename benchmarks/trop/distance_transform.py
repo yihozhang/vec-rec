@@ -25,8 +25,8 @@ with with_types(Type.TropMin, ElementType.Float):
     expr = Recurse2D(TIKernel2D(kernel_data), g)
 
 transforms = Seq(
-    Preorder(Eliminate2DKernels()),
-    Repeat(5, Preorder(Try(ConstantFold))),
+    Preorder(Try(Eliminate2DKernels())),
+    Repeat(5, SaturatePreorder(ConstantFold)),
     AnnotateLanes(256),
     PushDownConvertLanes(),
 )

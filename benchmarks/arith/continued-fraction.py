@@ -52,7 +52,7 @@ def main() -> None:
         program = PointwiseDiv(h, delayed_h)
 
     transforms = Seq(
-        Preorder(Try(ConstantFold)),
+        SaturatePreorder(ConstantFold),
         AnnotateLanes(512),
         PushDownConvertLanes(),
     )

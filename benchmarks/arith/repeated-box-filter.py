@@ -85,12 +85,12 @@ for D in [3, 5, 7, 9, 11, 13, 15]:
     print(pp(expr))
 
     transforms = Seq(
-        Preorder(Eliminate2DKernels()),
+        Preorder(Try(Eliminate2DKernels())),
         Preorder(Try(Dilate())),
         Preorder(Try(Dilate())),
         Preorder(Try(Dilate())),
         Any(Preorder(Try(Dilate())), Preorder(Try(Delay()))),
-        Repeat(5, Preorder(Try(ConstantFold))),
+        Repeat(5, SaturatePreorder(ConstantFold)),
         AnnotateLanes(256),
         PushDownConvertLanes(),
     )

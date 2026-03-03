@@ -10,7 +10,7 @@ This script shows how to:
 
 from vecrec import CodeGen, instantiate_kernels
 from vecrec.codegen import generate_and_run_benchmark
-from vecrec.transform import Any, ConstantFold, Delay, Dilate, Seq, Preorder, Try
+from vecrec.transform import Any, ConstantFold, Delay, Dilate, SaturatePreorder, Seq, Preorder, Try
 from vecrec.expr import Recurse, TIKernel, Type, Var
 
 
@@ -25,7 +25,7 @@ def main():
         Dilate(),
         Dilate(),
         Any(Dilate(), Delay()),
-        Preorder(Try(ConstantFold)),
+        SaturatePreorder(ConstantFold),
     ]
     results = Seq(*transforms).apply_signal(expr)
     

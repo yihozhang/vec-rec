@@ -1,6 +1,6 @@
 import pytest
 from vecrec import CodeGen, generate_and_run_benchmark
-from vecrec.transform import AnnotateLanes, PushDownConvertLanes, Seq, Preorder, Try, ConstantFold
+from vecrec.transform import AnnotateLanes, PushDownConvertLanes, SaturatePreorder, Seq, Preorder, Try, ConstantFold
 from vecrec.expr import Recurse, TIKernel, Type, Var, Convolve, with_types
 from vecrec.util import ElementType
 
@@ -18,7 +18,7 @@ def test_tropical(kernel_type: Type, element_type: ElementType) -> None:
     expr = Recurse(kernel2, Convolve(kernel, signal))
 
     schedule = Seq(
-        Preorder(Try(ConstantFold)),
+        SaturatePreorder(ConstantFold),
         AnnotateLanes(256),
         PushDownConvertLanes(),
     )

@@ -17,10 +17,10 @@ def main() -> None:
             Convolve(TIKernel([1, -2, 1]), Var("g")),
         )
     transforms = Seq(
-        Optional(Seq(Preorder(Try(Factorize())), Preorder(Try(ConstantFold)))),
+        Optional(Seq(Preorder(Try(Factorize())), SaturatePreorder(ConstantFold))),
         Optional(
             Seq(
-                RepeatUpTo(3, Dilate(), Preorder(Try(ConstantFold))),
+                RepeatUpTo(3, Dilate(), SaturatePreorder(ConstantFold)),
                 Any(Dilate(), Delay()),
             ),
         ),

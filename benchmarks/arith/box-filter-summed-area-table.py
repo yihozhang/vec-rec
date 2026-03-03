@@ -44,12 +44,12 @@ with with_types(Type.Arith, ElementType.Float):
         # print(pp(expr))
 
         transforms = Seq(
-            Preorder(Eliminate2DKernels()),
+            Preorder(Try(Eliminate2DKernels())),
             Preorder(Try(Dilate())),
             Preorder(Try(Dilate())),
             Preorder(Try(Dilate())),
             Any(Preorder(Try(Dilate())), Preorder(Try(Delay()))),
-            Repeat(5, Preorder(Try(ConstantFold))),
+            SaturatePreorder(ConstantFold),
             AnnotateLanes(256),
             PushDownConvertLanes()
         )

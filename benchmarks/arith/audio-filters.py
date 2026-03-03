@@ -40,9 +40,9 @@ def make_long_tap_schedule(n_dilations: int, n_delays: int) -> Transform:
     """Schedule for a single top-level Recurse (long-tap case)."""
     steps: list[Transform] = []
     for _ in range(n_dilations):
-        steps += [Dilate(), Preorder(Try(ConstantFold))]
+        steps += [Dilate(), SaturatePreorder(ConstantFold)]
     for _ in range(n_delays):
-        steps += [Delay(), Preorder(Try(ConstantFold))]
+        steps += [Delay(), SaturatePreorder(ConstantFold)]
     if not steps:
         return Seq(Noop(), AnnotateLanes(LANES), PushDownConvertLanes())
     return Seq(*steps, AnnotateLanes(LANES), PushDownConvertLanes())

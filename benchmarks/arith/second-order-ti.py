@@ -15,7 +15,7 @@ def main() -> None:
     transforms = Seq(
         Optional(
             Seq(
-                RepeatUpTo(3, Dilate(), Preorder(Try(ConstantFold))),
+                RepeatUpTo(3, Dilate(), SaturatePreorder(ConstantFold)),
                 Any(Dilate(), Delay()),
             ),
         ),
