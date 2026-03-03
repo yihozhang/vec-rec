@@ -37,6 +37,7 @@ __all__ = [
     "Any",
     "Preorder",
     "SaturatePreorder",
+    "SaturatePreorderUpTo",
     "Postorder",
     "AnnotateLanes",
     "PushDownConvertLanes",
@@ -469,6 +470,18 @@ class DilateTVWithSingleOddOrder(Transform):
                 return []
 
 
+def _dedup_exprs(results):
+    if len(results) < 10:
+        unique: list = []
+        for expr in results:
+            if not any(expr == u for u in unique):
+                unique.append(expr)
+    else:
+        # ChatGPT told me this preserves order compared to `unique = list(set(results))`
+        unique = list(dict.fromkeys(results))
+    return unique
+
+
 class Seq(Transform):
     def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
@@ -478,7 +491,9 @@ class Seq(Transform):
     def apply_generic(self, expr):
         results = [expr]
         for transform in self.transforms:
-            results = [next for res in results for next in transform.apply_generic(res)]
+            results = _dedup_exprs(
+                [next for res in results for next in transform.apply_generic(res)]
+            )
         return results
 
 
@@ -492,9 +507,9 @@ class Repeat(Transform):
     def apply_generic(self, expr):
         results = [expr]
         for _ in range(self.times):
-            results = [
-                next for res in results for next in self.transform.apply_generic(res)
-            ]
+            results = _dedup_exprs(
+                [next for res in results for next in self.transform.apply_generic(res)]
+            )
         return results
 
 
@@ -511,12 +526,25 @@ class RepeatUpTo(Transform):
             new_results = []
             for res in results[-1]:
                 new_results += self.transform.apply_generic(res)
+            new_results = _dedup_exprs(new_results)
             results.append(new_results)
-        return [s for res in results for s in res]
+        return _dedup_exprs([s for res in results for s in res])
 
 
-def Optional(transform: Transform) -> Transform:
-    return Any(Noop(), transform)
+class Optional(Transform):
+    """Apply a transform optionally, keeping the original expression if the transform doesn't produce it."""
+
+    def __init__(self, transform: Transform) -> None:
+        self.transform = transform
+        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
+
+    def apply_generic(self, expr):
+        results = self.transform.apply_generic(expr)
+        # Check if the original expression is already in the results
+        if any(expr == res for res in results):
+            return results
+        # Otherwise, prepend the original expression
+        return [expr] + list(results)
 
 
 class Try(Transform):
@@ -535,11 +563,12 @@ class Any(Transform):
         self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
     def apply_generic(self, expr):
-        return [
+        results = [
             next
             for transform in self.transforms
             for next in transform.apply_generic(expr)
         ]
+        return _dedup_exprs(results)
 
 
 ConstantFold = Any(
@@ -621,6 +650,12 @@ class Preorder(Transform):
         return results
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        def cartesian(constructor, lists, lanes):
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
+
         results: List[SignalExpr2D] = []
         for expr in self.transform.apply_generic(expr):
             match expr:
@@ -631,6 +666,12 @@ class Preorder(Transform):
                         new_expr = copy.copy(expr)
                         new_expr.a = new_a
                         results.append(new_expr)
+                case Recurse2D(_, _):
+                    results += cartesian(
+                        type(expr),
+                        [self.apply_generic(child) for child in expr.children()],
+                        expr.lanes,
+                    )
                 case _:
                     raise NotImplementedError(
                         "Preorder traversal of non-RVar2D, non-Var2D, non-Repeater SignalExpr2D not implemented"
@@ -705,7 +746,7 @@ class Postorder(Transform):
         return [e for result in results for e in self.transform.apply_kernel2d(result)]
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
-        def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr2D]:  # type: ignore
+        def cartesian(constructor, lists, lanes):
             return [
                 constructor(*args).with_lanes(lanes)
                 for args in itertools.product(*lists)
@@ -720,6 +761,13 @@ class Postorder(Transform):
                     new_expr = copy.copy(expr)
                     new_expr.a = new_a
                     results.append(new_expr)
+            case Recurse2D(_, _):
+                results = cartesian(
+                    type(expr),
+                    [self.apply_generic(child) for child in expr.children()],
+                    expr.lanes,
+                )
+                return results
             case _:
                 raise NotImplementedError(
                     "Postorder traversal of non-RVar2D, non-Var2D, non-Repeater SignalExpr2D not implemented"
@@ -737,7 +785,6 @@ class SaturatePreorder(Transform):
             self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
 
         def apply_generic(self, expr):
-            print("Trying", pp(expr))
             results = self.transform.apply_generic(expr)
             if len(results) > 0:
                 self.success = True
@@ -749,6 +796,7 @@ class SaturatePreorder(Transform):
         self.transform = transform
         self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
 
+    @typing.no_type_check
     def apply_generic(self, expr):
         worklist = [expr]
         results = []
@@ -757,10 +805,26 @@ class SaturatePreorder(Transform):
             try_ = self.TryWithTag(self.transform)
             rewritten = Preorder(try_).apply_generic(expr)
             if not try_.success:
+                assert len(rewritten) == 1
                 results.append(expr)
             else:
                 worklist.extend(rewritten)
-        return results
+        return _dedup_exprs(results)
+
+
+class SaturatePreorderUpTo(SaturatePreorder):
+    @typing.no_type_check
+    def apply_generic(self, expr):
+        worklist = [expr]
+        results = [expr]
+        while worklist:
+            expr = worklist.pop()
+            try_ = self.TryWithTag(self.transform)
+            rewritten = Preorder(try_).apply_generic(expr)
+            if try_.success:
+                results.extend(rewritten)
+                worklist.extend(rewritten)
+        return _dedup_exprs(results)
 
 
 class Eliminate2DKernels(Transform):
@@ -817,7 +881,7 @@ class Eliminate2DKernels(Transform):
                 expr.a.ty,
                 expr.a.element_type,
             )
-            return self.apply_signal2d(new_expr)
+            return [new_expr]
         else:
             return []
 
@@ -872,6 +936,8 @@ class AnnotateLanes(Transform):
                 return [expr.with_lanes(lanes)]
             case Var2D(name, n_rows):
                 return [expr.with_lanes(lanes)]
+            case Recurse2D(a, g):
+                raise NotImplementedError("Not implemented")
             case _:
                 raise NotImplementedError(
                     "Lane annotation for non-Repeater, non-RVar2D, non-Var2D SignalExpr2D not implemented"

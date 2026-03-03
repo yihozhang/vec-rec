@@ -4,25 +4,38 @@ from __future__ import annotations
 from typing import Sequence
 
 from vecrec.expr.base import (
-    RecLang, KernelExpr, KernelExpr2D, SignalExpr, SignalExpr2D,
+    RecLang,
+    KernelExpr,
+    KernelExpr2D,
+    SignalExpr,
+    SignalExpr2D,
 )
-from vecrec.expr.signal import Num, Impulse, Var, RVar2D
+from vecrec.expr.signal import Num, Impulse, Var, RVar2D, Var2D
 from vecrec.expr.signal_ops import (
-    SAdd, SSub, PointwiseMul, PointwiseDiv, SNeg,
-    Convolve, Convolve2D, Recurse, Recurse2D,
-    ConvertLanes, Repeater, Ith,
+    SAdd,
+    SSub,
+    PointwiseMul,
+    PointwiseDiv,
+    SNeg,
+    Convolve,
+    Convolve2D,
+    Recurse,
+    Recurse2D,
+    ConvertLanes,
+    Repeater,
+    Ith,
 )
 from vecrec.expr.kernel import TIKernel, TVKernel, TIKernel2D, TVKernel2D
 from vecrec.expr.kernel_ops import KAdd, KSub, KConvolve, KNeg, KConvertLanes
 
 # Precedence levels (higher binds tighter)
-_PREC_BINDER = 10     # μ (Repeater)
-_PREC_RECURSE = 20    # rec(...)
-_PREC_ADD = 30        # +, -
-_PREC_MUL = 40        # ×, ·, /
-_PREC_UNARY = 50      # unary -
-_PREC_INDEX = 60      # a[i]
-_PREC_ATOM = 100      # literals, variables, kernels
+_PREC_BINDER = 10  # μ (Repeater)
+_PREC_RECURSE = 20  # rec(...)
+_PREC_ADD = 30  # +, -
+_PREC_MUL = 40  # ×, ·, /
+_PREC_UNARY = 50  # unary -
+_PREC_INDEX = 60  # a[i]
+_PREC_ATOM = 100  # literals, variables, kernels
 
 
 def _prec(expr: RecLang) -> int:
@@ -74,9 +87,11 @@ def _fmt_num(v: float) -> str:
 def _fmt_kernel_row(row: list[float]) -> str:
     return ", ".join(_fmt_num(v) for v in row)
 
+
 def pps(exprs: Sequence[RecLang]) -> list[str]:
     """Pretty-print a list of IR expressions."""
     return [pp(expr) for expr in exprs]
+
 
 def pp(expr: RecLang) -> str:
     """Pretty-print an IR expression."""
@@ -94,6 +109,9 @@ def pp(expr: RecLang) -> str:
         case RVar2D(name=n):
             return n.lstrip("$")
 
+        case Var2D(name=n):
+            return n
+
         # --- Kernels ---
         case TIKernel():
             return f"[{_fmt_kernel_row(expr.data)}]"
@@ -103,15 +121,11 @@ def pp(expr: RecLang) -> str:
             return f"[{vals}]"
 
         case TIKernel2D():
-            rows = "; ".join(
-                _fmt_kernel_row(row) for row in expr.data
-            )
+            rows = "; ".join(_fmt_kernel_row(row) for row in expr.data)
             return f"[{rows}]"
 
         case TVKernel2D():
-            rows = "; ".join(
-                ", ".join(pp(v) for v in row) for row in expr.data
-            )
+            rows = "; ".join(", ".join(pp(v) for v in row) for row in expr.data)
             return f"[{rows}]"
 
         # --- Signal binary ops ---
@@ -121,7 +135,9 @@ def pp(expr: RecLang) -> str:
 
         case SSub(a, b):
             p = _PREC_ADD
-            return f"{_wrap(pp(a), _prec(a), p)} - {_wrap(pp(b), _prec(b), p, right=True)}"
+            return (
+                f"{_wrap(pp(a), _prec(a), p)} - {_wrap(pp(b), _prec(b), p, right=True)}"
+            )
 
         case PointwiseMul(a, b):
             p = _PREC_MUL
@@ -129,7 +145,9 @@ def pp(expr: RecLang) -> str:
 
         case PointwiseDiv(a, b):
             p = _PREC_MUL
-            return f"{_wrap(pp(a), _prec(a), p)} / {_wrap(pp(b), _prec(b), p, right=True)}"
+            return (
+                f"{_wrap(pp(a), _prec(a), p)} / {_wrap(pp(b), _prec(b), p, right=True)}"
+            )
 
         case SNeg(a):
             return f"-{_wrap(pp(a), _prec(a), _PREC_UNARY)}"
@@ -157,7 +175,9 @@ def pp(expr: RecLang) -> str:
 
         case KSub(a, b):
             p = _PREC_ADD
-            return f"{_wrap(pp(a), _prec(a), p)} - {_wrap(pp(b), _prec(b), p, right=True)}"
+            return (
+                f"{_wrap(pp(a), _prec(a), p)} - {_wrap(pp(b), _prec(b), p, right=True)}"
+            )
 
         case KConvolve(a, b):
             p = _PREC_MUL
