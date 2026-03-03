@@ -3,6 +3,7 @@ from functools import reduce
 import itertools
 import copy
 from typing import List, Sequence, Tuple, overload
+import typing
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D
@@ -255,10 +256,21 @@ class FuseRecurse(Transform):
 class Dilate(Transform):
     """Dilate an IIR"""
 
-    def op(self, k: TIKernel) -> Tuple[TIKernel, TIKernel]:
+    max_bits: int
+
+    def __init__(self, max_bits: int = 2**63):
+        self.max_bits = max_bits
+
+    def max_lanes(self, element_type: ElementType) -> int:
+        """Get the maximal number of lanes possible given the type"""
+        return self.max_bits // element_type.bit_width()
+
+    def op(self, k: TIKernel) -> typing.Optional[Tuple[TIKernel, TIKernel]]:
         assert k.ty == Type.Arith
+        max_stride = self.max_lanes(k.element_type)
+
         stride = 2
-        while True:
+        while stride < max_stride:
             even = [0.0] * len(k)
             even[0::stride] = k.data[0::stride]
             odd = [a - b for a, b in zip(k.data, even)]
@@ -273,11 +285,15 @@ class Dilate(Transform):
             f = TIKernel.i(Type.Arith, k.element_type) - even_k + odd_k
             i = -even_k * even_k + 2 * even_k + odd_k * odd_k
             return f, i
+        return None
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(a, g) if isinstance(a, TIKernel):
-                f, i = self.op(a)
+                result = self.op(a)
+                if not result:
+                    return []
+                f, i = result
                 return [Recurse(i, Convolve(f, g))]
             case _:
                 return []
@@ -456,33 +472,13 @@ class DilateTVWithSingleOddOrder(Transform):
 class Seq(Transform):
     def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
+        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        results: List[KernelExpr] = [expr]
+    @typing.no_type_check
+    def apply_generic(self, expr):
+        results = [expr]
         for transform in self.transforms:
-            results = [next for res in results for next in transform.apply_kernel(res)]
-        return results
-
-    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        results: List[SignalExpr] = [expr]
-        for transform in self.transforms:
-            results = [next for res in results for next in transform.apply_signal(res)]
-        return results
-
-    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
-        results: List[KernelExpr2D] = [expr]
-        for transform in self.transforms:
-            results = [
-                next for res in results for next in transform.apply_kernel2d(res)
-            ]
-        return results
-
-    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
-        results: List[SignalExpr2D] = [expr]
-        for transform in self.transforms:
-            results = [
-                next for res in results for next in transform.apply_signal2d(res)
-            ]
+            results = [next for res in results for next in transform.apply_generic(res)]
         return results
 
 
@@ -490,36 +486,14 @@ class Repeat(Transform):
     def __init__(self, times: int, *transforms: Transform) -> None:
         self.transform = Seq(*transforms)
         self.times = times
+        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        results: List[KernelExpr] = [expr]
+    @typing.no_type_check
+    def apply_generic(self, expr):
+        results = [expr]
         for _ in range(self.times):
             results = [
-                next for res in results for next in self.transform.apply_kernel(res)
-            ]
-        return results
-
-    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        results: List[SignalExpr] = [expr]
-        for _ in range(self.times):
-            results = [
-                next for res in results for next in self.transform.apply_signal(res)
-            ]
-        return results
-
-    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
-        results: List[KernelExpr2D] = [expr]
-        for _ in range(self.times):
-            results = [
-                next for res in results for next in self.transform.apply_kernel2d(res)
-            ]
-        return results
-
-    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
-        results: List[SignalExpr2D] = [expr]
-        for _ in range(self.times):
-            results = [
-                next for res in results for next in self.transform.apply_signal2d(res)
+                next for res in results for next in self.transform.apply_generic(res)
             ]
         return results
 
@@ -528,40 +502,15 @@ class RepeatUpTo(Transform):
     def __init__(self, max_times: int, *transforms: Transform) -> None:
         self.transform = Seq(*transforms)
         self.max_times = max_times
+        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
-        results: List[List[KernelExpr]] = [[expr]]
+    @typing.no_type_check
+    def apply_generic(self, expr):
+        results = [[expr]]
         for _ in range(self.max_times):
-            new_results: List[KernelExpr] = []
+            new_results = []
             for res in results[-1]:
-                new_results += self.transform.apply_kernel(res)
-            results.append(new_results)
-        return [s for res in results for s in res]
-
-    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        results: List[List[SignalExpr]] = [[expr]]
-        for _ in range(self.max_times):
-            new_results: List[SignalExpr] = []
-            for res in results[-1]:
-                new_results += self.transform.apply_signal(res)
-            results.append(new_results)
-        return [s for res in results for s in res]
-
-    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
-        results: List[List[KernelExpr2D]] = [[expr]]
-        for _ in range(self.max_times):
-            new_results: List[KernelExpr2D] = []
-            for res in results[-1]:
-                new_results += self.transform.apply_kernel2d(res)
-            results.append(new_results)
-        return [s for res in results for s in res]
-
-    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
-        results: List[List[SignalExpr2D]] = [[expr]]
-        for _ in range(self.max_times):
-            new_results: List[SignalExpr2D] = []
-            for res in results[-1]:
-                new_results += self.transform.apply_signal2d(res)
+                new_results += self.transform.apply_generic(res)
             results.append(new_results)
         return [s for res in results for s in res]
 
@@ -583,33 +532,13 @@ class Try(Transform):
 class Any(Transform):
     def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
+        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+    def apply_generic(self, expr):
         return [
             next
             for transform in self.transforms
-            for next in transform.apply_kernel(expr)
-        ]
-
-    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        return [
-            next
-            for transform in self.transforms
-            for next in transform.apply_signal(expr)
-        ]
-
-    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
-        return [
-            next
-            for transform in self.transforms
-            for next in transform.apply_kernel2d(expr)
-        ]
-
-    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
-        return [
-            next
-            for transform in self.transforms
-            for next in transform.apply_signal2d(expr)
+            for next in transform.apply_generic(expr)
         ]
 
 
@@ -808,6 +737,7 @@ class SaturatePreorder(Transform):
             self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
 
         def apply_generic(self, expr):
+            print("Trying", pp(expr))
             results = self.transform.apply_generic(expr)
             if len(results) > 0:
                 self.success = True
@@ -1104,24 +1034,3 @@ class PushDownConvertLanesImpl(Transform):
 
 def PushDownConvertLanes() -> Transform:
     return Postorder(PushDownConvertLanesImpl())
-
-
-# class UnrollToMaxLanes(Transform):
-#     def __init__(self, max_bits: int) -> None:
-#         self.max_bits = max_bits
-
-#     def max_lanes(self, element_type: ElementType) -> int:
-#         """Get the maximal number of lanes possible given the type"""
-#         return self.max_bits // element_type.bit_width()
-
-#     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-#         assert expr.lanes is not None
-#         # TODO: ElementType.Float should be obtained from expr, not made up.
-#         max_lanes = self.max_lanes(ElementType.Float)
-#         assert expr.lanes <= max_lanes
-#         if expr.lanes < max_lanes:
-#             new_expr = ConvertLanes(expr)
-#             new_expr.lanes = max_lanes
-#             return [new_expr]
-#         else:
-#             return [expr]

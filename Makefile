@@ -2,4 +2,4 @@ check:
 	uv run mypy src tests benchmarks --check-untyped-defs
 
 test:
-	uv run pytest -v tests
+	uv run pytest -n auto -v tests
