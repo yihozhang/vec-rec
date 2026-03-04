@@ -572,6 +572,18 @@ def _generate_benchmark_code(
     benchmark_text += f"    const int warmup = {warmup_iterations};\n"
     benchmark_text += f"    const int iterations = {benchmark_iterations};\n\n"
 
+    bytes_per_element_terms = [
+        f"sizeof({elt_type.to_str()})"
+        for _, elt_type in sorted(all_vars.items()) + sorted(all_vars2d.items())
+    ]
+    bytes_per_element_terms.append(f"sizeof({output_type.to_str()})")
+    bytes_per_iteration_expr = " + ".join(bytes_per_element_terms)
+    benchmark_text += (
+        "    const double bytes_per_iteration = "
+        f"static_cast<double>(N) * static_cast<double>({bytes_per_iteration_expr});\n"
+    )
+    benchmark_text += "\n"
+
     # Generate input data initialization
     benchmark_text += "    // Initialize input data\n"
     benchmark_text += "    std::random_device rd;\n"
@@ -677,14 +689,22 @@ def _generate_benchmark_code(
             "        auto end = std::chrono::high_resolution_clock::now();\n"
         )
         benchmark_text += "        \n"
-        benchmark_text += "        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
+        benchmark_text += "        // XOR sum to prevent optimization of output array\n"
+        benchmark_text += f"        uint64_t xor_sum = 0;\n"
+        benchmark_text += f"        for (int i = 0; i < N; i++) {{\n"
+        benchmark_text += f"            xor_sum ^= static_cast<uint64_t>(output_{name}[i]);\n"
+        benchmark_text += f"        }}\n"
+        benchmark_text += f"        volatile uint64_t xor_result_{name} = xor_sum;  // Prevent optimization\n"
+        benchmark_text += "        \n"
+        benchmark_text += "        const double elapsed_seconds = std::chrono::duration<double>(end - start).count();\n"
+        benchmark_text += "        const double throughput_gbps = (bytes_per_iteration * static_cast<double>(iterations)) / elapsed_seconds / 1e6;\n"
         # Deciding if we need to generate the trailing comma
         if i == len(kernel_names) - 1 and not (
             include_correctness_check and len(kernel_names) > 1
         ):
-            benchmark_text += f'        std::cout << "  \\"{name}\\": " << duration / static_cast<double>(iterations) << "\\n";\n'
+            benchmark_text += f'        std::cout << "  \\"{name}\\": " << throughput_gbps << "\\n";\n'
         else:
-            benchmark_text += f'        std::cout << "  \\"{name}\\": " << duration / static_cast<double>(iterations) << ",\\n";\n'
+            benchmark_text += f'        std::cout << "  \\"{name}\\": " << throughput_gbps << ",\\n";\n'
         benchmark_text += "    }\n\n"
 
     # Add correctness checking if requested

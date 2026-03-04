@@ -43,6 +43,7 @@ __all__ = [
     "AnnotateLanes",
     "PushDownConvertLanes",
     "Eliminate2DKernels",
+    "DebugPrint",
 ]
 
 
@@ -272,7 +273,7 @@ class Dilate(Transform):
         max_stride = self.max_lanes(k.element_type)
 
         stride = 2
-        while stride < max_stride:
+        while stride <= max_stride:
             even = [0.0] * len(k)
             even[0::stride] = k.data[0::stride]
             odd = [a - b for a, b in zip(k.data, even)]
@@ -393,7 +394,8 @@ class Factorize(Transform):
                 factors: Sequence[KernelExpr] = factorize_polynomial(
                     a, kernel.element_type
                 )
-                assert len(factors) > 0
+                if len(factors) == 0:
+                    return []
                 # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
                 e = reduce(lambda acc, factor: Convolve(factor, acc), factors, g)
                 return [e]
@@ -1124,3 +1126,11 @@ class PushDownConvertLanesImpl(Transform):
 
 def PushDownConvertLanes() -> Transform:
     return Postorder(PushDownConvertLanesImpl())
+
+class DebugPrint(Transform):
+    def __init__(self) -> None:
+        self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
+
+    def apply_generic(self, expr):
+        print(pp(expr))
+        return [expr]

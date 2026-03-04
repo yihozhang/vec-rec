@@ -41,4 +41,4 @@ When writing test, make sure to run the generated code using e.g., `generate_and
 * `uv run mypy src`
 * `uv run mypy tests`
 * `uv run mypy benchmarks`
-* `uv run pytest`
+* `uv run pytest -n auto tests`

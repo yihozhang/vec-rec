@@ -5,7 +5,7 @@
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D
-from vecrec.transform import *
+from vecrec.optimize import get_candidate_schedules
 from vecrec.util import *
 
 
@@ -38,28 +38,10 @@ def box_filter_optimized(input_signal: SignalExpr2D, D: int) -> SignalExpr:
 with with_types(Type.Arith, ElementType.Float):
     for D in [3, 5, 7, 9, 11, 13, 15]:
         print(f"D = {D}")
-        # expr = box_filter_naive(Var("g"), D)
         expr = box_filter_optimized(Var2D("g", D), D)
 
-        # print(pp(expr))
-
-        transforms = Seq(
-            Preorder(Try(Eliminate2DKernels())),
-            Preorder(Try(Dilate())),
-            Preorder(Try(Dilate())),
-            Preorder(Try(Dilate())),
-            Any(Preorder(Try(Dilate())), Preorder(Try(Delay()))),
-            SaturatePreorder(ConstantFold),
-            AnnotateLanes(256),
-            PushDownConvertLanes()
-        )
-
-        results = transforms.apply_generic(expr)
+        results = get_candidate_schedules(expr, 256)
 
         benchmark_result = generate_and_run_benchmark(
             CodeGen(cache_cse=True), results, True
-        )
-
-        benchmark_result = generate_and_run_benchmark(
-            CodeGen(cache_cse=False), results, True
         )

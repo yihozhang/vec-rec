@@ -22,7 +22,8 @@ def get_optimizing_schedule(max_bits: int) -> Transform:
             Seq(
                 SaturatePreorderUpTo(Dilate(max_bits // 2)),
                 SaturatePreorder(ConstantFold),
-                Any(Dilate(), Delay()),
+                Preorder(Try(Any(Dilate(), Delay()))),
+                SaturatePreorder(ConstantFold),
             )
         ),
 

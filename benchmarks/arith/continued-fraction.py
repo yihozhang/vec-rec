@@ -18,12 +18,12 @@
 import numpy as np
 
 from vecrec.expr import *
-from vecrec.transform import *
 from vecrec.codegen import (
     CodeGen,
     generate_and_run_benchmark,
     generate_kernel_executable,
 )
+from vecrec.optimize import get_candidate_schedules
 from vecrec.util import ElementType
 
 
@@ -51,12 +51,7 @@ def main() -> None:
         delayed_h = Convolve(TIKernel.z(), h)
         program = PointwiseDiv(h, delayed_h)
 
-    transforms = Seq(
-        SaturatePreorder(ConstantFold),
-        AnnotateLanes(512),
-        PushDownConvertLanes(),
-    )
-    results = transforms.apply_signal(program)
+    results = get_candidate_schedules(program, lanes)
     codegen = CodeGen(True)
     generate_and_run_benchmark(codegen, results[1:], True)
 
