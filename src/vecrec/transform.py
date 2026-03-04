@@ -29,6 +29,7 @@ __all__ = [
     "ComposeRecurse",
     "Factorize",
     "DilateTVWithSingleOddOrder",
+    "PushConvolveBelowRecurse",
     "Seq",
     "Repeat",
     "RepeatUpTo",
@@ -466,6 +467,29 @@ class DilateTVWithSingleOddOrder(Transform):
                 else:
                     return []
 
+            case _:
+                return []
+
+
+class PushConvolveBelowRecurse(Transform):
+    """Push Convolve below Recurse, since they commute.
+
+    Convolve(h, Recurse(a, g)) = Recurse(a, Convolve(h, g))
+
+    Both Convolve (FIR) and Recurse (IIR) are LTI operations, so their order
+    can be swapped: h * (g / (I - a)) = (h * g) / (I - a).
+    """
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Convolve(h, Recurse(a, g)):
+                return [Recurse(a, Convolve(h, g))]
+            case Convolve2D(h, Recurse2D(a, g)):
+                # It seems both ways make sense.
+                # Doing a recurse first allow convolution to reuse the materialization
+                # Ask: Why do we want to push down convolution?
+                raise NotImplementedError()
+                # return [Recurse2D(a, Convolve2D(h, g))]
             case _:
                 return []
 

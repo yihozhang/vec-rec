@@ -5,13 +5,19 @@ from vecrec.transform import *
 
 
 def get_optimizing_schedule(max_bits: int) -> Transform:
+    # fmt: off
     return Seq(
+        SaturatePreorder(PushConvolveBelowRecurse()),
+        
         Preorder(Try(Eliminate2DKernels())),
         SaturatePreorder(ConstantFold),
+
         Optional(Preorder(Try(Factorize()))),
         SaturatePreorder(ConstantFold),
+
         Optional(Preorder(Try(FuseRecurse()))),
         SaturatePreorder(ConstantFold),
+
         Optional(
             Seq(
                 SaturatePreorderUpTo(Dilate(max_bits // 2)),
@@ -19,6 +25,7 @@ def get_optimizing_schedule(max_bits: int) -> Transform:
                 Any(Dilate(), Delay()),
             )
         ),
+
         AnnotateLanes(max_bits),
         PushDownConvertLanes(),
     )
