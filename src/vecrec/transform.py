@@ -25,6 +25,7 @@ __all__ = [
     "FuseRecurse",
     "Dilate",
     "DilateTrop",
+    "DelayTrop",
     "Delay",
     "ComposeRecurse",
     "Factorize",
@@ -337,7 +338,38 @@ class DilateTrop(Transform):
 
 
 # TODO: dilation for 2D IIRs
-# TODO: delay for tropical IIRs
+
+
+class DelayTrop(Transform):
+    """Delay a tropical IIR by eliminating the leading feedback tap via substitution.
+
+    Given Recurse(a, g) where a has leading nonzero tap v at position p:
+      y(n) = max(v + y(n-p), rest, g(n))
+    Substitute the recurrence for y(n-p) to get a new recurrence whose leading
+    tap is at position >= 2p, doubling the dependency gap.
+    """
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Recurse(a, g) if isinstance(a, TIKernel):
+                assert a.ty == Type.TropMax or a.ty == Type.TropMin
+                Z = a.ty.zero()
+                pos, val = next(
+                    ((i, v) for i, v in enumerate(a.data) if not a.ty.is_zero(v)),
+                    (len(a), Z),
+                )
+                if a.ty.is_zero(val):
+                    return []
+                coeff_data = [Z] * (pos + 1)
+                coeff_data[pos] = val
+                coeff = TIKernel(coeff_data, a.ty, a.element_type)
+                a_no_lead = a.copy()
+                a_no_lead.data[pos] = Z
+                new_a = a_no_lead + coeff * a
+                f = TIKernel.i(a.ty, a.element_type) + coeff
+                return [Recurse(new_a, Convolve(f, g))]
+            case _:
+                return []
 
 
 @ArithTransform
