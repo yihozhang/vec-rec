@@ -2,7 +2,9 @@
 # An 11x11 box filter is computed using the SAT with the inclusion-exclusion principle:
 #   box[r][c] = (SAT[r][c] - SAT[r-11][c] - SAT[r][c-11] + SAT[r-11][c-11]) / 121
 
-from vecrec.codegen import CodeGen, generate_and_run_benchmark
+import numpy as np
+
+from vecrec.codegen import *
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D
 from vecrec.optimize import get_candidate_schedules
@@ -24,10 +26,12 @@ def box_filter_naive(input_signal: SignalExpr, D: int) -> SignalExpr:
 
 def box_filter_optimized(input_signal: SignalExpr2D, D: int) -> SignalExpr:
     with with_types(Type.Arith, ElementType.Float):
-        kernel_x = [1.0] + [0.0] * (D - 2) + [-1.0]
-        kernel_y = [[1.0], [0.0] * (D - 2) + [-1.0]]
-        fir_y = Convolve2D(TIKernel2D(kernel_y), input_signal)
-        fir = Convolve(TIKernel(kernel_x), fir_y)
+        # Full 2D difference kernel: A = [1,0,...,-1]^T ⊗ [1,0,...,-1] (rank-1).
+        # Factorize2D will automatically split this into separate row and column passes.
+        kernel = [[0.0] * D for _ in range(D)]
+        kernel[0][0] = kernel[D - 1][D - 1] = 1.0
+        kernel[D - 1][0] = kernel[0][D - 1] = -1.0
+        fir = Convolve2D(TIKernel2D(kernel), input_signal)
 
         sat_kernel = TIKernel2D([[0.0, 1.0], [1.0]])
         iir = Recurse2D(sat_kernel, fir).at(0)

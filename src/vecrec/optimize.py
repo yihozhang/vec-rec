@@ -7,6 +7,9 @@ from vecrec.transform import *
 def get_optimizing_schedule(max_bits: int) -> Transform:
     # fmt: off
     return Seq(
+        Optional(Preorder(Try(Factorize2D()))),
+        SaturatePreorder(ConstantFold),
+
         SaturatePreorder(PushConvolveBelowRecurse()),
         
         Preorder(Try(Eliminate2DKernels())),

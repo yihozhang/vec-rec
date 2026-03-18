@@ -1,10 +1,11 @@
 import numpy as np
 from vecrec.expr import TIKernel, Type
+from vecrec.expr.kernel import TIKernel2D
 from vecrec.util import ElementType
-from typing import List
+from typing import List, Optional, Tuple
 import numpy.typing as npt
 
-__all__ = ["factorize_polynomial"]
+__all__ = ["factorize_polynomial", "factorize_kernel2d"]
 
 
 def factorize_polynomial(
@@ -91,12 +92,67 @@ def factorize_polynomial(
     first_order = sorted(first_order)
     second_order = sorted(second_order)
 
-    # Adjust for leading coefficient
-    # We need to distribute the leading coefficient among the factors
+    # Adjust for leading coefficient by scaling all coefficients of one factor.
+    # Only multiplying factor[0] is wrong: [1,1]*c → [c,1] but we need [c,c].
     if len(first_order) > 0:
-        first_order[-1][0] *= leading_coef
+        first_order[-1] = [c * leading_coef for c in first_order[-1]]
     elif len(second_order) > 0:
-        second_order[-1][0] *= leading_coef
+        second_order[-1] = [c * leading_coef for c in second_order[-1]]
 
     return [TIKernel(f, Type.Arith, element_type) for f in first_order] + [TIKernel(f, Type.Arith, element_type) for f in second_order]
 
+
+def factorize_kernel2d(
+    kernel: TIKernel2D,
+    tolerance: float = 1e-10,
+) -> Optional[Tuple[TIKernel, TIKernel2D]]:
+    """
+    Try to factorize a 2D TI kernel into separable 1D kernels.
+
+    A 2D kernel A is separable (rank-1) when its coefficient matrix can be written
+    as an outer product: A[r][c] = col_vec[r] * row_vec[c]. This is detected via SVD.
+
+    If separable, returns (row_kernel, col_kernel_2d) where:
+    - row_kernel = TIKernel(row_vec)  -- applies along the column (horizontal) axis
+    - col_kernel_2d = TIKernel2D([[col_vec[0]], [col_vec[1]], ...])  -- single-column 2D kernel
+
+    So Convolve2D(A, S) == Convolve(row_kernel, Convolve2D(col_kernel_2d, S)).
+
+    Returns None if the kernel is not separable within tolerance.
+    """
+    n_rows = kernel.n_rows()
+    if n_rows == 0:
+        return None
+
+    n_cols = max((len(row) for row in kernel.data), default=0)
+    if n_cols == 0:
+        return None
+
+    # Build the dense coefficient matrix
+    A = np.zeros((n_rows, n_cols))
+    for r, row in enumerate(kernel.data):
+        for c, v in enumerate(row):
+            A[r, c] = v
+
+    # SVD-based rank-1 check
+    U, s_vals, Vt = np.linalg.svd(A, full_matrices=False)
+
+    if len(s_vals) == 0 or abs(s_vals[0]) < tolerance:
+        return None
+
+    # Rank-1: all singular values except the first must be negligible
+    if len(s_vals) >= 2 and abs(s_vals[1]) > tolerance * abs(s_vals[0]):
+        return None
+
+    col_vec = (U[:, 0] * s_vals[0]).tolist()
+    row_vec = Vt[0, :].tolist()
+
+    # Verify reconstruction error
+    reconstructed = np.outer(col_vec, row_vec)
+    scale = max(float(np.max(np.abs(A))), 1.0)
+    if float(np.max(np.abs(A - reconstructed))) > tolerance * scale:
+        return None
+
+    row_kernel = TIKernel(row_vec, kernel.ty, kernel.element_type)
+    col_kernel_2d = TIKernel2D([[v] for v in col_vec], kernel.ty, kernel.element_type)
+    return row_kernel, col_kernel_2d

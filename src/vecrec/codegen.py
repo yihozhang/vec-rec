@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 from importlib.resources import files
 
+__all__ = ["CodeGen", "generate_benchmark", "instantiate_kernels", "generate_kernel_executable", "generate_and_run_benchmark"]
+
 TEMPLATE = files("vecrec.templates") / "common.h"
 
 

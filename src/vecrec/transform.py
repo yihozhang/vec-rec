@@ -10,7 +10,7 @@ from vecrec.expr.base import KernelExpr2D, SignalExpr2D
 from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
-from vecrec.factorize import factorize_polynomial
+from vecrec.factorize import factorize_polynomial, factorize_kernel2d
 from vecrec.util import ElementType
 
 
@@ -28,6 +28,7 @@ __all__ = [
     "Delay",
     "ComposeRecurse",
     "Factorize",
+    "Factorize2D",
     "DilateTVWithSingleOddOrder",
     "PushConvolveBelowRecurse",
     "Seq",
@@ -391,6 +392,8 @@ class Factorize(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Convolve(TIKernel(a) as kernel, g):
+                if len(a) < 2:
+                    return []  # Constant kernel, nothing to factorize
                 factors: Sequence[KernelExpr] = factorize_polynomial(
                     a, kernel.element_type
                 )
@@ -399,6 +402,35 @@ class Factorize(Transform):
                 # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
                 e = reduce(lambda acc, factor: Convolve(factor, acc), factors, g)
                 return [e]
+            case _:
+                return []
+
+
+@ArithTransform
+class Factorize2D(Transform):
+    """Factorize a separable 2D TIKernel into row and column 1D kernels.
+
+    If the coefficient matrix of TIKernel2D has rank 1, it can be written as
+    an outer product: A[r][c] = col_vec[r] * row_vec[c].  In that case:
+        Convolve2D(A, S) → Convolve(row_kernel, Convolve2D(col_kernel_2d, S))
+    where col_kernel_2d is a single-column 2D kernel.  This splits a 2D
+    convolution into two independent 1D passes, reducing complexity from
+    O(rows * cols) to O(rows + cols) per output sample.
+    """
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Convolve2D(TIKernel2D(_) as kernel, s):
+                # Skip single-column kernels: already in factored form; factorizing
+                # them again would create an infinite preorder-traversal loop.
+                n_cols = max((len(row) for row in kernel.data), default=0)
+                if n_cols <= 1:
+                    return []
+                result = factorize_kernel2d(kernel)
+                if result is None:
+                    return []
+                row_kernel, col_kernel_2d = result
+                return [Convolve(row_kernel, Convolve2D(col_kernel_2d, s))]
             case _:
                 return []
 
