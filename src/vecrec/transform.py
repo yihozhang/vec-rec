@@ -811,6 +811,8 @@ class Postorder(Transform):
                 results = [expr]
             case Ith(e, i):
                 results = [Ith(new_e, i).with_lanes(expr.lanes) for new_e in self.apply_signal2d(e)]
+            case VectorAt(a, i):
+                results = [VectorAt(new_vec_a, i).with_lanes(expr.lanes) for new_vec_a in self.apply_generic(a)]
             case _:
                 results = cartesian(
                     type(expr),
@@ -1070,8 +1072,8 @@ class AnnotateLanes(Transform):
             else:
                 return e
 
-        if isinstance(e, KernelMatrixExpr | KernelExpr):
-            raise NotImplementedError("Lane annotation for kernel expressions not implemented")
+        if isinstance(e, KernelMatrixExpr | SignalVectorExpr):
+            raise NotImplementedError("Lane annotation for mutual recurrences not implemented")
 
         if e.lanes != lanes:
             new_expr = ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
