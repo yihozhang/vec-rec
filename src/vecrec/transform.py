@@ -6,10 +6,12 @@ from typing import List, Sequence, Tuple, overload
 import typing
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
-from vecrec.expr.base import KernelExpr2D, SignalExpr2D
+from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr
 from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
+from vecrec.expr.signal_vec import VectorAt, RecurseV, ConvolveV, SignalVector
+from vecrec.expr.kernel_matrix import KernelMatrix
 from vecrec.factorize import factorize_polynomial, factorize_kernel2d
 from vecrec.util import ElementType
 
@@ -60,6 +62,10 @@ class Transform:
     def apply_generic(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]: ...
     @overload
     def apply_generic(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]: ...
+    @overload
+    def apply_generic(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]: ...
+    @overload
+    def apply_generic(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]: ...
 
     def apply_generic(self, expr):
         if isinstance(expr, KernelExpr):
@@ -70,6 +76,9 @@ class Transform:
             return self.apply_kernel2d(expr)
         elif isinstance(expr, SignalExpr2D):
             return self.apply_signal2d(expr)
+        elif isinstance(expr, (KernelMatrixExpr, SignalVectorExpr)):
+            # Transforms do not yet handle vector/matrix expressions; pass through unchanged.
+            return [expr]
         else:
             raise TypeError(f"Unknown expression type: {type(expr)}")
 
@@ -716,6 +725,10 @@ class Preorder(Transform):
                         new_expr = copy.copy(expr)
                         new_expr.a = new_a
                         results.append(new_expr)
+                case VectorAt(a, i):
+                    # Special handling for VectorAt to preserve the integer index
+                    for new_vec_a in self.apply_generic(a):
+                        results.append(VectorAt(new_vec_a, i).with_lanes(expr.lanes))
                 case _:
                     results += cartesian(
                         type(expr),
@@ -1043,6 +1056,10 @@ class AnnotateLanes(Transform):
     def convert_lanes(self, e: KernelExpr, lanes: int) -> KernelExpr: ...
     @overload
     def convert_lanes(self, e: SignalExpr2D, lanes: int) -> SignalExpr2D: ...
+    @overload
+    def convert_lanes(self, e: KernelMatrixExpr, lanes: int) -> KernelMatrixExpr: ...
+    @overload
+    def convert_lanes(self, e: SignalVectorExpr, lanes: int) -> SignalVectorExpr: ...
 
     def convert_lanes(self, e, lanes):
         if isinstance(e, SignalExpr2D):
@@ -1053,12 +1070,55 @@ class AnnotateLanes(Transform):
             else:
                 return e
 
+        if isinstance(e, KernelMatrixExpr | KernelExpr):
+            raise NotImplementedError("Lane annotation for kernel expressions not implemented")
+
         if e.lanes != lanes:
             new_expr = ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
             new_expr.lanes = lanes
             return new_expr
         else:
             return e
+
+    def _annotate_signal_vector(self, expr: SignalVectorExpr, lanes: int) -> SignalVectorExpr:
+        """Propagate lane annotations into a SignalVectorExpr and its children."""
+        if isinstance(expr, RecurseV):
+            assert isinstance(expr.a, KernelMatrix)
+            assert isinstance(expr.g, SignalVector)
+            new_kernel_rows = []
+            for row in expr.a.data:
+                new_row = [self.convert_lanes(self.apply_kernel(k)[0], lanes) for k in row]
+                new_kernel_rows.append(new_row)
+            new_km = KernelMatrix(new_kernel_rows)
+            new_km.lanes = lanes
+            new_signals = [self.convert_lanes(self.apply_signal(s)[0], lanes) for s in expr.g.data]
+            new_sv: SignalVector = SignalVector(new_signals)
+            new_sv.lanes = lanes
+            new_rv: SignalVectorExpr = RecurseV(new_km, new_sv)
+            new_rv.lanes = lanes
+            return new_rv
+        elif isinstance(expr, ConvolveV):
+            assert isinstance(expr.a, KernelMatrix)
+            assert isinstance(expr.b, SignalVector)
+            new_kernel_rows = []
+            for row in expr.a.data:
+                new_row = [self.convert_lanes(self.apply_kernel(k)[0], lanes) for k in row]
+                new_kernel_rows.append(new_row)
+            new_km = KernelMatrix(new_kernel_rows)
+            new_km.lanes = lanes
+            new_signals = [self.convert_lanes(self.apply_signal(s)[0], lanes) for s in expr.b.data]
+            new_sv = SignalVector(new_signals)
+            new_sv.lanes = lanes
+            new_cv: SignalVectorExpr = ConvolveV(new_km, new_sv)
+            new_cv.lanes = lanes
+            return new_cv
+        elif isinstance(expr, SignalVector):
+            new_signals = [self.convert_lanes(self.apply_signal(s)[0], lanes) for s in expr.data]
+            new_sv = SignalVector(new_signals)
+            new_sv.lanes = lanes
+            return new_sv
+        else:
+            return expr.with_lanes(lanes)
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         """Handle signal expressions that involve 2D data (Repeater, Convolve2D)."""
@@ -1091,10 +1151,17 @@ class AnnotateLanes(Transform):
 
         if isinstance(expr, Ith):
             lanes = self.max_lanes(element_type)
-            new_a = self.convert_lanes(self.apply_generic(expr.a)[0], lanes)
-            new_ith_expr = Ith(new_a, expr.i)
+            ith_inner = self.convert_lanes(self.apply_generic(expr.a)[0], lanes)
+            new_ith_expr = Ith(ith_inner, expr.i)
             new_ith_expr.lanes = lanes
             return [new_ith_expr]
+
+        if isinstance(expr, VectorAt):
+            lanes = self.max_lanes(element_type)
+            vec_inner = self._annotate_signal_vector(expr.a, lanes)
+            new_vec_at = VectorAt(vec_inner, expr.i)
+            new_vec_at.lanes = lanes
+            return [new_vec_at]
 
         match expr:
             case Recurse(a, g):

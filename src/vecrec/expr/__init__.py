@@ -3,6 +3,8 @@ from .kernel import *
 from .kernel_ops import *
 from .signal import *
 from .signal_ops import *
+from .kernel_matrix import *
+from .signal_vec import *
 from .pretty import pp, pps
 
 __all__ = [
@@ -39,6 +41,14 @@ __all__ = [
     "KConvertLanes",
     "Repeater",
     "Ith",
+    # Vector/matrix extensions
+    "KernelMatrixExpr",
+    "SignalVectorExpr",
+    "KernelMatrix",
+    "SignalVector",
+    "ConvolveV",
+    "RecurseV",
+    "VectorAt",
     "pp",
     "pps",
 ]
