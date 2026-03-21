@@ -13,7 +13,7 @@ from vecrec.expr.signal_ops import Convolve, Ith, Recurse, Repeater, SAdd
 from vecrec.expr.kernel import TIKernel
 from vecrec.util import ElementType
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
-from vecrec.transform import AnnotateLanes, PushDownConvertLanes
+from vecrec.transform import AnnotateLanes, InferNRows, PushDownConvertLanes
 
 
 def test_repeater_recurse_lane_mismatch() -> None:
@@ -34,10 +34,11 @@ def test_repeater_recurse_lane_mismatch() -> None:
             prev_row = Ith(rvar, 0)
             return Recurse(feedback_kernel, SAdd(g, Convolve(row_kernel, prev_row)))
 
-        repeater = Repeater(make_inner, n_rows=2)
+        repeater = Repeater(make_inner)
 
     expr: SignalExpr
     expr = Ith(repeater, 0)
+    expr = InferNRows().apply_generic(expr)[0]
     expr = AnnotateLanes(512).apply_generic(expr)[0]
     expr = PushDownConvertLanes().apply_generic(expr)[0]
     print(pp(expr))
@@ -53,10 +54,11 @@ def test_repeater_recurse_lane_mismatch2() -> None:
             prev_row = Ith(rvar, 0)
             return Recurse(feedback_kernel, prev_row)
 
-        repeater = Repeater(make_inner, n_rows=2)
+        repeater = Repeater(make_inner)
 
     expr: SignalExpr
     expr = Ith(repeater, 0)
+    expr = InferNRows().apply_generic(expr)[0]
     expr = AnnotateLanes(512).apply_generic(expr)[0]
     expr = PushDownConvertLanes().apply_generic(expr)[0]
     print(pp(expr))

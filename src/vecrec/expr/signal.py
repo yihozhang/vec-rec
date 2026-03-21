@@ -54,13 +54,14 @@ class RVar2D(SignalExpr2D):
 
 @dataclass(unsafe_hash=True)
 class Var2D(SignalExpr2D):
-    """A user-provided 2D input array. Exposes n_rows consecutive rows simultaneously."""
+    """A user-provided 2D input array. Exposes n_rows consecutive rows simultaneously.
+    n_rows is inferred by InferNRows from Ith usages; do not set manually."""
     name: str
-    n_rows: int
+    n_rows: Optional[int]
     __match_args__ = ("name", "n_rows")
 
-    def __init__(self, name: str, n_rows: int, ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> None:
+    def __init__(self, name: str, ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> None:
         resolved_ty, resolved_et = _resolve_types(ty, element_type)
         super().__init__(resolved_ty, resolved_et)
         self.name = name
-        self.n_rows = n_rows
+        self.n_rows = None

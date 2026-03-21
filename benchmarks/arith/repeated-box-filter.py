@@ -7,40 +7,43 @@ from vecrec.expr.base import SignalExpr2D
 from vecrec.optimize import get_candidate_schedules
 from vecrec.util import *
 
+
 def next_power_of_2(x: int) -> int:
     return 1 if x == 0 else 2 ** (x - 1).bit_length()
 
 
-def diff_kernel(D: int) -> list[list[float]]:
+def diff_kernel(D: int) -> TIKernel2D:
     kernel = [[0.0] * D for i in range(D)]
     kernel[0][0] = kernel[D - 1][D - 1] = 1.0
     kernel[D - 1][0] = kernel[0][D - 1] = -1.0
-    return kernel
+    return TIKernel2D(kernel)
 
 
-def naive_box_filter(input_signal: SignalExpr, D: int) -> SignalExpr:
+def naive_box_filter(input_signal: SignalExpr2D, D: int) -> SignalExpr:
     kernel = diff_kernel(D)
 
-    def box_filter_sat(input_signal: SignalExpr, D: int) -> SignalExpr:
+    def box_filter_sat(input_signal: SignalExpr2D, D: int) -> SignalExpr2D:
         with with_types(Type.Arith, ElementType.Float):
-            sat = Repeater(
-                lambda f1: Recurse(TIKernel.z(), SAdd(f1.at(0), input_signal)),
-                next_power_of_2(D + 1),
+            df = Convolve2D(kernel, input_signal)
+            df2 = PointwiseDiv(df, Num(float(D * D)))
+            sat = Recurse2D(
+                TIKernel2D([[0.0, 1.0], [1.0, -1.0]]),
+                df2,
             )
-            return PointwiseDiv(Convolve2D(TIKernel2D(kernel), sat), Num(float(D * D)))
+            return sat
 
     box1 = box_filter_sat(input_signal, D)
     box2 = box_filter_sat(box1, D)
     expr = box_filter_sat(box2, D)
-    return expr
+    return expr.at(0)
 
 
 # def optimized_box_filter(input_signal: SignalExpr2D, D: int) -> SignalExpr:
 #     with with_types(Type.Arith, ElementType.Float):
 #         kernel = diff_kernel(D)
 #         fir = Convolve2D(TIKernel2D(kernel), input_signal)
-#         fir = Convolve2D(TIKernel2D(kernel), fir.cache_rows(D))
-#         fir = Convolve2D(TIKernel2D(kernel), fir.cache_rows(D))
+#         fir = Convolve2D(TIKernel2D(kernel), fir.cache_rows())
+#         fir = Convolve2D(TIKernel2D(kernel), fir.cache_rows())
 
 #         sat_kernel = TIKernel2D([[0.0, 1.0], [1.0]])
 #         iir = Recurse2D(sat_kernel, fir).at(0)
@@ -52,17 +55,14 @@ def naive_box_filter(input_signal: SignalExpr, D: int) -> SignalExpr:
 
 def optimized_box_filter(input_signal: SignalExpr2D, D: int) -> SignalExpr:
     with with_types(Type.Arith, ElementType.Float):
-        kernel_x = [1.0] + [0.0] * (D - 2) + [-1.0]
-        kernel_y = [[1.0], [0.0] * (D - 2) + [-1.0]]
-        fir_y = Convolve2D(TIKernel2D(kernel_y), input_signal)
-        fir_y = Convolve2D(TIKernel2D(kernel_y), fir_y.cache_rows(D))
-        fir_y = Convolve2D(TIKernel2D(kernel_y), fir_y.cache_rows(D))
-        fir: SignalExpr = Convolve(TIKernel(kernel_x), fir_y)
-        fir = Convolve(TIKernel(kernel_x), fir)
-        fir = Convolve(TIKernel(kernel_x), fir)
-        fir = PointwiseDiv(fir, Num(float(D ** 6)))
+        # Full 2D difference kernel: rank-1, Factorize2D will split into row + column passes.
+        kernel = diff_kernel(D)
+        fir: SignalExpr = Convolve2D(kernel, input_signal)
+        fir = Convolve2D(kernel, fir.cache_rows())
+        fir = Convolve2D(kernel, fir.cache_rows())
+        fir = PointwiseDiv(fir, Num(float(D**6)))
 
-        sat_kernel = TIKernel2D([[0.0, 1.0], [1.0]])
+        sat_kernel = TIKernel2D([[0.0, 1.0], [1.0, -1.0]])
         iir = Recurse2D(sat_kernel, fir).at(0)
         iir = Recurse2D(sat_kernel, iir).at(0)
         iir = Recurse2D(sat_kernel, iir).at(0)
@@ -74,15 +74,12 @@ def optimized_box_filter(input_signal: SignalExpr2D, D: int) -> SignalExpr:
 # Optimization: push down the FIRs before the IIRs.
 
 
-
 for D in [3, 5, 7, 9, 11, 13, 15]:
     print(f"D = {D}")
 
     with with_types(Type.Arith, ElementType.Float):
-        expr = optimized_box_filter(Var2D("g", D), D)
+        expr = naive_box_filter(Var2D("g"), D)
 
     results = get_candidate_schedules(expr, 256)
 
-    benchmark_result = generate_and_run_benchmark(
-        CodeGen(cache_cse=True), results, True
-    )
+    benchmark_result = generate_and_run_benchmark(CodeGen(cache_cse=True), results, True)

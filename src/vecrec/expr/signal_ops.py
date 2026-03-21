@@ -156,7 +156,7 @@ class Repeater(SignalExpr2D):
     """
 
     a: SignalExpr
-    n_rows: int
+    n_rows: Optional[int]
     prev_rows_var: RVar2D
     __match_args__ = ("a", "n_rows", "prev_rows_var")
 
@@ -165,19 +165,18 @@ class Repeater(SignalExpr2D):
     def __init__(
         self,
         func: Callable[[RVar2D], SignalExpr],
-        n_rows: int,
         ty: Optional[Type] = None,
         element_type: Optional[ElementType] = None,
     ) -> None:
         resolved_ty, resolved_et = _resolve_types(ty, element_type)
-        self.n_rows = n_rows
+        self.n_rows = None
         self.prev_rows_var = RVar2D(f"$f{Repeater.var_count}", resolved_ty, resolved_et)
         Repeater.var_count += 1
         self.a = func(self.prev_rows_var)
         super().__init__(self.a.ty, self.a.element_type)
     
     @staticmethod
-    def make(a: SignalExpr, n_rows: int, prev_rows_var: RVar2D) -> Repeater:
+    def make(a: SignalExpr, n_rows: Optional[int], prev_rows_var: RVar2D) -> Repeater:
         repeater = Repeater.__new__(Repeater)
         super(Repeater, repeater).__init__(a.ty, a.element_type)
         repeater.a = a

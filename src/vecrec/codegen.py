@@ -95,6 +95,10 @@ class CodeGen:
 
         if isinstance(expr, Var2D):
             assert expr.lanes is not None
+            assert expr.n_rows is not None, (
+                f"Var2D('{expr.name}') has n_rows=None at codegen time. "
+                "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
+            )
             vec_type = self.get_vec_type(expr.element_type, expr.lanes)
             return Code(
                 f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride)",
@@ -114,6 +118,10 @@ class CodeGen:
             return cast(int, self.var2d_context[f"{signal2d.name}_n_rows"])
 
         if isinstance(signal2d, (Repeater, Var2D)):
+            assert signal2d.n_rows is not None, (
+                f"{type(signal2d).__name__} has n_rows=None at codegen time. "
+                "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
+            )
             return signal2d.n_rows
 
         raise ValueError(
@@ -233,6 +241,10 @@ class CodeGen:
                 )
             case Var2D():
                 assert expr.lanes is not None
+                assert expr.n_rows is not None, (
+                    f"Var2D('{expr.name}') has n_rows=None at codegen time. "
+                    "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
+                )
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
                 code = Code(
                     f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride)",
@@ -258,6 +270,10 @@ class CodeGen:
                     expr.lanes,
                 )
             case Repeater(a, n_rows, prev_rows_var):
+                assert n_rows is not None, (
+                    f"Repeater with prev_rows_var '{prev_rows_var.name}' has n_rows=None at codegen time. "
+                    "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
+                )
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
 
                 # Create a context variable

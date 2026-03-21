@@ -15,6 +15,7 @@ from vecrec.transform import (
     ConstantFold,
     Eliminate2DKernels,
     Factorize2D,
+    InferNRows,
     Preorder,
     SaturatePreorder,
     Try,
@@ -106,7 +107,7 @@ def test_factorize2d_transform_fires():
     """Factorize2D should rewrite Convolve2D with a separable kernel."""
     with with_types(Type.Arith, ElementType.Float):
         kernel = TIKernel2D([[1.0, 2.0], [2.0, 4.0]])  # rank-1: [1,2]^T * [1,2]
-        sig2d = Var2D("x", 2)
+        sig2d = Var2D("x")
         expr = Convolve2D(kernel, sig2d)
         results = Factorize2D().apply_signal(expr)
     assert len(results) == 1
@@ -122,7 +123,7 @@ def test_factorize2d_transform_does_not_fire_non_separable():
     """Factorize2D should not fire for non-separable kernels."""
     with with_types(Type.Arith, ElementType.Float):
         kernel = TIKernel2D([[1.0, 0.0], [0.0, 1.0]])  # rank-2
-        sig2d = Var2D("x", 2)
+        sig2d = Var2D("x")
         expr = Convolve2D(kernel, sig2d)
         results = Factorize2D().apply_signal(expr)
     assert len(results) == 0
@@ -138,12 +139,13 @@ def test_factorize2d_codegen():
         def repeater_func(prev_rows):
             return SAdd(Convolve2D(kernel, prev_rows), g)
 
-        expr: SignalExpr = Ith(Repeater(repeater_func, n_rows=4), 0)
+        expr: SignalExpr = Ith(Repeater(repeater_func), 0)
 
     # Apply Factorize2D then eliminate 2D kernels, then codegen
     expr = Preorder(Try(Factorize2D())).apply_signal(expr)[0]
     expr = SaturatePreorder(ConstantFold).apply_signal(expr)[0]
     expr = Preorder(Try(Eliminate2DKernels())).apply_signal(expr)[0]
+    expr = InferNRows().apply_generic(expr)[0]
     expr = AnnotateLanes(512).apply_signal(expr)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [expr])

@@ -142,6 +142,24 @@ class Type(Enum):
             return f(a, b)
         assert False, "unreachable"
 
+    @overload
+    def div(self, a: float, b: float) -> float: ...
+    @overload
+    def div(self, a: list[float], b: list[float] | float) -> list[float]: ...
+    @overload
+    def div(self, a: float, b: list[float]) -> list[float]: ...
+    def div(self, a, b):
+        assert self == Type.Arith, "Division is only defined for arithmetic type"
+        if isinstance(a, list) and isinstance(b, list):
+            return [x / y for x, y in zip(a, b)]
+        elif isinstance(a, list) and isinstance(b, numbers.Number):
+            return [x / b for x in a]
+        elif isinstance(a, numbers.Number) and isinstance(b, list):
+            return [a / y for y in b]
+        elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
+            return a / b  # type: ignore
+        assert False, "unreachable"
+
 
 @dataclass(kw_only=True, match_args=False)
 class RecLang:
@@ -162,9 +180,7 @@ class RecLang:
     def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D]:
         """Return the children of the expression."""
         return [
-            v
-            for v in self.__dict__.values()
-            if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D))
+            v for v in self.__dict__.values() if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D))
         ]
 
     def is_leaf(self) -> bool:
@@ -191,14 +207,12 @@ class SignalExpr(RecLang):
         """Return a copy of the expression with the given number of lanes."""
         return super().with_lanes(lanes)  # type: ignore
 
-    def cache_rows(self, num_rows: int) -> SignalExpr2D:
+    def cache_rows(self) -> SignalExpr2D:
         from vecrec.expr.signal_ops import (
             Repeater,
         )  # local import to avoid circular dependency
 
-        return Repeater(
-            lambda _: self, num_rows, self.ty, self.element_type
-        ).with_lanes(self.lanes)
+        return Repeater(lambda _: self, self.ty, self.element_type).with_lanes(self.lanes)
 
 
 @dataclass(match_args=False)
@@ -208,6 +222,7 @@ class SignalExpr2D(RecLang):
 
     def at(self, r: int) -> SignalExpr:
         from vecrec.expr.signal_ops import Ith
+
         return Ith(self, r)
 
     def with_lanes(self, lanes: Optional[int]) -> SignalExpr2D:
@@ -244,24 +259,14 @@ class KernelExpr2D(RecLang):
 _type_context: threading.local = threading.local()
 
 
-def _resolve_types(
-    ty: Optional[Type], element_type: Optional[ElementType]
-) -> Tuple[Type, ElementType]:
+def _resolve_types(ty: Optional[Type], element_type: Optional[ElementType]) -> Tuple[Type, ElementType]:
     """Resolve ty/element_type, falling back to the current with_types() context."""
     resolved_ty = ty if ty is not None else getattr(_type_context, "ty", None)
-    resolved_et = (
-        element_type
-        if element_type is not None
-        else getattr(_type_context, "element_type", None)
-    )
+    resolved_et = element_type if element_type is not None else getattr(_type_context, "element_type", None)
     if resolved_ty is None:
-        raise ValueError(
-            "Type must be specified explicitly or via the with_types() context manager"
-        )
+        raise ValueError("Type must be specified explicitly or via the with_types() context manager")
     if resolved_et is None:
-        raise ValueError(
-            "ElementType must be specified explicitly or via the with_types() context manager"
-        )
+        raise ValueError("ElementType must be specified explicitly or via the with_types() context manager")
     return resolved_ty, resolved_et
 
 

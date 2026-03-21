@@ -7,10 +7,15 @@ from vecrec.transform import *
 def get_optimizing_schedule(max_bits: int) -> Transform:
     # fmt: off
     return Seq(
-        Optional(Preorder(Try(Factorize2D()))),
+        Preorder(Try(Factorize2D())),
         SaturatePreorder(ConstantFold),
+        SaturatePreorder(InlinePointwiseOps()),
 
-        SaturatePreorder(PushConvolveBelowRecurse()),
+        SaturatePreorder(
+            Seq(
+                PushDownAndFuseConvolve(),
+                Try(EliminateDegenerate2Dkernels()))
+        ),
         
         Preorder(Try(Eliminate2DKernels())),
         SaturatePreorder(ConstantFold),
@@ -29,9 +34,12 @@ def get_optimizing_schedule(max_bits: int) -> Transform:
                 SaturatePreorder(ConstantFold),
             )
         ),
+        
+        DebugPrint(),
 
+        InferNRows(),
         AnnotateLanes(max_bits),
-        PushDownConvertLanes(),
+        # PushDownConvertLanes(),
     )
 
 
@@ -40,9 +48,7 @@ def get_candidate_schedules(expr: SignalExpr, max_bits: int) -> list[SignalExpr]
 
 
 @overload
-def get_candidate_schedules(
-    expr: SignalExpr2D, max_bits: int
-) -> list[SignalExpr2D]: ...
+def get_candidate_schedules(expr: SignalExpr2D, max_bits: int) -> list[SignalExpr2D]: ...
 
 
 def get_candidate_schedules(expr, max_bits):

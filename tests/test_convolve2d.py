@@ -6,7 +6,7 @@ from vecrec.expr.signal import Var, RVar2D, Num
 from vecrec.expr.signal_ops import Convolve2D, Ith, Repeater, SAdd
 from vecrec.util import ElementType
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
-from vecrec.transform import AnnotateLanes, Preorder, Eliminate2DKernels, Try
+from vecrec.transform import AnnotateLanes, InferNRows, Preorder, Eliminate2DKernels, Try
 
 
 def test_convolve2d_ti_kernel() -> None:
@@ -27,10 +27,11 @@ def test_convolve2d_ti_kernel() -> None:
             return conv2d
 
         repeater: SignalExpr
-        repeater = Ith(Repeater(repeater_func, n_rows=3), 0)
+        repeater = Ith(Repeater(repeater_func), 0)
 
     # Apply transforms: first eliminate 2D kernels, then annotate lanes
     repeater = Preorder(Try(Eliminate2DKernels())).apply_generic(repeater)[0]
+    repeater = InferNRows().apply_generic(repeater)[0]
     repeater = AnnotateLanes(512).apply_generic(repeater)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [repeater])
@@ -71,12 +72,12 @@ def test_convolve2d_tv_kernel() -> None:
             conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
             return conv2d
 
-        # TODO: better error handling when n_rows is too small (e.g., 2)
         repeater: SignalExpr2D
-        repeater = Repeater(repeater_func, n_rows=3)
+        repeater = Repeater(repeater_func)
 
     # Apply transforms: first eliminate 2D kernels, then annotate lanes
     repeater = Preorder(Try(Eliminate2DKernels())).apply_signal2d(repeater)[0]
+    repeater = InferNRows().apply_generic(repeater)[0]
     repeater = AnnotateLanes(512).apply_signal2d(repeater)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [repeater])
@@ -114,10 +115,11 @@ def test_convolve2d_single_row() -> None:
             return conv2d
 
         repeater: SignalExpr2D
-        repeater = Repeater(repeater_func, n_rows=2)
+        repeater = Repeater(repeater_func)
 
     # Apply transforms: first eliminate 2D kernels, then annotate lanes
     repeater = Preorder(Try(Eliminate2DKernels())).apply_signal2d(repeater)[0]
+    repeater = InferNRows().apply_generic(repeater)[0]
     repeater = AnnotateLanes(512).apply_signal2d(repeater)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [repeater])

@@ -30,7 +30,9 @@ __all__ = [
     "Factorize",
     "Factorize2D",
     "DilateTVWithSingleOddOrder",
-    "PushConvolveBelowRecurse",
+    "InlinePointwiseOps",
+    "PushDownAndFuseConvolve",
+    "EliminateDegenerate2Dkernels",
     "Seq",
     "Repeat",
     "RepeatUpTo",
@@ -41,6 +43,7 @@ __all__ = [
     "SaturatePreorder",
     "SaturatePreorderUpTo",
     "Postorder",
+    "InferNRows",
     "AnnotateLanes",
     "PushDownConvertLanes",
     "Eliminate2DKernels",
@@ -101,9 +104,7 @@ class Noop(Transform):
 class ConstantFoldAdd(Transform):
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         match expr:
-            case KAdd(a, b) if isinstance(a, KernelConstant) and isinstance(
-                b, KernelConstant
-            ):
+            case KAdd(a, b) if isinstance(a, KernelConstant) and isinstance(b, KernelConstant):
                 return [a + b]
             case _:
                 return []
@@ -121,9 +122,7 @@ class ConstantFoldAdd(Transform):
 class ConstantFoldSub(Transform):
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         match expr:
-            case KSub(a, b) if isinstance(a, KernelConstant) and isinstance(
-                b, KernelConstant
-            ):
+            case KSub(a, b) if isinstance(a, KernelConstant) and isinstance(b, KernelConstant):
                 return [a - b]
             case _:
                 return []
@@ -134,9 +133,7 @@ class ConstantFoldConvolve(Transform):
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         match expr:
-            case KConvolve(a, b) if isinstance(a, KernelConstant) and isinstance(
-                b, KernelConstant
-            ):
+            case KConvolve(a, b) if isinstance(a, KernelConstant) and isinstance(b, KernelConstant):
                 return [a * b]
             case _:
                 return []
@@ -145,9 +142,7 @@ class ConstantFoldConvolve(Transform):
         match expr:
             case Convolve(TIKernel(a), b) if all(expr.ty.is_zero(v) for v in a):
                 return [Num(0, expr.ty, expr.element_type)]
-            case Convolve(TIKernel(a), b) if expr.ty.is_one(a[0]) and all(
-                expr.ty.is_zero(v) for v in a[1:]
-            ):
+            case Convolve(TIKernel(a), b) if expr.ty.is_one(a[0]) and all(expr.ty.is_zero(v) for v in a[1:]):
                 return [b]
             case Convolve(TIKernel(a), b) if all(expr.ty.is_zero(v) for v in a):
                 return [Num(0, expr.ty, expr.element_type)]
@@ -394,9 +389,7 @@ class Factorize(Transform):
             case Convolve(TIKernel(a) as kernel, g):
                 if len(a) < 2:
                     return []  # Constant kernel, nothing to factorize
-                factors: Sequence[KernelExpr] = factorize_polynomial(
-                    a, kernel.element_type
-                )
+                factors: Sequence[KernelExpr] = factorize_polynomial(a, kernel.element_type)
                 if len(factors) == 0:
                     return []
                 # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
@@ -430,6 +423,7 @@ class Factorize2D(Transform):
                 if result is None:
                     return []
                 row_kernel, col_kernel_2d = result
+                # Convolve2D goes inside.
                 return [Convolve(row_kernel, Convolve2D(col_kernel_2d, s))]
             case _:
                 return []
@@ -448,12 +442,8 @@ class DilateTVWithSingleOddOrder(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(TVKernel(a) as kernel, g):
-                even: List[SignalExpr] = [
-                    Num(0, Type.Arith, kernel.element_type)
-                ] * len(a)
-                odd: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(
-                    a
-                )
+                even: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
+                odd: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
                 even[0::2] = a[0::2]
                 odd[1::2] = a[1::2]
                 inzs = self.all_nonzeros(odd)
@@ -468,9 +458,7 @@ class DilateTVWithSingleOddOrder(Transform):
                                 PointwiseDiv(
                                     odd[inz],
                                     Convolve(
-                                        TIKernel.z(
-                                            Type.Arith, kernel.element_type, -inz
-                                        ),
+                                        TIKernel.z(Type.Arith, kernel.element_type, -inz),
                                         odd[inz],
                                     ),
                                 )
@@ -505,30 +493,93 @@ class DilateTVWithSingleOddOrder(Transform):
                 return []
 
 
-class PushConvolveBelowRecurse(Transform):
-    """Push Convolve below Recurse, since they commute.
-
-    Convolve(h, Recurse(a, g)) = Recurse(a, Convolve(h, g))
-
-    Both Convolve (FIR) and Recurse (IIR) are LTI operations, so their order
-    can be swapped: h * (g / (I - a)) = (h * g) / (I - a).
-    """
+class InlinePointwiseOps(Transform):
+    """Inline and transform Convolve(kernel, signal) `PointwiseMul/PointwiseDiv` constants into `Convolve(KMul/KDiv(kernel, constant), signal)`"""
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
-            case Convolve(h, Recurse(a, g)):
-                return [Recurse(a, Convolve(h, g))]
-            case Convolve2D(h, Recurse2D(a, g)):
-                # It seems both ways make sense.
-                # Doing a recurse first allow convolution to reuse the materialization
-                # Ask: Why do we want to push down convolution?
-                raise NotImplementedError()
-                # return [Recurse2D(a, Convolve2D(h, g))]
+            case PointwiseMul(Convolve(k, s), Num(c)):
+                assert isinstance(k, TIKernel | TVKernel)
+                return [Convolve(k * c, s)]
+            case PointwiseDiv(Convolve(k, s), Num(c)):
+                assert isinstance(k, TIKernel | TVKernel)
+                return [Convolve(k / c, s)]
+            case PointwiseMul(Recurse(k, s), Num(c)):
+                assert isinstance(k, TIKernel | TVKernel)
+                return [Recurse(k * c, s)]
+            case PointwiseDiv(Recurse(k, s), Num(c)):
+                assert isinstance(k, TIKernel | TVKernel)
+                return [Recurse(k / c, s)]
+            case PointwiseMul(Convolve2D(k, s), Num(c)):
+                assert isinstance(k, TIKernel2D | TVKernel2D)
+                return [Convolve2D(k * c, s)]
+            case PointwiseDiv(Convolve2D(k, s), Num(c)):
+                assert isinstance(k, TIKernel2D | TVKernel2D)
+                return [Convolve2D(k / c, s)]
+            # case PointwiseMul(Recurse2D(k, s), Num(c)):
+            #     assert isinstance(k, TIKernel2D | TVKernel2D)
+            #     return [Recurse2D(k * c, s)]
+            # case PointwiseDiv(Recurse2D(k, s), Num(c)):
+            #     assert isinstance(k, TIKernel2D | TVKernel2D)
+            #     return [Recurse2D(k / c, s)]
             case _:
                 return []
 
 
-def _dedup_exprs(results):
+class PushDownAndFuseConvolve(Transform):
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Convolve2D(k1, f):
+
+                @overload
+                def push_down(expr: SignalExpr) -> List[SignalExpr]: ...
+                @overload
+                def push_down(expr: SignalExpr2D) -> List[SignalExpr2D]: ...
+
+                def push_down(expr):
+                    match expr:
+                        case Recurse(a, g):
+                            return [Recurse(a, g_) for g_ in push_down(g)]
+                        case Convolve(h, g):
+                            return [Convolve(h, g_) for g_ in push_down(g)]
+                        case SAdd(a, b) | SSub(a, b) | PointwiseMul(a, b) | PointwiseDiv(a, b):
+                            return [expr.__class__(a_, b_) for a_ in push_down(a) for b_ in push_down(b)]
+                        case Recurse2D(b, g):
+                            return [Recurse2D(b, g_) for g_ in push_down(g)]
+                        case Convolve2D(k2, Var2D(_) as g):
+                            assert isinstance(k1, TIKernel2D | TVKernel2D)
+                            assert isinstance(k2, TIKernel2D | TVKernel2D)
+                            return [Convolve2D(k1 * k2, g)]
+                        case Repeater(f, n_rows, prev_rows_var):
+                            return [Repeater.make(f_, n_rows, prev_rows_var) for f_ in push_down(f)]
+                        case Ith(f, i):
+                            return [Ith(f_, i) for f_ in push_down(f)]
+                        case _:  # RVar2D, Var2D, Repeater, Ith, ...
+                            return []
+
+                return [Ith(f_, 0) for f_ in push_down(f)]
+            case _:
+                return []
+
+
+def _contains_node(expr: RecLang, target: RecLang) -> bool:
+    """Return True if `target` appears anywhere in the expression tree rooted at `expr`."""
+    if expr == target:
+        return True
+    return any(_contains_node(child, target) for child in expr.children())
+
+
+class EliminateDegenerate2Dkernels(Transform):
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Ith(Repeater(f, n_rows, prev_rows_var), 0) if not _contains_node(f, prev_rows_var):
+                # If the Repeater doesn't actually depend on previous rows, we can eliminate the Repeater and just use the function directly.
+                return [f]
+            case _:
+                return []
+
+
+def _dedup_exprs(results: list) -> list:
     if len(results) < 10:
         unique: list = []
         for expr in results:
@@ -549,9 +600,7 @@ class Seq(Transform):
     def apply_generic(self, expr):
         results = [expr]
         for transform in self.transforms:
-            results = _dedup_exprs(
-                [next for res in results for next in transform.apply_generic(res)]
-            )
+            results = _dedup_exprs([next for res in results for next in transform.apply_generic(res)])
         return results
 
 
@@ -565,9 +614,7 @@ class Repeat(Transform):
     def apply_generic(self, expr):
         results = [expr]
         for _ in range(self.times):
-            results = _dedup_exprs(
-                [next for res in results for next in self.transform.apply_generic(res)]
-            )
+            results = _dedup_exprs([next for res in results for next in self.transform.apply_generic(res)])
         return results
 
 
@@ -621,11 +668,7 @@ class Any(Transform):
         self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
     def apply_generic(self, expr):
-        results = [
-            next
-            for transform in self.transforms
-            for next in transform.apply_generic(expr)
-        ]
+        results = [next for transform in self.transforms for next in transform.apply_generic(expr)]
         return _dedup_exprs(results)
 
 
@@ -643,10 +686,7 @@ class Preorder(Transform):
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[KernelExpr] = []
         for expr in self.transform.apply_kernel(expr):
@@ -663,10 +703,7 @@ class Preorder(Transform):
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[SignalExpr] = []
         for expr in self.transform.apply_signal(expr):
@@ -689,10 +726,7 @@ class Preorder(Transform):
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr2D]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[KernelExpr2D] = []
         for expr in self.transform.apply_generic(expr):
@@ -709,10 +743,7 @@ class Preorder(Transform):
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         def cartesian(constructor, lists, lanes):
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[SignalExpr2D] = []
         for expr in self.transform.apply_generic(expr):
@@ -743,10 +774,7 @@ class Postorder(Transform):
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: Sequence[KernelExpr]
         match expr:
@@ -762,20 +790,14 @@ class Postorder(Transform):
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: Sequence[SignalExpr]
         match expr:
             case Var(_) | Num(_) | Impulse(_):
                 results = [expr]
             case Ith(e, i):
-                results = [
-                    Ith(new_e, i).with_lanes(expr.lanes)
-                    for new_e in self.apply_signal2d(e)
-                ]
+                results = [Ith(new_e, i).with_lanes(expr.lanes) for new_e in self.apply_signal2d(e)]
             case _:
                 results = cartesian(
                     type(expr),
@@ -786,10 +808,7 @@ class Postorder(Transform):
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr2D]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: Sequence[KernelExpr2D]
         match expr:
@@ -805,10 +824,7 @@ class Postorder(Transform):
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         def cartesian(constructor, lists, lanes):
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[SignalExpr2D] = []
         match expr:
@@ -896,21 +912,10 @@ class Eliminate2DKernels(Transform):
                 expr.a, TVKernel2D
             ), "Kernel should be canonicalized before 2D kernel elimination"
             if isinstance(expr.a, TIKernel2D):
-                kernels: List[KernelExpr] = [
-                    TIKernel(row, expr.a.ty, expr.a.element_type) for row in expr.a.data
-                ]
+                kernels: List[KernelExpr] = [TIKernel(row, expr.a.ty, expr.a.element_type) for row in expr.a.data]
             else:
-                kernels = [
-                    TVKernel(row, expr.a.ty, expr.a.element_type) for row in expr.a.data
-                ]
-            return [
-                SAdd.of(
-                    [
-                        Convolve(kernel, Ith(expr.b, i))
-                        for i, kernel in enumerate(kernels)
-                    ]
-                )
-            ]
+                kernels = [TVKernel(row, expr.a.ty, expr.a.element_type) for row in expr.a.data]
+            return [SAdd.of([Convolve(kernel, Ith(expr.b, i)) for i, kernel in enumerate(kernels)])]
         else:
             return []
 
@@ -932,16 +937,94 @@ class Eliminate2DKernels(Transform):
                 else TVKernel2D(expr.a.data[1:], expr.a.ty, expr.a.element_type)
             )
             new_expr = Repeater(
-                lambda f_: Recurse(
-                    kernel_first, SAdd(Convolve2D(kernel_rest, f_), expr.g)
-                ),
-                len(expr.a.data),
+                lambda f_: Recurse(kernel_first, SAdd(Convolve2D(kernel_rest, f_), expr.g)),
                 expr.a.ty,
                 expr.a.element_type,
             )
             return [new_expr]
         else:
             return []
+
+
+class InferNRows(Transform):
+    """Infer n_rows for all Var2D and Repeater nodes from their Ith usages.
+
+    Must be called after all passes that generate Ith nodes (Eliminate2DKernels,
+    PushDownAndFuseConvolve) and before AnnotateLanes / codegen.
+    """
+
+    def apply_generic(self, expr):
+        # Phase 1: DFS to collect all Var2D/Repeater nodes and build rvar → Repeater map.
+        all_var2d: list[Var2D] = []
+        all_repeaters: list[Repeater] = []
+        rvar_to_repeater: dict[str, Repeater] = {}
+        visited_phase1: set[int] = set()
+
+        def collect_nodes(e: RecLang) -> None:
+            if id(e) in visited_phase1:
+                return
+            visited_phase1.add(id(e))
+            if isinstance(e, Var2D):
+                all_var2d.append(e)
+            elif isinstance(e, Repeater):
+                all_repeaters.append(e)
+                rvar_to_repeater[e.prev_rows_var.name] = e
+            for child in e.children():
+                collect_nodes(child)
+
+        collect_nodes(expr)
+
+        # Phase 2: DFS to compute lower bounds for n_rows from Ith nodes.
+        var2d_bounds: dict[str, int] = {}
+        repeater_bounds: dict[Repeater, int] = {}
+        visited_phase2: set[int] = set()
+
+        def collect_bounds(e: RecLang) -> None:
+            if id(e) in visited_phase2:
+                return
+            visited_phase2.add(id(e))
+            if isinstance(e, Ith):
+                x, i = e.a, e.i
+                if isinstance(x, Var2D):
+                    var2d_bounds[x.name] = max(var2d_bounds.get(x.name, 0), i + 1)
+                elif isinstance(x, Repeater):
+                    repeater_bounds[x] = max(repeater_bounds.get(x, 0), i + 1)
+                elif isinstance(x, RVar2D):
+                    owner = rvar_to_repeater.get(x.name)
+                    assert owner is not None
+                    # RVar2D exposes n_rows - 1 slots; Ith(rvar, i) needs owner.n_rows >= i + 2
+                    repeater_bounds[owner] = max(repeater_bounds.get(owner, 0), i + 2)
+            for child in e.children():
+                collect_bounds(child)
+
+        collect_bounds(expr)
+
+        # Phase 3: Apply bounds, raise if any node remains unresolved.
+        # Pre-compute ALL bounds before any mutation to avoid hash instability:
+        # mutating Var2D.n_rows changes its hash, which cascades to parent Repeater
+        # hashes, causing repeater_bounds.get(r, 0) to miss the stored entry.
+        final_var2d: list[tuple[Var2D, int]] = [(v, max(v.n_rows or 0, var2d_bounds.get(v.name, 0))) for v in all_var2d]
+        final_repeaters: list[tuple[Repeater, int]] = [
+            (r, max(r.n_rows or 0, repeater_bounds.get(r, 0))) for r in all_repeaters
+        ]
+
+        for v, bound in final_var2d:
+            v.n_rows = bound or None
+            if not v.n_rows:
+                raise ValueError(
+                    f"Var2D('{v.name}') has no Ith usages — n_rows cannot be inferred. "
+                    "Call InferNRows after Eliminate2DKernels."
+                )
+
+        for r, bound in final_repeaters:
+            r.n_rows = bound or None
+            if not r.n_rows:
+                raise ValueError(
+                    f"Repeater with prev_rows_var '{r.prev_rows_var.name}' has no Ith usages — "
+                    "n_rows cannot be inferred. Call InferNRows after Eliminate2DKernels."
+                )
+
+        return [expr]
 
 
 class AnnotateLanes(Transform):
@@ -971,9 +1054,7 @@ class AnnotateLanes(Transform):
                 return e
 
         if e.lanes != lanes:
-            new_expr = (
-                ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
-            )
+            new_expr = ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
             new_expr.lanes = lanes
             return new_expr
         else:
@@ -1002,14 +1083,10 @@ class AnnotateLanes(Transform):
                 )
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
-        raise NotImplementedError(
-            "Lane annotation for 2D kernel expressions not implemented"
-        )
+        raise NotImplementedError("Lane annotation for 2D kernel expressions not implemented")
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        assert not isinstance(
-            expr, Convolve2D
-        ), "2D convolutions should be eliminated before lane annotation"
+        assert not isinstance(expr, Convolve2D), "2D convolutions should be eliminated before lane annotation"
         element_type = expr.element_type
 
         if isinstance(expr, Ith):
@@ -1030,9 +1107,7 @@ class AnnotateLanes(Transform):
         else:
             args = []
             for child in expr.children():
-                assert not isinstance(
-                    child, KernelExpr2D
-                ), "2D kernels should be eliminated before lane annotation"
+                assert not isinstance(child, KernelExpr2D), "2D kernels should be eliminated before lane annotation"
                 args.append(self.convert_lanes(self.apply_generic(child)[0], lanes))
 
             new_expr = type(expr)(*args)  # type: ignore
@@ -1088,9 +1163,7 @@ class PushDownConvertLanesImpl(Transform):
             return new_expr
         elif isinstance(expr, KernelExpr):
             if isinstance(expr, TIKernel):
-                new_kernel_expr: KernelExpr = TIKernel(
-                    expr.data, expr.ty, expr.element_type
-                )
+                new_kernel_expr: KernelExpr = TIKernel(expr.data, expr.ty, expr.element_type)
                 new_kernel_expr.lanes = lanes
                 return new_kernel_expr
             elif isinstance(expr, TVKernel):
@@ -1108,9 +1181,7 @@ class PushDownConvertLanesImpl(Transform):
             new_signal_expr.lanes = lanes
             return new_signal_expr
         elif isinstance(expr, Repeater):
-            raise NotImplementedError(
-                "TODO: This happens only after we implement ConvertLanes2D"
-            )
+            raise NotImplementedError("TODO: This happens only after we implement ConvertLanes2D")
         elif isinstance(expr, Ith):
             new_ith_expr = copy.copy(expr)
             new_ith_expr.lanes = lanes
@@ -1158,6 +1229,7 @@ class PushDownConvertLanesImpl(Transform):
 
 def PushDownConvertLanes() -> Transform:
     return Postorder(PushDownConvertLanesImpl())
+
 
 class DebugPrint(Transform):
     def __init__(self) -> None:

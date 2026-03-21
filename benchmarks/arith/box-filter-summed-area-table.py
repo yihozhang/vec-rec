@@ -17,7 +17,7 @@ def next_power_of_2(x: int) -> int:
 
 # More optimal way to compute: do the four-tap filter first, and then do a prefix sum, because this only needs to cache the last row.
 def box_filter_naive(input_signal: SignalExpr, D: int) -> SignalExpr:
-    sat = Repeater(lambda f1: Recurse(TIKernel.z(), SAdd(f1.at(0), input_signal)), next_power_of_2(D+1))
+    sat = Repeater(lambda f1: Recurse(TIKernel.z(), SAdd(f1.at(0), input_signal)))
     kernel = [[0.] * D for i in range(D)]
     kernel[0][0] = kernel[D-1][D-1] = 1.
     kernel[D-1][0] = kernel[0][D-1] = -1.
@@ -42,7 +42,7 @@ def box_filter_optimized(input_signal: SignalExpr2D, D: int) -> SignalExpr:
 with with_types(Type.Arith, ElementType.Float):
     for D in [3, 5, 7, 9, 11, 13, 15]:
         print(f"D = {D}")
-        expr = box_filter_optimized(Var2D("g", D), D)
+        expr = box_filter_optimized(Var2D("g"), D)
 
         results = get_candidate_schedules(expr, 256)
 
