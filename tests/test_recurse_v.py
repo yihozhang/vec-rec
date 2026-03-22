@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from vecrec import CodeGen, generate_and_run_benchmark
 from vecrec.codegen import generate_kernel_executable

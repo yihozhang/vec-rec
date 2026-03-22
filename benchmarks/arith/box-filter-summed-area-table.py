@@ -2,7 +2,6 @@
 # An 11x11 box filter is computed using the SAT with the inclusion-exclusion principle:
 #   box[r][c] = (SAT[r][c] - SAT[r-11][c] - SAT[r][c-11] + SAT[r-11][c-11]) / 121
 
-import numpy as np
 
 from vecrec.codegen import *
 from vecrec.expr import *

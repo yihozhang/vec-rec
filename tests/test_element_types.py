@@ -7,12 +7,10 @@ from vecrec.transform import (
     Delay,
     Dilate,
     Optional,
-    Preorder,
     PushDownConvertLanes,
     RepeatUpTo,
     SaturatePreorder,
     Seq,
-    Try,
 )
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.util import ElementType

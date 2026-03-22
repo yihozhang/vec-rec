@@ -2,7 +2,7 @@
 
 from vecrec.expr.base import SignalExpr, Type, with_types
 from vecrec.expr.kernel import TIKernel2D
-from vecrec.expr.signal import RVar2D, Var, Var2D
+from vecrec.expr.signal import Var, Var2D
 from vecrec.expr.signal_ops import Convolve2D, Ith, Repeater, SAdd
 from vecrec.util import ElementType
 from vecrec.codegen import CodeGen, generate_and_run_benchmark

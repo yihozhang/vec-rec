@@ -134,7 +134,7 @@ def run_config(
         if variant_name == "validation":
             continue
         rows.append((topology, params, sched_label, variant_name, str(time_ns)))
-    print(f" done", file=sys.stderr)
+    print(" done", file=sys.stderr)
     return rows
 
 

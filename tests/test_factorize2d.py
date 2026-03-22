@@ -1,11 +1,9 @@
 """Tests for 2D kernel factorization."""
 
-import numpy as np
-import pytest
 
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr
-from vecrec.expr.kernel import TIKernel, TIKernel2D
+from vecrec.expr.kernel import TIKernel2D
 from vecrec.expr.signal import Var, Var2D
 from vecrec.expr.signal_ops import Convolve, Convolve2D, Ith, Repeater, SAdd
 from vecrec.factorize import factorize_kernel2d

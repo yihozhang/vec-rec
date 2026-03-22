@@ -1,6 +1,6 @@
 from typing import List, Optional, Sequence, Dict, Tuple, Union, cast
 from vecrec.expr import *
-from vecrec.expr.base import SignalExpr2D, KernelMatrixExpr, SignalVectorExpr
+from vecrec.expr.base import SignalExpr2D, SignalVectorExpr
 from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Ith
 from vecrec.expr.kernel import TIKernel, TVKernel
@@ -786,10 +786,10 @@ def _generate_benchmark_code(
         benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += "        \n"
         benchmark_text += "        // XOR sum to prevent optimization of output array\n"
-        benchmark_text += f"        uint64_t xor_sum = 0;\n"
-        benchmark_text += f"        for (int i = 0; i < N; i++) {{\n"
+        benchmark_text += "        uint64_t xor_sum = 0;\n"
+        benchmark_text += "        for (int i = 0; i < N; i++) {\n"
         benchmark_text += f"            xor_sum ^= static_cast<uint64_t>(output_{name}[i]);\n"
-        benchmark_text += f"        }}\n"
+        benchmark_text += "        }\n"
         benchmark_text += f"        volatile uint64_t xor_result_{name} = xor_sum;  // Prevent optimization\n"
         benchmark_text += "        \n"
         benchmark_text += "        const double elapsed_seconds = std::chrono::duration<double>(end - start).count();\n"
