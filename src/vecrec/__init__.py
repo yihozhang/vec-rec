@@ -1,11 +1,8 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Tuple
-import numpy as np
 
-from vecrec.codegen import CodeGen, instantiate_kernels, generate_benchmark, generate_and_run_benchmark
+from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.transform import *
-from vecrec.expr import Convolve, Recurse, TIKernel, Type, Var, with_types
+from vecrec.expr import Recurse, TIKernel, Type, Var, with_types
 from vecrec.util import ElementType
 
 

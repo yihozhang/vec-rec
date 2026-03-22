@@ -30,3 +30,6 @@ warn_unreachable = true
 strict_equality = true
 disallow_any_unimported = true
 disallow_incomplete_defs = true
+
+[tool.ruff.lint]
+ignore = ["F405", "F403", "E741"]

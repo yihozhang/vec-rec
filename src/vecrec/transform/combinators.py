@@ -7,7 +7,7 @@ from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D
+from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D
 from vecrec.expr.signal_vec import VectorAt
 from . import Transform, _dedup_exprs
 

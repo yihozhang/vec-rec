@@ -51,7 +51,7 @@ def test_multiple_types():
         kernel_int = TIKernel([0, 1], Type.Arith, ElementType.I32)
 
         # This should raise an assertion error
-        result = kernel_float + kernel_int
+        _result = kernel_float + kernel_int
         print("✗ Should have caught type mismatch!")
         assert False
     except AssertionError as e:

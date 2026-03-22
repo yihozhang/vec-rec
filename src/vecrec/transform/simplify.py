@@ -1,10 +1,10 @@
 from __future__ import annotations
 from typing import List, Sequence, overload
 from vecrec.expr import *
-from vecrec.expr import KernelExpr, SignalExpr, Type
-from vecrec.expr.base import KernelExpr2D, SignalExpr2D
+from vecrec.expr import KernelExpr, SignalExpr
+from vecrec.expr.base import SignalExpr2D
 from vecrec.expr.signal_ops import Convolve2D, Ith, Repeater, Recurse2D
-from vecrec.expr.signal import RVar2D, Var2D
+from vecrec.expr.signal import Var2D
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from . import Transform, ArithTransform
 from .combinators import Any
@@ -167,7 +167,7 @@ def _contains_node(expr: RecLang, target: RecLang) -> bool:
 class EliminateDegenerate2Dkernels(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
-            case Ith(Repeater(f, n_rows, prev_rows_var), 0) if not _contains_node(f, prev_rows_var):
+            case Ith(Repeater(f, _n_rows, prev_rows_var), 0) if not _contains_node(f, prev_rows_var):
                 # If the Repeater doesn't actually depend on previous rows, we can eliminate the Repeater and just use the function directly.
                 return [f]
             case _:

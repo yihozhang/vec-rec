@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import List, Sequence, overload
 import copy
 from vecrec.expr import *
-from vecrec.expr import KernelExpr, SignalExpr, Type
+from vecrec.expr import KernelExpr, SignalExpr
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr
 from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D
@@ -238,11 +238,11 @@ class AnnotateLanes(Transform):
                 new_repeater.a = self.convert_lanes(self.apply_signal(a)[0], lanes)
                 new_repeater.prev_rows_var = prev_rows_var.with_lanes(lanes)  # type: ignore
                 return [new_repeater]
-            case RVar2D(name):
+            case RVar2D(_name):
                 return [expr.with_lanes(lanes)]
-            case Var2D(name, n_rows):
+            case Var2D(_name, _n_rows):
                 return [expr.with_lanes(lanes)]
-            case Recurse2D(a, g):
+            case Recurse2D(_a, _g):
                 raise NotImplementedError("Not implemented")
             case _:
                 raise NotImplementedError(
@@ -271,7 +271,7 @@ class AnnotateLanes(Transform):
             return [new_vec_at]
 
         match expr:
-            case Recurse(a, g):
+            case Recurse(a, _g):
                 lanes, _ = a.time_delay(self.max_lanes(element_type))
             case _:
                 lanes = self.max_lanes(element_type)

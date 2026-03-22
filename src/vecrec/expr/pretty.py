@@ -5,10 +5,6 @@ from typing import Sequence
 
 from vecrec.expr.base import (
     RecLang,
-    KernelExpr,
-    KernelExpr2D,
-    SignalExpr,
-    SignalExpr2D,
 )
 from vecrec.expr.signal import Num, Impulse, Var, RVar2D, Var2D
 from vecrec.expr.signal_ops import (

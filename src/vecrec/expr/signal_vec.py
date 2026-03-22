@@ -1,9 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
-from vecrec.util import ElementType
-from .base import KernelMatrixExpr, SignalExpr, SignalVectorExpr, Type
+from .base import KernelMatrixExpr, SignalExpr, SignalVectorExpr
 
 
 @dataclass(unsafe_hash=True)

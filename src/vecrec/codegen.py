@@ -482,7 +482,7 @@ class CodeGen:
         assert expr.lanes is not None
 
         match expr:
-            case SignalVector(data):
+            case SignalVector(_data):
                 # Individual signals: code is just comma-separated, not a single object.
                 # We don't have a C++ struct for this directly; it's consumed by RecurseV/ConvolveV.
                 raise NotImplementedError(

@@ -400,7 +400,7 @@ class TIKernel2D(KernelExpr2D):
                     if self.ty.is_zero(a_val):
                         continue
                     for k, row_b in enumerate(other.data):
-                        for l, b_val in enumerate(row_b):
+                        for (l, b_val) in enumerate(row_b):
                             result[i + k][j + l] = self.ty.add(
                                 result[i + k][j + l],
                                 self.ty.mult(a_val, b_val),

@@ -4,7 +4,7 @@ from typing import List, Sequence, Tuple
 import typing
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
-from vecrec.expr.kernel import TIKernel2D, TVKernel2D
+from vecrec.expr.kernel import TIKernel2D
 from vecrec.factorize import factorize_polynomial, factorize_kernel2d
 from vecrec.util import ElementType
 from . import Transform, ArithTransform, TropTransform

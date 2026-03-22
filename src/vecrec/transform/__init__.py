@@ -1,6 +1,5 @@
 from __future__ import annotations
-from typing import List, Sequence, overload
-import typing
+from typing import Sequence, overload
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr
