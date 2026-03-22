@@ -2,34 +2,19 @@
 
 from vecrec.expr import *
 from vecrec.transform import *
-from vecrec.codegen import (
-    CodeGen,
-    generate_and_run_benchmark,
-)
-from vecrec.transform import DilateTrop
+from vecrec.codegen import *
+from vecrec.optimize import get_candidate_schedules
 from vecrec.util import ElementType
 
 
 def main() -> None:
     with with_types(Type.TropMax, ElementType.I64):
         program = Recurse(TIKernel([Type.TropMax.zero(), 2, 5]), Var("g"))
-    transforms = Seq(
-        Optional(
-            Seq(
-                RepeatUpTo(4, DilateTrop(), SaturatePreorder(ConstantFold)),
-            ),
-        ),
-        AnnotateLanes(512),
-        PushDownConvertLanes(),
-    )
-
-    results = transforms.apply_signal(program)
-    print(pps(results))
-    codegen = CodeGen()
-    benchmark_result = generate_and_run_benchmark(
-        codegen, results, True
-    )
-    print(benchmark_result)
+    
+    exprs = get_candidate_schedules(program, max_bits=512, debug=True)
+    results = generate_and_run_benchmark(CodeGen(), exprs)
+    print(results)
+    
 
 
 if __name__ == "__main__":

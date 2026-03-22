@@ -1236,7 +1236,7 @@ def generate_kernel_executable(
 def generate_and_run_benchmark(
     codegen: CodeGen,
     exprs: Sequence[SignalExpr | SignalExpr2D],
-    include_correctness_check: bool = False,
+    include_correctness_check: bool = True,
     header_path: Optional[str] = None,
     benchmark_path: Optional[str] = None,
     executable_path: Optional[str] = None,

@@ -15,7 +15,7 @@ class TIKernel(KernelExpr):
         if n >= 0:
             raise ValueError(f"n must be negative, got {n}")
         resolved_ty, resolved_et = _resolve_types(ty, element_type)
-        return TIKernel([0.0] * (-n) + [resolved_ty.one()], resolved_ty, resolved_et)
+        return TIKernel([resolved_ty.zero()] * (-n) + [resolved_ty.one()], resolved_ty, resolved_et)
 
     @staticmethod
     def i(ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> TIKernel:

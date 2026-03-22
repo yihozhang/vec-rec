@@ -4,7 +4,7 @@ from vecrec.expr.base import SignalExpr, SignalExpr2D
 from vecrec.transform import *
 
 
-def get_optimizing_schedule(max_bits: int) -> Transform:
+def get_optimizing_schedule(max_bits: int, debug: bool=False) -> Transform:
     # fmt: off
     return Seq(
         Preorder(Try(Factorize2D())),
@@ -28,28 +28,30 @@ def get_optimizing_schedule(max_bits: int) -> Transform:
 
         Optional(
             Seq(
-                SaturatePreorderUpTo(Dilate(max_bits // 2)),
+                SaturatePreorderUpTo(Any(Dilate(max_bits // 2), DilateTrop(max_bits // 2))),
                 SaturatePreorder(ConstantFold),
-                Preorder(Try(Any(Dilate(), Delay()))),
+                Preorder(Try(Any(Dilate(), Delay(), DilateTrop()))),
                 SaturatePreorder(ConstantFold),
             )
         ),
         
-        DebugPrint(),
+        DebugPrint() if debug else Noop(),
 
         InferNRows(),
         AnnotateLanes(max_bits),
-        # PushDownConvertLanes(),
+        PushDownConvertLanes(),
     )
 
 
 @overload
+def get_candidate_schedules(expr: SignalExpr, max_bits: int, debug: bool) -> list[SignalExpr]: ...
+@overload
+def get_candidate_schedules(expr: SignalExpr2D, max_bits: int, debug: bool) -> list[SignalExpr2D]: ...
+@overload
 def get_candidate_schedules(expr: SignalExpr, max_bits: int) -> list[SignalExpr]: ...
-
-
 @overload
 def get_candidate_schedules(expr: SignalExpr2D, max_bits: int) -> list[SignalExpr2D]: ...
 
 
-def get_candidate_schedules(expr, max_bits):
-    return get_optimizing_schedule(max_bits).apply_generic(expr)
+def get_candidate_schedules(expr, max_bits, debug=False):
+    return get_optimizing_schedule(max_bits, debug=debug).apply_generic(expr)

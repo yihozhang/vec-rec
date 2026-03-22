@@ -84,14 +84,22 @@ class Dilate(Transform):
 class DilateTrop(Transform):
     """Dilate a tropical IIR"""
 
-    def op(self, k: TIKernel) -> Tuple[TIKernel, TIKernel]:
+    max_bits: int
+
+    def __init__(self, max_bits: int = 2**63):
+        self.max_bits = max_bits
+    def max_lanes(self, element_type: ElementType) -> int:
+        """Get the maximal number of lanes possible given the type"""
+        return self.max_bits // element_type.bit_width()
+
+    def op(self, k: TIKernel) -> typing.Optional[Tuple[TIKernel, TIKernel]]:
         assert k.ty == Type.TropMax or k.ty == Type.TropMin
+        max_stride = self.max_lanes(k.element_type)
+
         stride = 2
-        while True:
+        while stride <= max_stride:
             even = [k.ty.zero()] * len(k)
             even[0::stride] = k.data[0::stride]
-            print(even)
-            print(k.data)
             odd = [k.ty.zero() if a == b else a for a, b in zip(k.data, even)]
 
             even_k = TIKernel(even, k.ty, k.element_type)
@@ -104,34 +112,39 @@ class DilateTrop(Transform):
             f = TIKernel.i(k.ty, k.element_type) + odd_k
             i = even_k + odd_k * odd_k
             return f, i
+        return None
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(a, g) if isinstance(a, TIKernel):
-                f, i = self.op(a)
+                result = self.op(a)
+                if not result:
+                    return []
+                f, i = result
                 return [Recurse(i, Convolve(f, g))]
             case _:
                 return []
 
-@ArithTransform
+
 class Delay(Transform):
     """Delay an IIR by identifying leading coefficient v at feedback p and negating by v*z^-p"""
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(a, g) if isinstance(a, TIKernel):
-                assert a.ty == Type.Arith
                 pos, val = next(
                     ((i, v) for i, v in enumerate(a.data) if not a.ty.is_zero(v)),
                     (len(a), 0),
                 )
-                if val == 0:
+                if pos == len(a):
                     return []
-                coeff = TIKernel.z(Type.Arith, expr.element_type, -pos) * val
+                new_a = a.copy()
+                new_a.data[pos] = expr.ty.zero()
+                coeff = TIKernel.z(expr.ty, expr.element_type, -pos) * val
                 return [
                     Recurse(
-                        a + coeff * (a - TIKernel.i(Type.Arith, expr.element_type)),
-                        Convolve(TIKernel.i(Type.Arith, expr.element_type) + coeff, g),
+                        new_a + coeff * a,
+                        Convolve(TIKernel.i(expr.ty, expr.element_type) + coeff, g),
                     )
                 ]
             case _:
@@ -166,7 +179,9 @@ class Factorize(Transform):
             case Convolve(TIKernel(a) as kernel, g):
                 if len(a) < 2:
                     return []  # Constant kernel, nothing to factorize
-                factors: Sequence[KernelExpr] = factorize_polynomial(a, kernel.element_type)
+                factors: Sequence[KernelExpr] = factorize_polynomial(
+                    a, kernel.element_type
+                )
                 if len(factors) == 0:
                     return []
                 # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
@@ -205,6 +220,7 @@ class Factorize2D(Transform):
             case _:
                 return []
 
+
 @ArithTransform
 class DilateTVWithSingleOddOrder(Transform):
     def all_nonzeros(self, a: Sequence[SignalExpr]) -> List[int]:
@@ -217,8 +233,12 @@ class DilateTVWithSingleOddOrder(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(TVKernel(a) as kernel, g):
-                even: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
-                odd: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
+                even: List[SignalExpr] = [
+                    Num(0, Type.Arith, kernel.element_type)
+                ] * len(a)
+                odd: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(
+                    a
+                )
                 even[0::2] = a[0::2]
                 odd[1::2] = a[1::2]
                 inzs = self.all_nonzeros(odd)
@@ -233,7 +253,9 @@ class DilateTVWithSingleOddOrder(Transform):
                                 PointwiseDiv(
                                     odd[inz],
                                     Convolve(
-                                        TIKernel.z(Type.Arith, kernel.element_type, -inz),
+                                        TIKernel.z(
+                                            Type.Arith, kernel.element_type, -inz
+                                        ),
                                         odd[inz],
                                     ),
                                 )
@@ -266,4 +288,3 @@ class DilateTVWithSingleOddOrder(Transform):
 
             case _:
                 return []
-
