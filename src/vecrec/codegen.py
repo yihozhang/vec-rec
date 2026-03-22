@@ -1,9 +1,11 @@
 from typing import List, Optional, Sequence, Dict, Tuple, Union, cast
 from vecrec.expr import *
-from vecrec.expr.base import SignalExpr2D
+from vecrec.expr.base import SignalExpr2D, KernelMatrixExpr, SignalVectorExpr
 from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Ith
 from vecrec.expr.kernel import TIKernel, TVKernel
+from vecrec.expr.kernel_matrix import KernelMatrix
+from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, VectorAt
 from vecrec.util import ElementType
 import json
 import numpy as np
@@ -12,7 +14,13 @@ import subprocess
 import tempfile
 from importlib.resources import files
 
-__all__ = ["CodeGen", "generate_benchmark", "instantiate_kernels", "generate_kernel_executable", "generate_and_run_benchmark"]
+__all__ = [
+    "CodeGen",
+    "generate_benchmark",
+    "instantiate_kernels",
+    "generate_kernel_executable",
+    "generate_and_run_benchmark",
+]
 
 TEMPLATE = files("vecrec.templates") / "common.h"
 
@@ -112,9 +120,7 @@ class CodeGen:
     def _signal2d_n_rows(self, signal2d: SignalExpr2D) -> int:
         if isinstance(signal2d, RVar2D):
             if signal2d.name not in self.var2d_context:
-                raise ValueError(
-                    f"RVar2D '{signal2d.name}' used outside of Repeater context"
-                )
+                raise ValueError(f"RVar2D '{signal2d.name}' used outside of Repeater context")
             return cast(int, self.var2d_context[f"{signal2d.name}_n_rows"])
 
         if isinstance(signal2d, (Repeater, Var2D)):
@@ -124,9 +130,7 @@ class CodeGen:
             )
             return signal2d.n_rows
 
-        raise ValueError(
-            f"Ith expects RVar2D, Repeater, or Var2D as signal2d, got {type(signal2d)}"
-        )
+        raise ValueError(f"Ith expects RVar2D, Repeater, or Var2D as signal2d, got {type(signal2d)}")
 
     def collect_input_variables(
         self,
@@ -160,14 +164,8 @@ class CodeGen:
         self.clear()
         code = self.generate_signal(expr)
         vars, vars2d = self.collect_input_variables(expr)
-        args_1d = [
-            f"const {elt_type.to_str()} *{var}"
-            for var, elt_type in sorted(vars.items())
-        ]
-        args_2d = [
-            f"const {elt_type.to_str()} *{var}, int {var}_stride"
-            for var, elt_type in sorted(vars2d.items())
-        ]
+        args_1d = [f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items())]
+        args_2d = [f"const {elt_type.to_str()} *{var}, int {var}_stride" for var, elt_type in sorted(vars2d.items())]
         all_args = args_1d + args_2d + ["int row_size"]
         args = ", ".join(all_args)
         text = "\n".join(
@@ -226,9 +224,7 @@ class CodeGen:
 
                 constructor = "make_" + type(expr).__name__
                 suffix = self.get_sem_suffix(ty)
-                program = (
-                    f"{constructor}{suffix}<{vec_type}>({code_a.text}, {code_b.text})"
-                )
+                program = f"{constructor}{suffix}<{vec_type}>({code_a.text}, {code_b.text})"
                 code = Code(program, ty, element_type, expr.lanes)
 
             case Var():
@@ -255,9 +251,7 @@ class CodeGen:
             case RVar2D(name):
                 # RVar2D should only appear within a Repeater context
                 if name not in self.var2d_context:
-                    raise ValueError(
-                        f"RVar2D '{name}' used outside of Repeater context"
-                    )
+                    raise ValueError(f"RVar2D '{name}' used outside of Repeater context")
 
                 context_var = self.var2d_context[name]
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
@@ -295,9 +289,7 @@ class CodeGen:
                 self.var2d_context = old_context
 
                 # Generate the Repeater construction
-                program = (
-                    f"make_repeater<{vec_type}, {n_rows}>({context_var}, {code_a.text})"
-                )
+                program = f"make_repeater<{vec_type}, {n_rows}>({context_var}, {code_a.text})"
                 code = Code(program, expr.ty, expr.element_type, expr.lanes)
             case Convolve(a, f):
                 code_a = self.generate_kernel(a)
@@ -310,9 +302,7 @@ class CodeGen:
 
                 vec_type = self.get_vec_type(element_type, expr.lanes)
                 suffix = self.get_sem_suffix(ty)
-                program = (
-                    f"make_s_convolve{suffix}<{vec_type}>({code_a.text}, {code_f.text})"
-                )
+                program = f"make_s_convolve{suffix}<{vec_type}>({code_a.text}, {code_f.text})"
                 code = Code(program, ty, element_type, expr.lanes)
             case Recurse(a, g):
                 time_delay, a = a.time_delay(expr.lanes)
@@ -328,9 +318,7 @@ class CodeGen:
                 vec_type = self.get_vec_type(element_type, expr.lanes)
 
                 suffix = self.get_sem_suffix(ty)
-                program = (
-                    f"make_s_recurse{suffix}<{vec_type}>({code_a.text}, {code_g.text})"
-                )
+                program = f"make_s_recurse{suffix}<{vec_type}>({code_a.text}, {code_g.text})"
                 code = Code(program, ty, element_type, a.lanes)
             case Ith(signal2d, i):
                 # Ith extracts the ith row from a 2D signal
@@ -351,9 +339,7 @@ class CodeGen:
                 n_rows = self._signal2d_n_rows(signal2d)
 
                 # Generate make_ith_row call using signal2d_lanes to keep C++ types consistent
-                program = (
-                    f"make_ith_row<{ith_vec_type}, {n_rows}, {i}>({code_signal2d.text})"
-                )
+                program = f"make_ith_row<{ith_vec_type}, {n_rows}, {i}>({code_signal2d.text})"
                 code = Code(program, ty, element_type, signal2d_lanes)
 
                 # Wrap with ConvertOne2N (downscale) or ConvertN2One (upscale) if needed
@@ -362,6 +348,33 @@ class CodeGen:
             case ConvertLanes(a):
                 code_a = self.generate_signal(a)
                 code = self.enforce_lanes(code_a, expr.lanes)
+            case VectorAt(a, i):
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+                if isinstance(a, ConvolveV):
+                    # FIR: out[i] = sum_j K[i][j] * g[j]
+                    # Decompose into SConvolve + SAdd — no shared state between rows.
+                    assert isinstance(a.a, KernelMatrix) and isinstance(a.b, SignalVector)
+                    terms = []
+                    for j in range(a.n):
+                        k = a.a.data[i][j]
+                        assert isinstance(k, TIKernel)
+                        if len(k.data) == 0:
+                            continue  # zero kernel: no contribution
+                        code_k = self.generate_kernel(k)
+                        code_s = self.generate_signal(a.b.data[j])
+                        terms.append(f"make_s_convolve<{vec_type}>({code_k.text}, {code_s.text})")
+                    if not terms:
+                        program = f"Signal1DConstant<{vec_type}>(0)"
+                    elif len(terms) == 1:
+                        program = terms[0]
+                    else:
+                        program = f"make_s_add<{vec_type}>({terms[0]}, {terms[1]})"
+                else:
+                    # IIR (RecurseV): generate the shared vector object, then extract component i
+                    code_vec = self.generate_signal_vector(a)
+                    n = a.n
+                    program = f"make_vector_at<{n}, {i}, {vec_type}>({code_vec.text})"
+                code = Code(program, expr.ty, expr.element_type, expr.lanes)
             case _:
                 assert False
 
@@ -387,28 +400,36 @@ class CodeGen:
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
 
                 taps, indices, values = expr.to_sparse_repr()
-                index_args = ", ".join(map(str, indices))
-                value_args = ", ".join(
-                    map(lambda v: f"{expr.element_type.val_to_str(v, expr.ty)}", values)
-                )
 
-                index_var = self.get_new_var()
-                value_var = self.get_new_var()
+                if taps == 0:
+                    code = Code(
+                        f"ZeroKernel<{vec_type}>()",
+                        expr.ty,
+                        expr.element_type,
+                        expr.lanes,
+                        taps=0,
+                    )
+                else:
+                    index_args = ", ".join(map(str, indices))
+                    value_args = ", ".join(map(lambda v: f"{expr.element_type.val_to_str(v, expr.ty)}", values))
 
-                self.prologue.append(
-                    f"constexpr static int {index_var}[{taps}] = {{{index_args}}};",
-                )
-                self.prologue.append(
-                    f"constexpr static {expr.element_type.to_str()} {value_var}[{taps}] = {{{value_args}}};",
-                )
+                    index_var = self.get_new_var()
+                    value_var = self.get_new_var()
 
-                code = Code(
-                    f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
-                    expr.ty,
-                    expr.element_type,
-                    expr.lanes,
-                    taps=taps,
-                )
+                    self.prologue.append(
+                        f"constexpr static int {index_var}[{taps}] = {{{index_args}}};",
+                    )
+                    self.prologue.append(
+                        f"constexpr static {expr.element_type.to_str()} {value_var}[{taps}] = {{{value_args}}};",
+                    )
+
+                    code = Code(
+                        f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
+                        expr.ty,
+                        expr.element_type,
+                        expr.lanes,
+                        taps=taps,
+                    )
             case TVKernel(_):
                 taps, indices, signals = expr.to_sparse_repr()
                 signal_codes = [self.generate_signal(signal) for signal in signals]
@@ -436,9 +457,7 @@ class CodeGen:
                 code_a = self.generate_kernel(a)
                 code = self.enforce_lanes(code_a, expr.lanes)
             case KAdd(_, _) | KSub(_, _) | KNeg(_) | KConvolve(_, _):
-                raise NotImplementedError(
-                    "These apps should have been eliminated by constant folding"
-                )
+                raise NotImplementedError("These apps should have been eliminated by constant folding")
             case _:
                 assert False
 
@@ -447,6 +466,82 @@ class CodeGen:
             var = self.get_new_var()
             self.prologue.append(f"auto {var} = {code.text};")
             code = Code(var, code.ty, code.element_type, code.lanes, code.taps)
+        if self.expr_cache is not None:
+            self.expr_cache[expr] = code
+        return code
+
+    def generate_signal_vector(self, expr: SignalVectorExpr) -> Code:
+        """Generate code for a SignalVectorExpr.
+
+        Returns a Code whose C++ object has a run(vec_type* out) that fills
+        out[0..n-1].  The Code is cached in the prologue.
+        """
+        if self.expr_cache is not None and expr in self.expr_cache:
+            return self.expr_cache[expr]
+
+        assert expr.lanes is not None
+
+        match expr:
+            case SignalVector(data):
+                # Individual signals: code is just comma-separated, not a single object.
+                # We don't have a C++ struct for this directly; it's consumed by RecurseV/ConvolveV.
+                raise NotImplementedError(
+                    "SignalVector has no standalone C++ object; it must appear as the input to RecurseV or ConvolveV"
+                )
+
+            case RecurseV(a, g):
+                assert isinstance(a, KernelMatrix), f"RecurseV kernel must be KernelMatrix, got {type(a)}"
+                assert isinstance(g, SignalVector), f"RecurseV input must be SignalVector, got {type(g)}"
+                n = a.n
+                assert n == 2, f"RecurseV currently only supports n=2, got n={n}"
+                lanes = expr.lanes
+                vec_type = self.get_vec_type(expr.element_type, lanes)
+
+                # Strip time delay from each kernel and assert delay == lanes
+                stripped: List[List[TIKernel]] = []
+                for i in range(n):
+                    row: List[TIKernel] = []
+                    for j in range(n):
+                        k = a.data[i][j]
+                        assert isinstance(k, TIKernel), f"RecurseV kernels must be TIKernel, got {type(k)}"
+                        if len(k.data) == 0:
+                            # Zero kernel – no feedback on this path
+                            row.append(TIKernel([], k.ty, k.element_type).with_lanes(lanes))  # type: ignore[arg-type]
+                        else:
+                            delay, stripped_k = k.time_delay(lanes)
+                            assert delay == lanes, (
+                                f"RecurseV kernel A[{i}][{j}] has time delay {delay}, expected {lanes}. "
+                                "Each kernel must have a causal delay equal to the number of lanes."
+                            )
+                            row.append(cast(TIKernel, stripped_k))
+                    stripped.append(row)
+
+                # Generate C++ code for each kernel
+                kernel_codes: List[List[Code]] = [
+                    [self.generate_kernel(stripped[i][j]) for j in range(n)]
+                    for i in range(n)
+                ]
+
+                # Generate C++ code for each input signal
+                signal_codes = [self.generate_signal(g.data[i]) for i in range(n)]
+
+                # Build factory call for n=2
+                k00, k01, k10, k11 = (
+                    kernel_codes[0][0].text, kernel_codes[0][1].text,
+                    kernel_codes[1][0].text, kernel_codes[1][1].text,
+                )
+                s0, s1 = signal_codes[0].text, signal_codes[1].text
+
+                program = f"make_s_recurse_v2<{vec_type}>({k00}, {k01}, {k10}, {k11}, {s0}, {s1})"
+                code = Code(program, expr.ty, expr.element_type, lanes)
+
+            case _:
+                assert False, f"Unsupported SignalVectorExpr: {type(expr)}"
+
+        # Cache the vector signal in the prologue
+        var = self.get_new_var()
+        self.prologue.append(f"auto {var} = {code.text};")
+        code = Code(var, code.ty, code.element_type, code.lanes)
         if self.expr_cache is not None:
             self.expr_cache[expr] = code
         return code
@@ -525,9 +620,7 @@ def generate_benchmark(
         benchmark_iterations: Number of iterations for timing
         row_size: Number of elements per row (used to call reset_and_next_row at row boundaries)
     """
-    assert len(exprs) == len(
-        kernel_names
-    ), "Number of expressions and kernel names must match"
+    assert len(exprs) == len(kernel_names), "Number of expressions and kernel names must match"
     assert len(exprs) > 0, "At least one expression must be provided"
 
     # Collect variables from all expressions
@@ -591,8 +684,7 @@ def _generate_benchmark_code(
     benchmark_text += f"    const int iterations = {benchmark_iterations};\n\n"
 
     bytes_per_element_terms = [
-        f"sizeof({elt_type.to_str()})"
-        for _, elt_type in sorted(all_vars.items()) + sorted(all_vars2d.items())
+        f"sizeof({elt_type.to_str()})" for _, elt_type in sorted(all_vars.items()) + sorted(all_vars2d.items())
     ]
     bytes_per_element_terms.append(f"sizeof({output_type.to_str()})")
     bytes_per_iteration_expr = " + ".join(bytes_per_element_terms)
@@ -614,17 +706,11 @@ def _generate_benchmark_code(
     needs_int64 = any(elt_type == ElementType.I64 for elt_type in all_elt_types)
 
     if needs_float:
-        benchmark_text += (
-            "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
-        )
+        benchmark_text += "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
     if needs_int32:
-        benchmark_text += (
-            "    std::uniform_int_distribution<int32_t> int32_dis(-1000, 1000);\n"
-        )
+        benchmark_text += "    std::uniform_int_distribution<int32_t> int32_dis(-1000, 1000);\n"
     if needs_int64:
-        benchmark_text += (
-            "    std::uniform_int_distribution<int64_t> int64_dis(-1000000, 1000000);\n"
-        )
+        benchmark_text += "    std::uniform_int_distribution<int64_t> int64_dis(-1000000, 1000000);\n"
     benchmark_text += "\n"
 
     for var, elt_type in sorted(all_vars.items()) + sorted(all_vars2d.items()):
@@ -653,9 +739,7 @@ def _generate_benchmark_code(
 
     # Generate benchmark code for each kernel
     var_args_1d = [f"{var}.data()" for var in sorted(all_vars)]
-    var_args_2d = [
-        f"{var}.data(), row_size" for var in sorted(all_vars2d)
-    ]
+    var_args_2d = [f"{var}.data(), row_size" for var in sorted(all_vars2d)]
     var_args_list = var_args_1d + var_args_2d + ["row_size"]
     var_args = ", ".join(var_args_list)
 
@@ -677,9 +761,7 @@ def _generate_benchmark_code(
         benchmark_text += f"        kernel = make_{name}({var_args});\n\n"
 
         benchmark_text += "        // Timed run\n"
-        benchmark_text += (
-            "        auto start = std::chrono::high_resolution_clock::now();\n"
-        )
+        benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
         benchmark_text += "            // Recreate kernel for each iteration\n"
         benchmark_text += f"            kernel = make_{name}({var_args});\n"
@@ -691,9 +773,7 @@ def _generate_benchmark_code(
         benchmark_text += "#pragma unroll\n"
         benchmark_text += f"                for (int i = 0; i < 16 / vec_lanes_of({name}_vector_type{{}}); i++) {{\n"
         benchmark_text += "                    kernel.run(&out);\n"
-        benchmark_text += (
-            f"                    memcpy(&output_{name}[pos], &out, sizeof(out));\n"
-        )
+        benchmark_text += f"                    memcpy(&output_{name}[pos], &out, sizeof(out));\n"
         benchmark_text += "                    pos += vec_lanes_of(out);\n"
 
         benchmark_text += "                    if (pos % row_size == 0) {\n"
@@ -703,9 +783,7 @@ def _generate_benchmark_code(
         benchmark_text += "                }\n"
         benchmark_text += "            }\n"
         benchmark_text += "        }\n"
-        benchmark_text += (
-            "        auto end = std::chrono::high_resolution_clock::now();\n"
-        )
+        benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += "        \n"
         benchmark_text += "        // XOR sum to prevent optimization of output array\n"
         benchmark_text += f"        uint64_t xor_sum = 0;\n"
@@ -717,9 +795,7 @@ def _generate_benchmark_code(
         benchmark_text += "        const double elapsed_seconds = std::chrono::duration<double>(end - start).count();\n"
         benchmark_text += "        const double throughput_gbps = (bytes_per_iteration * static_cast<double>(iterations)) / elapsed_seconds / 1e6;\n"
         # Deciding if we need to generate the trailing comma
-        if i == len(kernel_names) - 1 and not (
-            include_correctness_check and len(kernel_names) > 1
-        ):
+        if i == len(kernel_names) - 1 and not (include_correctness_check and len(kernel_names) > 1):
             benchmark_text += f'        std::cout << "  \\"{name}\\": " << throughput_gbps << "\\n";\n'
         else:
             benchmark_text += f'        std::cout << "  \\"{name}\\": " << throughput_gbps << ",\\n";\n'
@@ -778,9 +854,7 @@ int arrays_equal(const std::vector<int64_t>& a, const std::vector<int64_t>& b) {
 """
 
 
-def _generate_correctness_check_code(
-    kernel_names: Sequence[str], input_size: int
-) -> str:
+def _generate_correctness_check_code(kernel_names: Sequence[str], input_size: int) -> str:
     """
     Generate correctness checking code comparing all kernels.
 
@@ -857,35 +931,27 @@ class KernelExecutable:
         if isinstance(inputs, np.ndarray):
             total = len(all_1d) + len(all_2d)
             if total != 1:
-                raise ValueError(
-                    "Expected a dictionary of named arrays for multi-input kernels"
-                )
+                raise ValueError("Expected a dictionary of named arrays for multi-input kernels")
             if all_1d:
                 return {self.variable_order[0]: inputs}, {}
             else:
                 return {}, {self.vars2d_order[0]: inputs}
 
         if not isinstance(inputs, dict):
-            raise TypeError(
-                "inputs must be a numpy array or a dict[str, numpy.ndarray]"
-            )
+            raise TypeError("inputs must be a numpy array or a dict[str, numpy.ndarray]")
 
         expected = all_1d | all_2d
         actual = set(inputs.keys())
         if expected != actual:
             missing = sorted(expected - actual)
             extra = sorted(actual - expected)
-            raise ValueError(
-                f"Input variable mismatch: missing={missing}, extra={extra}"
-            )
+            raise ValueError(f"Input variable mismatch: missing={missing}, extra={extra}")
 
         inputs_1d = {k: v for k, v in inputs.items() if k in all_1d}
         inputs_2d = {k: v for k, v in inputs.items() if k in all_2d}
         return inputs_1d, inputs_2d
 
-    def run(
-        self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
-    ) -> tuple[np.ndarray, float]:
+    def run(self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]) -> tuple[np.ndarray, float]:
         inputs_1d, inputs_2d = self._normalize_inputs(inputs)
 
         n: Optional[int] = None
@@ -902,9 +968,7 @@ class KernelExecutable:
             if n is None:
                 n = int(arr.shape[0])
             elif int(arr.shape[0]) != n:
-                raise ValueError(
-                    f"All input arrays must have the same length, got {n} and {arr.shape[0]}"
-                )
+                raise ValueError(f"All input arrays must have the same length, got {n} and {arr.shape[0]}")
             prepared_1d[var] = arr
 
         # Prepare 2D inputs.
@@ -956,31 +1020,23 @@ class KernelExecutable:
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
-                raise RuntimeError(
-                    f"Kernel execution failed with code {result.returncode}: {result.stderr}"
-                )
+                raise RuntimeError(f"Kernel execution failed with code {result.returncode}: {result.stderr}")
 
             try:
                 metadata = json.loads(result.stdout.strip())
             except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"Failed to parse runner output as JSON: {result.stdout}"
-                ) from exc
+                raise RuntimeError(f"Failed to parse runner output as JSON: {result.stdout}") from exc
 
             elapsed_us = float(metadata["elapsed_us"])
 
             output_dtype = _numpy_dtype_for_element_type(self.output_type)
             output = np.fromfile(output_path, dtype=output_dtype, count=n)
             if int(output.shape[0]) != n:
-                raise RuntimeError(
-                    f"Output size mismatch: expected {n}, got {output.shape[0]}"
-                )
+                raise RuntimeError(f"Output size mismatch: expected {n}, got {output.shape[0]}")
 
             return output, elapsed_us
 
-    def __call__(
-        self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
-    ) -> tuple[np.ndarray, float]:
+    def __call__(self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]) -> tuple[np.ndarray, float]:
         return self.run(inputs)
 
 
@@ -1048,12 +1104,8 @@ def _generate_kernel_runner_code(
         cpp_type = elt_type.to_str()
         arg_idx = idx + 3
         text += f"    std::vector<{cpp_type}> {name}(N);\n"
-        text += (
-            f"    if (!read_binary<{cpp_type}>(argv[{arg_idx}], {name}.data(), N)) {{\n"
-        )
-        text += (
-            f'        std::cerr << "Failed to read input for {name}" << std::endl;\n'
-        )
+        text += f"    if (!read_binary<{cpp_type}>(argv[{arg_idx}], {name}.data(), N)) {{\n"
+        text += f'        std::cerr << "Failed to read input for {name}" << std::endl;\n'
         text += "        return 2;\n"
         text += "    }\n"
     text += "\n"
@@ -1070,9 +1122,7 @@ def _generate_kernel_runner_code(
         text += f"    const int nelem_{name} = N;\n"
         text += f"    std::vector<{cpp_type}> {name}(nelem_{name});\n"
         text += f"    if (!read_binary<{cpp_type}>(argv[{path_arg_idx}], {name}.data(), nelem_{name})) {{\n"
-        text += (
-            f'        std::cerr << "Failed to read 2D input for {name}" << std::endl;\n'
-        )
+        text += f'        std::cerr << "Failed to read 2D input for {name}" << std::endl;\n'
         text += "        return 2;\n"
         text += "    }\n"
     text += "\n"
@@ -1142,9 +1192,7 @@ def generate_kernel_executable(
         os.close(fd)
 
     if runner_path is None:
-        fd, runner_path = tempfile.mkstemp(
-            suffix=".cpp", prefix="kernel_runner_", dir="/tmp"
-        )
+        fd, runner_path = tempfile.mkstemp(suffix=".cpp", prefix="kernel_runner_", dir="/tmp")
         os.close(fd)
 
     if executable_path is None:
@@ -1234,9 +1282,7 @@ def generate_and_run_benchmark(
 
     # Generate unique random file names if not provided
     if benchmark_path is None:
-        fd, benchmark_path = tempfile.mkstemp(
-            suffix=".cpp", prefix="benchmark_", dir="/tmp"
-        )
+        fd, benchmark_path = tempfile.mkstemp(suffix=".cpp", prefix="benchmark_", dir="/tmp")
         print(benchmark_path)
         os.close(fd)  # Close the file descriptor, we'll write to it later
 

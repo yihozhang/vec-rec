@@ -303,6 +303,16 @@ EXTRACT_SUB_VECTOR1(int64_t)
 EXTRACT_SUB_VECTOR2(int64_vec2)
 EXTRACT_SUB_VECTOR4(int64_vec4)
 
+// ZeroKernel: a kernel with no taps (contributes nothing to the output).
+// Used when a position in a KernelMatrix has no feedback.
+template <typename vec_type>
+struct ZeroKernel {
+    constexpr static int taps = 0;
+    constexpr static const int *idxs = nullptr;
+    void run(vec_type * /*out*/) {}
+    void reset_and_next_row() {}
+};
+
 template <int _taps, typename vec_type, const int indices[_taps], const typename ElementType<vec_type>::type vals[_taps]>
 struct TimeInvariantKernel {
     using elt_type = typename ElementType<vec_type>::type;
@@ -932,4 +942,145 @@ auto make_ith_row(Signal2DType sig) {
 template <int _taps, typename vec_type, const int indices[_taps], typename... Args>
 auto make_time_varying_kernel(Args... args) {
     return TimeVaryingKernel<_taps, vec_type, indices, Args...>(args...);
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for SRecurseV2
+// ---------------------------------------------------------------------------
+
+// SLatched: a signal whose value is set externally each step.
+template <typename vec_type>
+struct SLatched {
+    vec_type value{0};
+    void run(vec_type *out) { *out = value; }
+    void reset_and_next_row() { value = 0; }
+};
+
+// MaybeSConvolve<vec_type, K>: SConvolve<K, SLatched> when K has taps > 0,
+// else a no-op that always returns 0.  Used for cross terms in SRecurseV2.
+template <typename vec_type, typename K, bool Active = (K::taps > 0)>
+struct MaybeSConvolve {
+    SConvolve<vec_type, K, SLatched<vec_type>> impl;
+    explicit MaybeSConvolve(K k) : impl(k, SLatched<vec_type>{}) {}
+    void set_input(vec_type v) { impl.signal.value = v; }
+    void run(vec_type *out) { impl.run(out); }
+    void reset_and_next_row() { impl.reset_and_next_row(); }
+};
+template <typename vec_type, typename K>
+struct MaybeSConvolve<vec_type, K, false> {
+    explicit MaybeSConvolve(K) {}
+    void set_input(vec_type) {}
+    void run(vec_type *out) { *out = 0; }
+    void reset_and_next_row() {}
+};
+
+// MaybeSRecurse<vec_type, K>: SRecurse<K, SLatched> when K has taps > 0,
+// else a pass-through (no feedback).  Used for diagonal terms in SRecurseV2.
+template <typename vec_type, typename K, bool Active = (K::taps > 0)>
+struct MaybeSRecurse {
+    SRecurse<vec_type, K, SLatched<vec_type>> impl;
+    explicit MaybeSRecurse(K k) : impl(k, SLatched<vec_type>{}) {}
+    void set_input(vec_type v) { impl.signal.value = v; }
+    void run(vec_type *out) { impl.run(out); }
+    void reset_and_next_row() { impl.reset_and_next_row(); }
+};
+template <typename vec_type, typename K>
+struct MaybeSRecurse<vec_type, K, false> {
+    SLatched<vec_type> latched;
+    explicit MaybeSRecurse(K) {}
+    void set_input(vec_type v) { latched.value = v; }
+    void run(vec_type *out) { latched.run(out); }
+    void reset_and_next_row() { latched.reset_and_next_row(); }
+};
+
+// ---------------------------------------------------------------------------
+// Mutually-recursive (vector) recurrence: SRecurseV2
+//
+// Computes F = A*F + G where F,G are 2-vectors and A is a 2x2 kernel matrix:
+//   F[0] = A[0][0]*F[0] + A[0][1]*F[1] + G[0]
+//   F[1] = A[1][0]*F[0] + A[1][1]*F[1] + G[1]
+//
+// Implemented using MaybeSRecurse for diagonal terms (K00, K11) and
+// MaybeSConvolve for cross terms (K01, K10).
+// ---------------------------------------------------------------------------
+template <typename vec_type,
+          typename K00, typename K01,
+          typename K10, typename K11,
+          typename S0, typename S1>
+struct SRecurseV2 {
+    MaybeSConvolve<vec_type, K01> c01;  // K01 * history(F[1])
+    MaybeSConvolve<vec_type, K10> c10;  // K10 * history(F[0])
+    MaybeSRecurse<vec_type, K00>  r0;   // K00 * F[0] + eff_g0
+    MaybeSRecurse<vec_type, K11>  r1;   // K11 * F[1] + eff_g1
+    S0 s0; S1 s1;
+    vec_type last_out0{0}, last_out1{0};
+
+    SRecurseV2(K00 k00, K01 k01, K10 k10, K11 k11, S0 s0, S1 s1)
+        : c01(k01), c10(k10), r0(k00), r1(k11), s0(s0), s1(s1) {}
+
+    inline __attribute__((always_inline)) void run(vec_type *out) {
+        // Inject previous outputs into cross-term sliding windows
+        c01.set_input(last_out1);
+        c10.set_input(last_out0);
+
+        // Compute cross-term contributions from previous step's outputs
+        vec_type cross0, cross1;
+        c01.run(&cross0);
+        c10.run(&cross1);
+
+        // Read actual inputs and form effective inputs (G + cross)
+        vec_type g0, g1;
+        s0.run(&g0);
+        s1.run(&g1);
+        r0.set_input(g0 + cross0);
+        r1.set_input(g1 + cross1);
+
+        // Compute diagonal recurrences
+        r0.run(&out[0]);
+        r1.run(&out[1]);
+
+        // Remember outputs for next step's cross terms
+        last_out0 = out[0];
+        last_out1 = out[1];
+    }
+
+    void reset_and_next_row() {
+        last_out0 = 0; last_out1 = 0;
+        c01.reset_and_next_row(); c10.reset_and_next_row();
+        r0.reset_and_next_row();  r1.reset_and_next_row();
+        s0.reset_and_next_row();  s1.reset_and_next_row();
+    }
+};
+
+template <typename vec_type,
+          typename K00, typename K01, typename K10, typename K11,
+          typename S0, typename S1>
+auto make_s_recurse_v2(K00 k00, K01 k01, K10 k10, K11 k11, S0 s0, S1 s1) {
+    return SRecurseV2<vec_type, K00, K01, K10, K11, S0, S1>(k00, k01, k10, k11, s0, s1);
+}
+
+// ---------------------------------------------------------------------------
+// VectorAtN: extract component `index` from an n-vector signal.
+// ---------------------------------------------------------------------------
+
+template <typename vec_type, int n, int index, typename SVType>
+struct VectorAtN {
+    SVType signal_vec;
+
+    VectorAtN(SVType sv) : signal_vec(sv) {
+        static_assert(index >= 0 && index < n, "VectorAtN: index out of range");
+    }
+
+    inline __attribute__((always_inline)) void run(vec_type *out) {
+        vec_type all[n];
+        signal_vec.run(all);
+        *out = all[index];
+    }
+
+    void reset_and_next_row() { signal_vec.reset_and_next_row(); }
+};
+
+template <int n, int index, typename vec_type, typename SVType>
+auto make_vector_at(SVType sv) {
+    return VectorAtN<vec_type, n, index, SVType>(sv);
 }

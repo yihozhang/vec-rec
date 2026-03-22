@@ -177,16 +177,20 @@ class RecLang:
     def __hash__(self) -> int:
         return hash((type(self), tuple(sorted(self.__dict__.items()))))
 
-    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D]:
+    def children(
+        self,
+    ) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr]:
         """Return the children of the expression."""
         return [
-            v for v in self.__dict__.values() if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D))
+            v
+            for v in self.__dict__.values()
+            if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr))
         ]
 
     def is_leaf(self) -> bool:
         """Return whether the expression is a leaf node."""
         for v in self.__dict__.values():
-            if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D)):
+            if isinstance(v, (KernelExpr, SignalExpr, KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr)):
                 return False
         return True
 
@@ -249,6 +253,48 @@ class KernelExpr2D(RecLang):
     element_type: ElementType
 
     def with_lanes(self, lanes: Optional[int]) -> KernelExpr2D:
+        return super().with_lanes(lanes)  # type: ignore
+
+
+@dataclass(match_args=False)
+class KernelMatrixExpr(RecLang):
+    """Base class for an n×n matrix of kernel expressions."""
+
+    ty: Type
+    element_type: ElementType
+    n: int
+
+    def __init__(self, ty: Type, element_type: ElementType, n: int, lanes: Optional[int] = None) -> None:
+        super().__init__(lanes)
+        self.ty = ty
+        self.element_type = element_type
+        self.n = n
+
+    def with_lanes(self, lanes: Optional[int]) -> KernelMatrixExpr:
+        return super().with_lanes(lanes)  # type: ignore
+
+
+@dataclass(match_args=False)
+class SignalVectorExpr(RecLang):
+    """Base class for an n-vector of signal streams (each run() produces n vec_type values)."""
+
+    ty: Type
+    element_type: ElementType
+    n: int
+
+    def __init__(self, ty: Type, element_type: ElementType, n: int, lanes: Optional[int] = None) -> None:
+        super().__init__(lanes)
+        self.ty = ty
+        self.element_type = element_type
+        self.n = n
+
+    def at(self, i: int) -> SignalExpr:
+        """Extract component i as a 1D SignalExpr."""
+        from vecrec.expr.signal_vec import VectorAt  # local import to avoid circular dependency
+
+        return VectorAt(self, i)
+
+    def with_lanes(self, lanes: Optional[int]) -> SignalVectorExpr:
         return super().with_lanes(lanes)  # type: ignore
 
 

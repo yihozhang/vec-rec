@@ -184,7 +184,7 @@ class Repeater(SignalExpr2D):
         repeater.prev_rows_var = prev_rows_var
         return repeater
 
-    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D]:
+    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr]:
         # Only expose the inner expression, not prev_rows_var
         # (it's an internal placeholder, not an external input)
         return [self.a]
