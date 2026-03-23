@@ -7,6 +7,7 @@ from vecrec.expr.kernel import TIKernel
 from vecrec.util import ElementType
 from .base import *
 
+
 @dataclass(unsafe_hash=True)
 class KernelExprBinOp(KernelExpr):
     a: KernelExpr
@@ -18,8 +19,9 @@ class KernelExprBinOp(KernelExpr):
     def __init__(self, a: KernelExpr, b: KernelExpr) -> None:
         super().__init__(a.ty, a.element_type)
         assert a.ty == b.ty
-        assert a.element_type == b.element_type, \
-            f"ElementType mismatch in KernelExprBinOp: {a.element_type} vs {b.element_type}"
+        assert (
+            a.element_type == b.element_type
+        ), f"ElementType mismatch in KernelExprBinOp: {a.element_type} vs {b.element_type}"
         self.a = a
         self.b = b
 
@@ -28,9 +30,7 @@ class KernelExprBinOp(KernelExpr):
         a_delay, _ = self.a.time_delay(max_delay)
         b_delay, _ = self.b.time_delay(max_delay)
         delay = min(a_delay, b_delay)
-        return delay, KConvolve(TIKernel.z(self.ty, self.element_type, -delay), self).with_lanes(
-            self.lanes
-        )
+        return delay, KConvolve(TIKernel.z(self.ty, self.element_type, -delay), self).with_lanes(self.lanes)
 
     @classmethod
     def of(cls, exprs: List[KernelExpr]) -> KernelExpr:
@@ -52,11 +52,10 @@ class KConvolve(KernelExprBinOp):
         a_delay, _ = self.a.time_delay(max_delay)
         b_delay, _ = self.b.time_delay(max_delay)
         delay = min(a_delay + b_delay, max_delay)
-        return delay, KConvolve(TIKernel.z(self.ty, self.element_type, -delay), self).with_lanes(
-            self.lanes
-        )
+        return delay, KConvolve(TIKernel.z(self.ty, self.element_type, -delay), self).with_lanes(self.lanes)
 
 
+@dataclass(unsafe_hash=True)
 class KNeg(KernelExpr):
     a: KernelExpr
     ty: Type

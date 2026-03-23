@@ -226,6 +226,17 @@ class CodeGen:
                 suffix = self.get_sem_suffix(ty)
                 program = f"{constructor}{suffix}<{vec_type}>({code_a.text}, {code_b.text})"
                 code = Code(program, ty, element_type, expr.lanes)
+            case SNeg(a):
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+                code_a = self.generate_signal(a)
+                assert code_a.element_type == expr.element_type
+                assert code_a.ty == expr.ty
+                code = Code(
+                    f"make_SNeg<{vec_type}>({code_a.text})",
+                    expr.ty,
+                    expr.element_type,
+                    expr.lanes,
+                )
 
             case Var():
                 assert expr.lanes is not None
@@ -376,7 +387,7 @@ class CodeGen:
                     program = f"make_vector_at<{n}, {i}, {vec_type}>({code_vec.text})"
                 code = Code(program, expr.ty, expr.element_type, expr.lanes)
             case _:
-                assert False
+                assert False, f"CodeGen: unhandled case for expr {expr} of type {type(expr)}"
 
         # Cache and return at the end
         if not self._is_trivial_expr(expr):
@@ -518,8 +529,7 @@ class CodeGen:
 
                 # Generate C++ code for each kernel
                 kernel_codes: List[List[Code]] = [
-                    [self.generate_kernel(stripped[i][j]) for j in range(n)]
-                    for i in range(n)
+                    [self.generate_kernel(stripped[i][j]) for j in range(n)] for i in range(n)
                 ]
 
                 # Generate C++ code for each input signal
@@ -527,8 +537,10 @@ class CodeGen:
 
                 # Build factory call for n=2
                 k00, k01, k10, k11 = (
-                    kernel_codes[0][0].text, kernel_codes[0][1].text,
-                    kernel_codes[1][0].text, kernel_codes[1][1].text,
+                    kernel_codes[0][0].text,
+                    kernel_codes[0][1].text,
+                    kernel_codes[1][0].text,
+                    kernel_codes[1][1].text,
                 )
                 s0, s1 = signal_codes[0].text, signal_codes[1].text
 

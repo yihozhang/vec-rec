@@ -88,6 +88,7 @@ class DilateTrop(Transform):
 
     def __init__(self, max_bits: int = 2**63):
         self.max_bits = max_bits
+
     def max_lanes(self, element_type: ElementType) -> int:
         """Get the maximal number of lanes possible given the type"""
         return self.max_bits // element_type.bit_width()
@@ -179,9 +180,7 @@ class Factorize(Transform):
             case Convolve(TIKernel(a) as kernel, g):
                 if len(a) < 2:
                     return []  # Constant kernel, nothing to factorize
-                factors: Sequence[KernelExpr] = factorize_polynomial(
-                    a, kernel.element_type
-                )
+                factors: Sequence[KernelExpr] = factorize_polynomial(a, kernel.element_type)
                 if len(factors) == 0:
                     return []
                 # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
@@ -233,12 +232,8 @@ class DilateTVWithSingleOddOrder(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(TVKernel(a) as kernel, g):
-                even: List[SignalExpr] = [
-                    Num(0, Type.Arith, kernel.element_type)
-                ] * len(a)
-                odd: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(
-                    a
-                )
+                even: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
+                odd: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
                 even[0::2] = a[0::2]
                 odd[1::2] = a[1::2]
                 inzs = self.all_nonzeros(odd)
@@ -253,9 +248,7 @@ class DilateTVWithSingleOddOrder(Transform):
                                 PointwiseDiv(
                                     odd[inz],
                                     Convolve(
-                                        TIKernel.z(
-                                            Type.Arith, kernel.element_type, -inz
-                                        ),
+                                        TIKernel.z(Type.Arith, kernel.element_type, -inz),
                                         odd[inz],
                                     ),
                                 )

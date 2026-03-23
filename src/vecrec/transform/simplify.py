@@ -70,16 +70,18 @@ class ConstantFoldConvolve(Transform):
             case _:
                 return []
 
+
 @ArithTransform
 class ConstantFoldNegate(Transform):
     """Constant fold negation of time invariant kernels."""
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         match expr:
-            case KNeg(a) if isinstance(a, TIKernel):
+            case KNeg(a) if isinstance(a, KernelConstant):
                 return [-a]
             case _:
                 return []
+
 
 class InlinePointwiseOps(Transform):
     """Inline and transform Convolve(kernel, signal) `PointwiseMul/PointwiseDiv` constants into `Convolve(KMul/KDiv(kernel, constant), signal)`"""
@@ -113,12 +115,14 @@ class InlinePointwiseOps(Transform):
             case _:
                 return []
 
+
 ConstantFold = Any(
     ConstantFoldAdd(),
     ConstantFoldSub(),
     ConstantFoldConvolve(),
     ConstantFoldNegate(),
 )
+
 
 class PushDownAndFuseConvolve(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
@@ -163,7 +167,6 @@ def _contains_node(expr: RecLang, target: RecLang) -> bool:
     return any(_contains_node(child, target) for child in expr.children())
 
 
-
 class EliminateDegenerate2Dkernels(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
@@ -172,6 +175,3 @@ class EliminateDegenerate2Dkernels(Transform):
                 return [f]
             case _:
                 return []
-
-
-

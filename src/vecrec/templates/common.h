@@ -881,6 +881,11 @@ struct SNeg {
     void reset_and_next_row() { s1.reset_and_next_row(); }
 };
 
+template <typename vec_type, typename S1>
+auto make_SNeg(S1 s1) {
+    return SNeg<vec_type, S1>(s1);
+}
+
 template <typename vec_type_in, typename vec_type_out, typename Inner>
 auto make_k_convert_n2one(Inner inner) {
     return KConvertN2One<vec_type_in, vec_type_out, Inner>(inner);

@@ -4,7 +4,7 @@ from vecrec.expr.base import SignalExpr, SignalExpr2D
 from vecrec.transform import *
 
 
-def get_optimizing_schedule(max_bits: int, debug: bool=False) -> Transform:
+def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
     # fmt: off
     return Seq(
         Preorder(Try(Factorize2D())),
@@ -16,6 +16,7 @@ def get_optimizing_schedule(max_bits: int, debug: bool=False) -> Transform:
                 PushDownAndFuseConvolve(),
                 Try(EliminateDegenerate2Dkernels()))
         ),
+        SaturatePreorder(DilateTVWithSingleOddOrder()),
         
         Preorder(Try(Eliminate2DKernels())),
         SaturatePreorder(ConstantFold),
@@ -39,7 +40,7 @@ def get_optimizing_schedule(max_bits: int, debug: bool=False) -> Transform:
 
         InferNRows(),
         AnnotateLanes(max_bits),
-        PushDownConvertLanes(),
+        # PushDownConvertLanes(),
     )
 
 

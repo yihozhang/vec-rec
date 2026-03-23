@@ -12,7 +12,7 @@ class TIKernel(KernelExpr):
     @staticmethod
     def z(ty: Optional[Type] = None, element_type: Optional[ElementType] = None, n: int = -1) -> TIKernel:
         """Return the delay kernel z^n."""
-        if n >= 0:
+        if n > 0:
             raise ValueError(f"n must be negative, got {n}")
         resolved_ty, resolved_et = _resolve_types(ty, element_type)
         return TIKernel([resolved_ty.zero()] * (-n) + [resolved_ty.one()], resolved_ty, resolved_et)
@@ -400,7 +400,7 @@ class TIKernel2D(KernelExpr2D):
                     if self.ty.is_zero(a_val):
                         continue
                     for k, row_b in enumerate(other.data):
-                        for (l, b_val) in enumerate(row_b):
+                        for l, b_val in enumerate(row_b):
                             result[i + k][j + l] = self.ty.add(
                                 result[i + k][j + l],
                                 self.ty.mult(a_val, b_val),
