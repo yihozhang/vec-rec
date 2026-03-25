@@ -10,6 +10,21 @@ from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D
 from vecrec.expr.signal_vec import VectorAt
 from . import Transform, _dedup_exprs
+from typing import Callable
+
+
+def _expand_tvkernel2d(
+    apply_signal: Callable[[SignalExpr], Sequence[SignalExpr]],
+    expr: TVKernel2D,
+) -> List[KernelExpr2D]:
+    """Return all TVKernel2D variants obtained by applying apply_signal to every entry."""
+    return [
+        TVKernel2D([list(row) for row in d], expr.ty, expr.element_type).with_lanes(expr.lanes)
+        for d in itertools.product(*[
+            itertools.product(*(apply_signal(v) for v in row))
+            for row in expr.data
+        ])
+    ]
 
 __all__ = [
     "Noop",
@@ -204,18 +219,8 @@ class Preorder(Transform):
             match expr:
                 case TIKernel2D(_):
                     results.append(expr)
-                case TVKernel2D(data):
-                    def expand_row(row):
-                        return itertools.product(*(self.apply_signal(v) for v in row))
-
-                    row_expansions = [expand_row(row) for row in data]
-
-                    all_combinations = itertools.product(*row_expansions)
-
-                    results += [
-                        TVKernel2D([list(row) for row in d], expr.ty, expr.element_type).with_lanes(expr.lanes)
-                        for d in all_combinations
-                    ]
+                case TVKernel2D(_):
+                    results += _expand_tvkernel2d(self.apply_signal, expr)
                 case _:
                     results += cartesian(
                         type(expr),
@@ -322,18 +327,8 @@ class Postorder(Transform):
         match expr:
             case TIKernel2D(_):
                 results = [expr]
-            case TVKernel2D(data):
-                    def expand_row(row):
-                        return itertools.product(*(self.apply_signal(v) for v in row))
-
-                    row_expansions = [expand_row(row) for row in data]
-
-                    all_combinations = itertools.product(*row_expansions)
-
-                    results = [
-                        TVKernel2D([list(row) for row in d], expr.ty, expr.element_type).with_lanes(expr.lanes)
-                        for d in all_combinations
-                    ]
+            case TVKernel2D(_):
+                results = _expand_tvkernel2d(self.apply_signal, expr)
             case _:
                 results = cartesian(
                     type(expr),
