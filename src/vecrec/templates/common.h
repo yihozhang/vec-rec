@@ -42,6 +42,44 @@ constexpr int vec_lanes_of(int64_vec2) { return 2; }
 constexpr int vec_lanes_of(int64_vec4) { return 4; }
 constexpr int vec_lanes_of(int64_vec8) { return 8; }
 
+#include <cmath>
+template <typename Vec>
+inline Vec safe_mul(Vec a, Vec b) {
+    Vec prod = a * b;
+
+    // Detect NaN: x != x
+    auto isnan_a = (a != a);
+    auto isnan_b = (b != b);
+
+    // Zero checks
+    using Scalar = std::remove_reference_t<decltype(a[0])>;
+    auto a_zero = (a == (Scalar)0);
+    auto b_zero = (b == (Scalar)0);
+
+    // Mask: (isnan(a) && b == 0) || (isnan(b) && a == 0)
+    auto mask = (isnan_a & b_zero) | (isnan_b & a_zero);
+
+    // Blend: mask ? 0 : prod   (elementwise)
+    return mask ? Vec{} : prod;
+}
+
+template <typename Vec>
+inline Vec safe_div(Vec a, Vec b) {
+    Vec quot = a / b;
+
+    using Scalar = std::remove_reference_t<decltype(a[0])>;
+
+    // Detect zeros (works for +0 and -0)
+    auto a_zero = (a == (Scalar)0);
+    auto b_zero = (b == (Scalar)0);
+
+    // Mask for 0/0
+    auto mask = a_zero & b_zero;
+
+    // Blend: if (0/0) -> 1, else normal division
+    return mask ? Vec{(Scalar)1} : quot;
+}
+
 template <typename T>
 struct ElementType {};
 
@@ -649,6 +687,7 @@ struct Repeater {
     }
 
 SConvolveOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
+// SConvolveOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
 SConvolveOp(TropMin, std::numeric_limits<elt_type>::max() / 3, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
 SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 3, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
@@ -706,6 +745,7 @@ SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 3, [](auto a, auto b
     }
 
 SRecurseOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
+// SRecurseOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
 SRecurseOp(TropMin, std::numeric_limits<elt_type>::max() / 3, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
 SRecurseOp(TropMax, std::numeric_limits<elt_type>::min() / 3, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
@@ -859,7 +899,9 @@ struct ConvertOne2N {
 BinOp(SAdd, [](auto left, auto right) { return left + right; });
 BinOp(SSub, [](auto left, auto right) { return left - right; });
 BinOp(PointwiseMul, [](auto left, auto right) { return left * right; });
+// BinOp(PointwiseMul, [](auto left, auto right) { return safe_mul(left, right); });
 BinOp(PointwiseDiv, [](auto left, auto right) { return left / right; });
+// BinOp(PointwiseDiv, [](auto left, auto right) { return safe_div(left, right); });
 
 // No Sub and Div
 BinOp(SAddTropMax, [](auto left, auto right) { return __builtin_elementwise_max(left, right); });

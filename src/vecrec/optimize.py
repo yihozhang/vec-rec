@@ -16,7 +16,10 @@ def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
                 PushDownAndFuseConvolve(),
                 Try(EliminateDegenerate2Dkernels()))
         ),
-        SaturatePreorder(DilateTVWithSingleOddOrder()),
+        SaturatePreorder(ConstantFold),
+
+        # SaturatePreorder(DilateTVWithSingleOddOrder()),
+        # SaturatePreorder(ConstantFold),
         
         Preorder(Try(Eliminate2DKernels())),
         SaturatePreorder(ConstantFold),

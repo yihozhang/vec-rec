@@ -46,8 +46,10 @@ def _prec(expr: RecLang) -> int:
             return _PREC_INDEX
         case SNeg() | KNeg():
             return _PREC_UNARY
-        case Convolve() | Convolve2D() | PointwiseMul() | PointwiseDiv() | KConvolve():
+        case Convolve() | Convolve2D() | KConvolve():
             return _PREC_MUL
+        case PointwiseMul() | PointwiseDiv():
+            return _PREC_MUL - 5
         case SAdd() | SSub() | KAdd() | KSub():
             return _PREC_ADD
         case Recurse() | Recurse2D():
@@ -78,6 +80,13 @@ def _fmt_num(v: float) -> str:
     if v == int(v) and abs(v) < 1e15:
         return str(int(v))
     return f"{v:g}"
+
+# Source - https://stackoverflow.com/a/13875688
+# Posted by Eric, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-03-24, License - CC BY-SA 3.0
+
+def _fmt_superscript(s: str) -> str:
+    return u''.join(dict(zip(u"0123456789", u"⁰¹²³⁴⁵⁶⁷⁸⁹")).get(c, c) for c in s)
 
 
 def _fmt_kernel_row(row: list[float]) -> str:
@@ -110,6 +119,9 @@ def pp(expr: RecLang) -> str:
 
         # --- Kernels ---
         case TIKernel():
+            ty = expr.ty
+            if all(ty.is_zero(v) for v in expr.data[:-1]) and ty.is_one(expr.data[-1]):
+                return f"z⁻{_fmt_superscript(str(len(expr.data) - 1))}"
             return f"[{_fmt_kernel_row(expr.data)}]"
 
         case TVKernel():

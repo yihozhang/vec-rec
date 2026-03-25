@@ -23,13 +23,14 @@ import traceback
 from benchmark import Benchmark, BenchmarkResult
 from arith.prefix_sum import PrefixSumBenchmark
 
-# from arith.first_order_ti import FirstOrderTIConstBenchmark, FirstOrderTIVarBenchmark
+from arith.first_order_ti import FirstOrderTIConstBenchmark, FirstOrderTIVarBenchmark
 from arith.first_order_high_pass import FirstOrderHighPassBenchmark
 from arith.second_order_ti import SecondOrderTIBenchmark
+from arith.second_order_tv import SecondOrderTVBenchmark
 from arith.second_order_high_pass import SecondOrderHighPassBenchmark
 from arith.audio_large_filters import AudioLargeFiltersBenchmark
 
-# from arith.continued_fraction import ContinuedFractionBenchmark
+from arith.continued_fraction import ContinuedFractionBenchmark
 from arith.box_filter_summed_area_table import BoxFilterSATBenchmark
 from arith.repeated_box_filter import RepeatedBoxFilterBenchmark
 from trop.second_order_ti_trop import SecondOrderTITropBenchmark
@@ -47,6 +48,7 @@ REGISTRY.extend(
         FirstOrderHighPassBenchmark(),
         SecondOrderTIBenchmark(),
         SecondOrderHighPassBenchmark(),
+        # SecondOrderTVBenchmark(),
         AudioLargeFiltersBenchmark(),
         # ContinuedFractionBenchmark(),
         *[BoxFilterSATBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],

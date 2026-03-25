@@ -34,6 +34,8 @@ class ConstantFoldAdd(Transform):
         match expr:
             case SAdd(Num(a), b) | SAdd(b, Num(a)) if expr.ty.is_zero(a):
                 return [b]
+            case SAdd(Num(a), Num(b)):
+                return [Num(expr.ty.add(a, b), expr.ty, expr.element_type)]
             case SSub(b, Num(a)) if expr.ty.is_zero(a):
                 return [b]
             case _:
@@ -48,6 +50,27 @@ class ConstantFoldSub(Transform):
             case _:
                 return []
 
+class ConstantFoldMul(Transform):
+    def apply_signal(self, expr):
+        match expr:
+            case PointwiseMul(Num(a), b) | PointwiseMul(b, Num(a)) if expr.ty.is_zero(a):
+                return [Num(0, expr.ty, expr.element_type)]
+            case PointwiseMul(Num(a), b) | PointwiseMul(b, Num(a)) if expr.ty.is_one(a):
+                return [b]
+            case PointwiseDiv(b, Num(a)) if expr.ty.is_one(a):
+                return [b]
+            case PointwiseMul(Num(a), Num(b)):
+                return [Num(expr.ty.mult(a, b), expr.ty, expr.element_type)]
+            case _:
+                return []
+
+class ConstantFoldId(Transform):
+    def apply_signal(self, expr):
+        match expr:
+            case Convolve(TIKernel(a), b) if len(a) == 1 and expr.ty.is_one(a[0]):
+                return [b]
+            case _:
+                return []
 
 class ConstantFoldConvolve(Transform):
     """Constant fold convolution of kernels."""
@@ -65,8 +88,10 @@ class ConstantFoldConvolve(Transform):
                 return [Num(0, expr.ty, expr.element_type)]
             case Convolve(TIKernel(a), b) if expr.ty.is_one(a[0]) and all(expr.ty.is_zero(v) for v in a[1:]):
                 return [b]
-            case Convolve(TIKernel(a), b) if all(expr.ty.is_zero(v) for v in a):
-                return [Num(0, expr.ty, expr.element_type)]
+            case Convolve(TIKernel(a), Num(b)):
+                return [Num(sum(a) * b, expr.ty, expr.element_type)]
+            case Convolve(TVKernel(data), Num(b)):
+                return [SAdd.of([PointwiseMul(a, Num(b)) for a in data])]
             case _:
                 return []
 
@@ -79,6 +104,13 @@ class ConstantFoldNegate(Transform):
         match expr:
             case KNeg(a) if isinstance(a, KernelConstant):
                 return [-a]
+            case _:
+                return []
+    
+    def apply_signal(self, expr):
+        match expr:
+            case SNeg(a) if isinstance(a, Num):
+                return [Num(-a.value, expr.ty, expr.element_type)]
             case _:
                 return []
 
@@ -119,6 +151,8 @@ class InlinePointwiseOps(Transform):
 ConstantFold = Any(
     ConstantFoldAdd(),
     ConstantFoldSub(),
+    ConstantFoldMul(),
+    ConstantFoldId(),
     ConstantFoldConvolve(),
     ConstantFoldNegate(),
 )

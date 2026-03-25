@@ -180,7 +180,9 @@ class Factorize(Transform):
             case Convolve(TIKernel(a) as kernel, g):
                 if len(a) < 2:
                     return []  # Constant kernel, nothing to factorize
-                factors: Sequence[KernelExpr] = factorize_polynomial(a, kernel.element_type)
+                factors: Sequence[KernelExpr] = factorize_polynomial(
+                    a, kernel.element_type
+                )
                 if len(factors) == 0:
                     return []
                 # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
@@ -232,52 +234,43 @@ class DilateTVWithSingleOddOrder(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(TVKernel(a) as kernel, g):
-                even: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
-                odd: List[SignalExpr] = [Num(0, Type.Arith, kernel.element_type)] * len(a)
-                even[0::2] = a[0::2]
-                odd[1::2] = a[1::2]
-                inzs = self.all_nonzeros(odd)
-                if len(inzs) == 1:
-                    inz = inzs[0]
-                    A = TVKernel(odd, Type.Arith, kernel.element_type)
-                    B = TVKernel(even, Type.Arith, kernel.element_type)
-                    C = KConvolve(
-                        TVKernel(
-                            [Num(0, Type.Arith, kernel.element_type)] * (inz - 1)
-                            + [
-                                PointwiseDiv(
-                                    odd[inz],
-                                    Convolve(
-                                        TIKernel.z(Type.Arith, kernel.element_type, -inz),
-                                        odd[inz],
-                                    ),
-                                )
-                            ],
-                            Type.Arith,
-                            kernel.element_type,
-                        ),
-                        B,
-                    )
-                    exprs = [B, C, KConvolve(A, A), KNeg(KConvolve(C, B))]
-                    expr = Recurse(
-                        KAdd.of(exprs),
-                        Convolve(
-                            KAdd.of(
+                # This transformation is at least correct for second order LTV IIR.
+                # However, because of the division by zero error in the initial condition. I can't really get it to work
+                with with_types(Type.Arith, kernel.element_type):
+                    even: List[SignalExpr] = [Num(0)] * len(a)
+                    odd: List[SignalExpr] = [Num(0)] * len(a)
+                    even[0::2] = a[0::2]
+                    odd[1::2] = a[1::2]
+                    inzs = self.all_nonzeros(odd)
+                    if len(inzs) == 1:
+                        inz = inzs[0]
+                        A = TVKernel(even)
+                        B = TVKernel(odd)
+                        C = TVKernel(
                                 [
-                                    TIKernel.i(Type.Arith, kernel.element_type),
-                                    A,
-                                    KNeg(C),
+                                    PointwiseDiv(
+                                        PointwiseMul(odd[inz], Convolve(TIKernel.z(n=-1), even[2])),
+                                        Convolve(TIKernel.z(n=-i), odd[inz]),
+                                    ) if a != Num(0) else Num(0)
+                                    for i, a in enumerate(even)
                                 ]
-                            ),
-                            g,
-                        ),
-                    )
-                    return [expr]
-                elif len(inzs) == 0:
-                    # TODO: dilate with stride greater than two
-                    raise NotImplementedError
-                else:
-                    return []
+                            )
+                        new_numer = [TIKernel.i(), B, KNeg(C)]
+                        new_denom = [KConvolve(B, B), A, KConvolve(
+                         C,   
+                            (TIKernel.i() - A),
+                        )]
+                        expr = Recurse(
+                            KAdd.of(new_denom), Convolve(KAdd.of(new_numer), g)
+                        )
+                        # print(pp(expr))
+                        print(pp(C))
+                        return [expr]
+                    elif len(inzs) == 0:
+                        # TODO: dilate with stride greater than two
+                        raise NotImplementedError()
+                    else:
+                        return []
 
             case _:
                 return []
