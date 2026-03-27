@@ -348,6 +348,7 @@ struct ZeroKernel {
     constexpr static int taps = 0;
     constexpr static const int *idxs = nullptr;
     void run(vec_type * /*out*/) {}
+    void peek(vec_type * /*out*/) {}
     void reset_and_next_row() {}
 };
 
@@ -366,14 +367,21 @@ struct TimeInvariantKernel {
         }
     }
 
+    inline __attribute__((always_inline)) void peek(vec_type *out) {
+#pragma unroll
+        for (int i = 0; i < taps; i++) {
+            out[i] = vals[i];
+        }
+    }
+
     void reset_and_next_row() {}
 };
 
 template <int taps, typename vec_type, int curr, typename... Args>
-void write_coeff(vec_type *coeff, std::tuple<Args...> &args) {
+void write_coeff(vec_type *coeff, std::tuple<Args *...> &args) {
     if constexpr (curr < taps) {
         vec_type result;
-        std::get<curr>(args).run(&result);
+        std::get<curr>(args)->run(&result);
         coeff[curr] = result;
         write_coeff<taps, vec_type, curr + 1, Args...>(coeff, args);
     }
@@ -383,12 +391,20 @@ template <int _taps, typename vec_type, const int indices[_taps], typename... Ar
 struct TimeVaryingKernel {
     constexpr static const int *idxs = indices;
     constexpr static int taps = _taps;
-    std::tuple<Args...> args;
+    std::tuple<Args *...> args;
+    vec_type current_output[taps];
 
-    TimeVaryingKernel(Args... args) : args(args...) {}
+    TimeVaryingKernel(Args *...args) : args(args...) {}
 
     inline __attribute__((always_inline)) void run(vec_type *out) {
-        write_coeff<_taps, vec_type, 0, Args...>(out, args);
+        write_coeff<taps, vec_type, 0, Args...>(current_output, args);
+        peek(out);
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type *out) {
+        _Pragma("unroll") for (int i = 0; i < taps; i++) {
+            out[i] = current_output[i];
+        }
     }
 
     void reset_and_next_row() {
@@ -398,8 +414,8 @@ struct TimeVaryingKernel {
 private:
     template <int I>
     void reset_tv_kernel() {
-        if constexpr (I < _taps) {
-            std::get<I>(args).reset_and_next_row();
+        if constexpr (I < taps) {
+            std::get<I>(args)->reset_and_next_row();
             reset_tv_kernel<I + 1>();
         }
     }
@@ -423,6 +439,10 @@ struct Signal1DConstant {
         *d = data;
     }
 
+    inline __attribute__((always_inline)) void peek(vec_type *d) {
+        *d = data;
+    }
+
     void reset_and_next_row() {}
 };
 
@@ -435,6 +455,7 @@ struct Signal1DImpulse {
 
     elt_type impulse_value;
     elt_type zero_value;
+    vec_type current_output;
     bool fired;
 
     Signal1DImpulse(elt_type value, elt_type zero) : impulse_value(value), zero_value(zero), fired(false) {}
@@ -443,15 +464,20 @@ struct Signal1DImpulse {
         if (!fired) {
             fired = true;
             if constexpr (lanes == 1) {
-                *d = impulse_value;
+                current_output = impulse_value;
             } else {
                 vec_type result = zero_value; // broadcast zero to all lanes
                 result[0] = impulse_value;    // override lane 0 with the impulse
-                *d = result;
+                current_output = result;
             }
         } else {
-            *d = zero_value; // broadcast zero to all lanes
+            current_output = zero_value; // broadcast zero to all lanes
         }
+        *d = current_output;
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type *d) {
+        *d = current_output;
     }
 
     void reset_and_next_row() {}
@@ -464,14 +490,18 @@ struct Signal1D {
     // constexpr static const int idxs[1] = {0};
 
     const vec_type *data;
-    Signal1D(const elt_type *data) : data((const vec_type *)data) {}
+    Signal1D(const elt_type *data) : data((const vec_type *)data - 1) {}
 
     // The caller is responsible for ensuring the array access
     // does not go out of bound
     // const vec_type *run() {
     inline __attribute__((always_inline)) void run(vec_type *d) {
-        memcpy((float *)d, (float *)data, sizeof(vec_type));
         data++;
+        memcpy((float *)d, (float *)data, sizeof(vec_type));
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type *d) {
+        memcpy((float *)d, (float *)data, sizeof(vec_type));
     }
 
     // Signal1D streams through contiguous data. Between rows the pointer
@@ -487,7 +517,7 @@ struct RepeaterContext {
     int current_row;
     int current_col;
 
-    RepeaterContext(int row_size) : width(row_size), current_row(0), current_col(0) {
+    RepeaterContext(int row_size) : width(row_size), current_row(0), current_col(-1) {
         buffer = new vec_type[n_rows * width];
         memset(buffer, 0, sizeof(vec_type) * n_rows * width);
     }
@@ -516,7 +546,7 @@ struct RepeaterContext {
 
     void next_row() {
         current_row = (current_row + 1) % n_rows;
-        current_col = 0;
+        current_col = -1;
         // memset(buffer[current_row], 0, sizeof(buffer[current_row]));
     }
 };
@@ -536,6 +566,10 @@ struct Signal2D {
         for (int i = 0; i < n_rows; i++) {
             d[i] = context->get(i + 1);
         }
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type *d) {
+        run(d);
     }
 
     void reset_and_next_row() {}
@@ -558,24 +592,33 @@ struct InputSignal2D {
     // points into data for valid rows, or zero_row.get() for zero-padding rows
     const elt_type *row_ptrs[n_rows];
 
-    InputSignal2D(const elt_type *data, int stride)
+    InputSignal2D(const elt_type *data, int stride, elt_type zero)
         : data(data),
           stride(stride),
           current_row(0),
           zero_row(new elt_type[stride]) {
-        memset(zero_row, 0, sizeof(elt_type) * stride);
+        for (int i = 0; i < stride; i++) {
+            zero_row[i] = zero;
+        }
         // d[0] = row 0 (current); d[1..n_rows-1] = zero (no previous rows yet)
-        row_ptrs[0] = data;
+        row_ptrs[0] = data - lanes;
         for (int i = 1; i < n_rows; i++) {
-            row_ptrs[i] = zero_row;
+            row_ptrs[i] = zero_row - lanes;
         }
     }
 
     inline __attribute__((always_inline)) void run(vec_type *d) {
 #pragma unroll
         for (int i = 0; i < n_rows; i++) {
-            memcpy(&d[i], row_ptrs[i], sizeof(vec_type));
             row_ptrs[i] += lanes;
+            memcpy(&d[i], row_ptrs[i], sizeof(vec_type));
+        }
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type *d) {
+#pragma unroll
+        for (int i = 0; i < n_rows; i++) {
+            memcpy(&d[i], row_ptrs[i], sizeof(vec_type));
         }
     }
 
@@ -584,14 +627,14 @@ struct InputSignal2D {
         // d[i] = row (current_row - i), zero-padded for rows before 0
         for (int i = 0; i < n_rows; i++) {
             int src_row = current_row - i;
-            row_ptrs[i] = (src_row >= 0) ? data + (size_t)src_row * stride : zero_row;
+            row_ptrs[i] = ((src_row >= 0) ? data + (size_t)src_row * stride : zero_row) - lanes;
         }
     }
 };
 
 template <typename vec_type, int n_rows>
-auto make_input_signal2d(const typename ElementType<vec_type>::type *data, int stride) {
-    return InputSignal2D<vec_type, n_rows>(data, stride);
+auto make_input_signal2d(const typename ElementType<vec_type>::type *data, int stride, typename ElementType<vec_type>::type zero) {
+    return new InputSignal2D<vec_type, n_rows>(data, stride, zero);
 }
 
 template <typename vec_type, int n_rows, typename Inner>
@@ -600,17 +643,20 @@ struct Repeater {
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
 
     RepeaterContext<vec_type, n_rows> *context;
-    Inner inner;
+    Inner *inner;
 
-    Repeater(RepeaterContext<vec_type, n_rows> *ctx, Inner inner)
+    Repeater(RepeaterContext<vec_type, n_rows> *ctx, Inner *inner)
         : context(ctx), inner(inner) {
     }
 
     inline __attribute__((always_inline)) void run(vec_type *out) {
+        // Advance column position
+        context->advance_col();
+
         // Compute the current row output using the inner signal
         // (which may read from the buffered previous rows via Signal2D)
         vec_type curr_output;
-        inner.run(&curr_output);
+        inner->run(&curr_output);
 
         // Store the current output in the buffer
         context->set(curr_output);
@@ -620,9 +666,13 @@ struct Repeater {
         for (int i = 0; i < n_rows; i++) {
             out[i] = context->get(i);
         }
+    }
 
-        // Advance column position
-        context->advance_col();
+    inline __attribute__((always_inline)) void peek(vec_type *out) {
+        // Return n_rows vectors: current row at out[0], previous rows at out[1..n-1]
+        for (int i = 0; i < n_rows; i++) {
+            out[i] = context->get(i);
+        }
     }
 
     void reset_and_next_row() {
@@ -630,124 +680,135 @@ struct Repeater {
         context->next_row();
 
         // Reset the inner signal
-        inner.reset_and_next_row();
+        inner->reset_and_next_row();
     }
 };
 
-#define SConvolveOp(suffix, zero_init, mul_op, add_op)                           \
-    template <typename vec_type, typename K, typename S>                         \
-    struct SConvolve##suffix {                                                   \
-        using elt_type = typename ElementType<vec_type>::type;                   \
-        K kernel;                                                                \
-        S signal;                                                                \
-        constexpr static int vec_lanes = vec_lanes_of(vec_type{});               \
-        constexpr static int buffer_size =                                       \
-            (K::idxs[K::taps - 1] + vec_lanes - 1) / vec_lanes + 1;              \
-        vec_type prev_input[buffer_size];                                        \
-        SConvolve##suffix(K kernel, S signal) : kernel(kernel), signal(signal) { \
-            for (int i = 0; i < buffer_size; i++)                                \
-                prev_input[i] = (zero_init);                                     \
-        }                                                                        \
-        inline __attribute__((always_inline)) void run(vec_type *d) {            \
-            vec_type curr_output = (zero_init);                                  \
-            vec_type curr_input;                                                 \
-            signal.run(&curr_input);                                             \
-            _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {        \
-                asm volatile("" :::);                                            \
-                prev_input[i] = prev_input[i + 1];                               \
-            }                                                                    \
-            prev_input[buffer_size - 1] = curr_input;                            \
-            vec_type k[K::taps];                                                 \
-            kernel.run(k);                                                       \
-            _Pragma("unroll") for (int i = 0; i < K::taps; i++) {                \
-                int idx = (buffer_size - 1) * vec_lanes - K::idxs[i];            \
-                vec_type contrib;                                                \
-                if (idx % vec_lanes == 0) {                                      \
-                    contrib = mul_op(prev_input[idx / vec_lanes], k[i]);         \
-                } else {                                                         \
-                    vec_type va = prev_input[idx / vec_lanes];                   \
-                    vec_type vb = prev_input[idx / vec_lanes + 1];               \
-                    contrib = mul_op(                                            \
-                        extract_slice(va, vb, idx % vec_lanes), k[i]);           \
-                }                                                                \
-                curr_output = add_op(curr_output, contrib);                      \
-            }                                                                    \
-            *d = curr_output;                                                    \
-        }                                                                        \
-        void reset_and_next_row() {                                              \
-            for (int i = 0; i < buffer_size; i++)                                \
-                prev_input[i] = (zero_init);                                     \
-            kernel.reset_and_next_row();                                         \
-            signal.reset_and_next_row();                                         \
-        }                                                                        \
-    };                                                                           \
-    template <typename vec_type, typename K, typename S>                         \
-    auto make_s_convolve##suffix(K kernel, S signal) {                           \
-        return SConvolve##suffix<vec_type, K, S>(kernel, signal);                \
+#define SConvolveOp(suffix, zero_init, mul_op, add_op)                             \
+    template <typename vec_type, typename K, typename S>                           \
+    struct SConvolve##suffix {                                                     \
+        using elt_type = typename ElementType<vec_type>::type;                     \
+        K *kernel;                                                                 \
+        S *signal;                                                                 \
+        constexpr static int vec_lanes = vec_lanes_of(vec_type{});                 \
+        constexpr static int buffer_size =                                         \
+            (K::idxs[K::taps - 1] + vec_lanes - 1) / vec_lanes + 1;                \
+        vec_type prev_input[buffer_size];                                          \
+        vec_type curr_output;                                                      \
+        SConvolve##suffix(K *kernel, S *signal) : kernel(kernel), signal(signal) { \
+            for (int i = 0; i < buffer_size; i++)                                  \
+                prev_input[i] = (zero_init);                                       \
+        }                                                                          \
+        inline __attribute__((always_inline)) void run(vec_type *d) {              \
+            curr_output = (zero_init);                                             \
+            vec_type curr_input;                                                   \
+            signal->run(&curr_input);                                              \
+            _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {          \
+                asm volatile("" :::);                                              \
+                prev_input[i] = prev_input[i + 1];                                 \
+            }                                                                      \
+            prev_input[buffer_size - 1] = curr_input;                              \
+            vec_type k[K::taps];                                                   \
+            kernel->run(k);                                                        \
+            _Pragma("unroll") for (int i = 0; i < K::taps; i++) {                  \
+                int idx = (buffer_size - 1) * vec_lanes - K::idxs[i];              \
+                vec_type contrib;                                                  \
+                if (idx % vec_lanes == 0) {                                        \
+                    contrib = mul_op(prev_input[idx / vec_lanes], k[i]);           \
+                } else {                                                           \
+                    vec_type va = prev_input[idx / vec_lanes];                     \
+                    vec_type vb = prev_input[idx / vec_lanes + 1];                 \
+                    contrib = mul_op(                                              \
+                        extract_slice(va, vb, idx % vec_lanes), k[i]);             \
+                }                                                                  \
+                curr_output = add_op(curr_output, contrib);                        \
+            }                                                                      \
+            *d = curr_output;                                                      \
+        }                                                                          \
+                                                                                   \
+        inline __attribute__((always_inline)) void peek(vec_type *d) {             \
+            *d = curr_output;                                                      \
+        }                                                                          \
+                                                                                   \
+        void reset_and_next_row() {                                                \
+            for (int i = 0; i < buffer_size; i++)                                  \
+                prev_input[i] = (zero_init);                                       \
+            kernel->reset_and_next_row();                                          \
+            signal->reset_and_next_row();                                          \
+        }                                                                          \
+    };                                                                             \
+    template <typename vec_type, typename K, typename S>                           \
+    auto make_s_convolve##suffix(K *kernel, S *signal) {                           \
+        return new SConvolve##suffix<vec_type, K, S>(kernel, signal);              \
     }
 
 SConvolveOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 // SConvolveOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
-SConvolveOp(TropMin, std::numeric_limits<elt_type>::max() / 3, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 3, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SConvolveOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
+SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
-#define SRecurseOp(suffix, zero_init, mul_op, add_op)                           \
-    template <typename vec_type, typename K, typename S>                        \
-    struct SRecurse##suffix {                                                   \
-        using elt_type = typename ElementType<vec_type>::type;                  \
-        K kernel;                                                               \
-        S signal;                                                               \
-        constexpr static int vec_lanes = vec_lanes_of(vec_type{});              \
-        constexpr static int buffer_size =                                      \
-            (K::idxs[K::taps - 1] + vec_lanes - 1) / vec_lanes + 1;             \
-        vec_type prev_output[buffer_size];                                      \
-        SRecurse##suffix(K kernel, S signal) : kernel(kernel), signal(signal) { \
-            for (int i = 0; i < buffer_size; i++)                               \
-                prev_output[i] = (zero_init);                                   \
-        }                                                                       \
-        inline __attribute__((always_inline)) void run(vec_type *out) {         \
-            vec_type curr_input;                                                \
-            vec_type curr_output;                                               \
-            vec_type k[K::taps];                                                \
-            kernel.run(k);                                                      \
-            signal.run(&curr_input);                                            \
-            curr_output = curr_input;                                           \
-            _Pragma("unroll") for (int i = 0; i < K::taps; i++) {               \
-                int idx = (buffer_size - 1) * vec_lanes - K::idxs[i];           \
-                vec_type contrib;                                               \
-                if (idx % vec_lanes == 0) {                                     \
-                    contrib = mul_op(prev_output[idx / vec_lanes], k[i]);       \
-                } else {                                                        \
-                    auto va = prev_output[idx / vec_lanes];                     \
-                    auto vb = prev_output[idx / vec_lanes + 1];                 \
-                    contrib = mul_op(                                           \
-                        extract_slice(va, vb, idx % vec_lanes), k[i]);          \
-                }                                                               \
-                curr_output = add_op(curr_output, contrib);                     \
-            }                                                                   \
-            _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {       \
-                asm volatile("" :::);                                           \
-                prev_output[i] = prev_output[i + 1];                            \
-            }                                                                   \
-            prev_output[buffer_size - 1] = curr_output;                         \
-            *out = curr_output;                                                 \
-        }                                                                       \
-        void reset_and_next_row() {                                             \
-            for (int i = 0; i < buffer_size; i++)                               \
-                prev_output[i] = (zero_init);                                   \
-            kernel.reset_and_next_row();                                        \
-            signal.reset_and_next_row();                                        \
-        }                                                                       \
-    };                                                                          \
-    template <typename vec_type, typename K, typename S>                        \
-    auto make_s_recurse##suffix(K kernel, S signal) {                           \
-        return SRecurse##suffix<vec_type, K, S>(kernel, signal);                \
+#define SRecurseOp(suffix, zero_init, mul_op, add_op)                             \
+    template <typename vec_type, typename K, typename S>                          \
+    struct SRecurse##suffix {                                                     \
+        using elt_type = typename ElementType<vec_type>::type;                    \
+        K *kernel;                                                                \
+        S *signal;                                                                \
+        constexpr static int vec_lanes = vec_lanes_of(vec_type{});                \
+        constexpr static int buffer_size =                                        \
+            (K::idxs[K::taps - 1] + vec_lanes - 1) / vec_lanes + 1;               \
+        vec_type prev_output[buffer_size];                                        \
+        vec_type curr_output;                                                     \
+        SRecurse##suffix(K *kernel, S *signal) : kernel(kernel), signal(signal) { \
+            for (int i = 0; i < buffer_size; i++)                                 \
+                prev_output[i] = (zero_init);                                     \
+        }                                                                         \
+        inline __attribute__((always_inline)) void run(vec_type *out) {           \
+            vec_type curr_input;                                                  \
+            vec_type k[K::taps];                                                  \
+            kernel->run(k);                                                       \
+            signal->run(&curr_input);                                             \
+            curr_output = curr_input;                                             \
+            _Pragma("unroll") for (int i = 0; i < K::taps; i++) {                 \
+                int idx = (buffer_size - 1) * vec_lanes - K::idxs[i];             \
+                vec_type contrib;                                                 \
+                if (idx % vec_lanes == 0) {                                       \
+                    contrib = mul_op(prev_output[idx / vec_lanes], k[i]);         \
+                } else {                                                          \
+                    auto va = prev_output[idx / vec_lanes];                       \
+                    auto vb = prev_output[idx / vec_lanes + 1];                   \
+                    contrib = mul_op(                                             \
+                        extract_slice(va, vb, idx % vec_lanes), k[i]);            \
+                }                                                                 \
+                curr_output = add_op(curr_output, contrib);                       \
+            }                                                                     \
+            _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {         \
+                asm volatile("" :::);                                             \
+                prev_output[i] = prev_output[i + 1];                              \
+            }                                                                     \
+            prev_output[buffer_size - 1] = curr_output;                           \
+            *out = curr_output;                                                   \
+        }                                                                         \
+                                                                                  \
+        inline __attribute__((always_inline)) void peek(vec_type *out) {          \
+            *out = curr_output;                                                   \
+        }                                                                         \
+                                                                                  \
+        void reset_and_next_row() {                                               \
+            for (int i = 0; i < buffer_size; i++)                                 \
+                prev_output[i] = (zero_init);                                     \
+            kernel->reset_and_next_row();                                         \
+            signal->reset_and_next_row();                                         \
+        }                                                                         \
+    };                                                                            \
+    template <typename vec_type, typename K, typename S>                          \
+    auto make_s_recurse##suffix(K *kernel, S *signal) {                           \
+        return new SRecurse##suffix<vec_type, K, S>(kernel, signal);              \
     }
 
 SRecurseOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 // SRecurseOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
-SRecurseOp(TropMin, std::numeric_limits<elt_type>::max() / 3, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SRecurseOp(TropMax, std::numeric_limits<elt_type>::min() / 3, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
+SRecurseOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct KConvertN2One {
@@ -758,25 +819,35 @@ struct KConvertN2One {
     constexpr static int taps = Inner::taps;
     constexpr static const int *idxs = Inner::idxs;
 
-    Inner inner;
+    Inner *inner;
+    vec_type_out current_output[taps];
 
-    KConvertN2One(Inner inner) : inner(inner) {}
+    KConvertN2One(Inner *inner) : inner(inner) {}
     inline __attribute__((always_inline)) void run(vec_type_out *out) {
-
-        vec_type_in *p = (vec_type_in *)out;
+        vec_type_in *p = (vec_type_in *)current_output;
 #pragma unroll
         for (int i = 0; i < factor; i++) {
             vec_type_in in[taps];
-            inner.run(&in);
+            inner->run(in);
 #pragma unroll
             for (int j = 0; j < taps; j++) {
                 p[j * factor + i] = in[j];
             }
-            *p++ = in;
+        }
+#pragma unroll
+        for (int i = 0; i < taps; i++) {
+            out[i] = current_output[i];
         }
     }
 
-    void reset_and_next_row() { inner.reset_and_next_row(); }
+    inline __attribute__((always_inline)) void peek(vec_type_out *out) {
+#pragma unroll
+        for (int i = 0; i < taps; i++) {
+            out[i] = current_output[i];
+        }
+    }
+
+    void reset_and_next_row() { inner->reset_and_next_row(); }
 };
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
@@ -786,21 +857,27 @@ struct ConvertN2One {
     constexpr static int factor = lanes_out / lanes_in;
     static_assert(lanes_out % lanes_in == 0, "lanes_in must be multiple of lanes_out");
 
-    Inner inner;
+    Inner *inner;
+    vec_type_out current_output;
 
-    ConvertN2One(Inner inner) : inner(inner) {}
+    ConvertN2One(Inner *inner) : inner(inner) {}
     inline __attribute__((always_inline)) void run(vec_type_out *out) {
 
-        vec_type_in *p = (vec_type_in *)out;
+        vec_type_in *p = (vec_type_in *)&current_output;
 #pragma unroll
         for (int i = 0; i < factor; i++) {
             vec_type_in in;
-            inner.run(&in);
+            inner->run(&in);
             *p++ = in;
         }
+        *out = current_output;
     }
 
-    void reset_and_next_row() { inner.reset_and_next_row(); }
+    inline __attribute__((always_inline)) void peek(vec_type_out *out) {
+        *out = current_output;
+    }
+
+    void reset_and_next_row() { inner->reset_and_next_row(); }
 };
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
@@ -812,16 +889,17 @@ struct KConvertOne2N {
     constexpr static int taps = Inner::taps;
     constexpr static const int *idxs = Inner::idxs;
 
-    Inner inner;
+    Inner *inner;
     vec_type_in buffer[taps];
     vec_type_out out_buffer[taps][factor];
     int offset;
 
-    KConvertOne2N(Inner inner) : inner(inner), offset(0) {}
+    KConvertOne2N(Inner *inner) : inner(inner), offset(-1) {}
 
     inline __attribute__((always_inline)) void run(vec_type_out *out) {
+        offset = (offset + 1) % factor;
         if (offset == 0) {
-            inner.run(buffer);
+            inner->run(buffer);
 #pragma unroll
             for (int i = 0; i < taps; i++) {
                 for_<factor>([&](auto j) {
@@ -833,15 +911,21 @@ struct KConvertOne2N {
         for (int i = 0; i < taps; i++) {
             out[i] = out_buffer[i][offset];
         }
-        offset = (offset + 1) % factor;
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type_out *out) {
+#pragma unroll
+        for (int i = 0; i < taps; i++) {
+            out[i] = out_buffer[i][offset];
+        }
     }
 
     void reset_and_next_row() {
-        offset = 0;
-        inner.reset_and_next_row();
+        offset = -1;
+        inner->reset_and_next_row();
     }
 };
-#include <iostream>
+
 template <typename vec_type_in, typename vec_type_out, typename Inner>
 struct ConvertOne2N {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
@@ -849,52 +933,61 @@ struct ConvertOne2N {
     constexpr static int factor = lanes_in / lanes_out;
     static_assert(lanes_in % lanes_out == 0, "lanes_out must be multiple of lanes_in");
 
-    Inner inner;
+    Inner *inner;
     vec_type_in buffer;
     vec_type_out out_buffer[factor];
     int offset;
 
-    ConvertOne2N(Inner inner) : inner(inner), offset(0) {}
+    ConvertOne2N(Inner *inner) : inner(inner), offset(-1) {}
 
     inline __attribute__((always_inline)) void run(vec_type_out *out) {
+        offset = (offset + 1) % factor;
         if (offset == 0) {
-            inner.run(&buffer);
+            inner->run(&buffer);
 
             for_<factor>([&](auto i) {
                 out_buffer[i.value] = ExtractSubVector<vec_type_in, vec_type_out, i.value>::extract_sub_vector(buffer);
             });
         }
         *out = out_buffer[offset];
-        offset = (offset + 1) % factor;
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type_out *out) {
+        *out = out_buffer[offset];
     }
 
     void reset_and_next_row() {
-        offset = 0;
-        inner.reset_and_next_row();
+        offset = -1;
+        inner->reset_and_next_row();
     }
 };
 
-#define BinOp(name, operator)                                           \
-    template <typename vec_type, typename S1, typename S2>              \
-    struct name {                                                       \
-        S1 s1;                                                          \
-        S2 s2;                                                          \
-        name(S1 s1, S2 s2) : s1(s1), s2(s2) {}                          \
-                                                                        \
-        inline __attribute__((always_inline)) void run(vec_type *out) { \
-            vec_type left, right;                                       \
-            s1.run(&left);                                              \
-            s2.run(&right);                                             \
-            *out = operator(left, right);                               \
-        }                                                               \
-                                                                        \
-        void reset_and_next_row() {                                     \
-            s1.reset_and_next_row();                                    \
-            s2.reset_and_next_row();                                    \
-        }                                                               \
-    };                                                                  \
-    template <typename vec_type, typename S1, typename S2>              \
-    auto make_##name(S1 s1, S2 s2) { return name<vec_type, S1, S2>(s1, s2); }
+#define BinOp(name, operator)                                            \
+    template <typename vec_type, typename S1, typename S2>               \
+    struct name {                                                        \
+        S1 *s1;                                                          \
+        S2 *s2;                                                          \
+        vec_type current_output;                                         \
+        name(S1 *s1, S2 *s2) : s1(s1), s2(s2) {}                         \
+                                                                         \
+        inline __attribute__((always_inline)) void run(vec_type *out) {  \
+            vec_type left, right;                                        \
+            s1->run(&left);                                              \
+            s2->run(&right);                                             \
+            current_output = operator(left, right);                      \
+            *out = current_output;                                       \
+        }                                                                \
+        inline __attribute__((always_inline)) void peek(vec_type *out) { \
+            *out = current_output;                                       \
+        }                                                                \
+                                                                         \
+        void reset_and_next_row() {                                      \
+            s1->reset_and_next_row();                                    \
+            s2->reset_and_next_row();                                    \
+        }                                                                \
+    };                                                                   \
+    template <typename vec_type, typename S1, typename S2>               \
+    auto make_##name(S1 *s1, S2 *s2) { return new name<vec_type, S1, S2>(s1, s2); }
 
 BinOp(SAdd, [](auto left, auto right) { return left + right; });
 BinOp(SSub, [](auto left, auto right) { return left - right; });
@@ -911,41 +1004,68 @@ BinOp(PointwiseMulTropMin, [](auto left, auto right) { return left + right; });
 
 template <typename vec_type, typename S1>
 struct SNeg {
-    S1 s1;
-    SNeg(S1 s1) : s1(s1) {}
+    S1 *s1;
+    vec_type current_output;
+    SNeg(S1 *s1) : s1(s1) {}
 
     inline __attribute__((always_inline)) void run(vec_type *out) {
         vec_type data;
-        s1.run(&data);
-        *out = -data;
+        s1->run(&data);
+        current_output = -data;
+        *out = current_output;
     }
 
-    void reset_and_next_row() { s1.reset_and_next_row(); }
+    inline __attribute__((always_inline)) void peek(vec_type *out) {
+        *out = current_output;
+    }
+
+    void reset_and_next_row() { s1->reset_and_next_row(); }
+};
+
+template <typename vec_type, typename S>
+struct Secondary {
+    S *s;
+    Secondary(S *s) : s(s) {}
+
+    inline __attribute__((always_inline)) void run(vec_type *out) {
+        s->peek(out);
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type *out) {
+        s->peek(out);
+    }
+
+    void reset_and_next_row() {}
 };
 
 template <typename vec_type, typename S1>
-auto make_SNeg(S1 s1) {
-    return SNeg<vec_type, S1>(s1);
+auto make_SNeg(S1 *s1) {
+    return new SNeg<vec_type, S1>(s1);
+}
+
+template <typename vec_type, typename S>
+auto make_Secondary(S *s) {
+    return new Secondary<vec_type, S>(s);
 }
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
-auto make_k_convert_n2one(Inner inner) {
-    return KConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
+auto make_k_convert_n2one(Inner *inner) {
+    return new KConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
 }
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
-auto make_convert_n2one(Inner inner) {
-    return ConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
+auto make_convert_n2one(Inner *inner) {
+    return new ConvertN2One<vec_type_in, vec_type_out, Inner>(inner);
 }
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
-auto make_k_convert_one2n(Inner inner) {
-    return KConvertOne2N<vec_type_in, vec_type_out, Inner>(inner);
+auto make_k_convert_one2n(Inner *inner) {
+    return new KConvertOne2N<vec_type_in, vec_type_out, Inner>(inner);
 }
 
 template <typename vec_type_in, typename vec_type_out, typename Inner>
-auto make_convert_one2n(Inner inner) {
-    return ConvertOne2N<vec_type_in, vec_type_out, Inner>(inner);
+auto make_convert_one2n(Inner *inner) {
+    return new ConvertOne2N<vec_type_in, vec_type_out, Inner>(inner);
 }
 
 // IthRow: Extract the ith row from a 2D signal (Signal2D) as a 1D signal
@@ -953,44 +1073,50 @@ template <typename vec_type, int n_rows, int row_index, typename Signal2DType>
 struct IthRow {
     using elt_type = typename ElementType<vec_type>::type;
 
-    Signal2DType signal2d;
+    Signal2DType *signal2d;
+    vec_type current_output;
 
-    IthRow(Signal2DType sig) : signal2d(sig) {
+    IthRow(Signal2DType *sig) : signal2d(sig) {
         static_assert(row_index >= 0 && row_index < n_rows, "row_index out of bounds");
     }
 
     inline __attribute__((always_inline)) void run(vec_type *d) {
         // Read all n_rows from the 2D signal
         vec_type rows[n_rows];
-        signal2d.run(rows);
+        signal2d->run(rows);
 
         // Return only the row at row_index
-        *d = rows[row_index];
+        current_output = rows[row_index];
+        *d = current_output;
+    }
+
+    inline __attribute__((always_inline)) void peek(vec_type *out) {
+        *out = current_output;
     }
 
     void reset_and_next_row() {
-        signal2d.reset_and_next_row();
+        signal2d->reset_and_next_row();
     }
 };
 
 template <typename vec_type, int n_rows, typename Inner>
-auto make_repeater(RepeaterContext<vec_type, n_rows> *ctx, Inner inner) {
-    return Repeater<vec_type, n_rows, Inner>(ctx, inner);
+auto make_repeater(RepeaterContext<vec_type, n_rows> *ctx, Inner *inner) {
+    return new Repeater<vec_type, n_rows, Inner>(ctx, inner);
 }
 
 template <typename vec_type, int n_rows>
 auto make_signal2d(RepeaterContext<vec_type, n_rows + 1> *ctx) {
-    return Signal2D<vec_type, n_rows>(ctx);
+    return new Signal2D<vec_type, n_rows>(ctx);
 }
 
 template <typename vec_type, int n_rows, int row_index, typename Signal2DType>
-auto make_ith_row(Signal2DType sig) {
-    return IthRow<vec_type, n_rows, row_index, Signal2DType>(sig);
+auto make_ith_row(Signal2DType *sig) {
+    return new IthRow<vec_type, n_rows, row_index, Signal2DType>(sig);
 }
 
 template <int _taps, typename vec_type, const int indices[_taps], typename... Args>
-auto make_time_varying_kernel(Args... args) {
-    return TimeVaryingKernel<_taps, vec_type, indices, Args...>(args...);
+auto make_time_varying_kernel(Args *...args) {
+    return new TimeVaryingKernel<_taps, vec_type, indices, Args...>(args...);
 }
 
 // ---------------------------------------------------------------------------
@@ -1002,6 +1128,7 @@ template <typename vec_type>
 struct SLatched {
     vec_type value{0};
     void run(vec_type *out) { *out = value; }
+    void peek(vec_type *out) { *out = value; }
     void reset_and_next_row() { value = 0; }
 };
 
@@ -1010,16 +1137,18 @@ struct SLatched {
 template <typename vec_type, typename K, bool Active = (K::taps > 0)>
 struct MaybeSConvolve {
     SConvolve<vec_type, K, SLatched<vec_type>> impl;
-    explicit MaybeSConvolve(K k) : impl(k, SLatched<vec_type>{}) {}
-    void set_input(vec_type v) { impl.signal.value = v; }
+    explicit MaybeSConvolve(K *k) : impl(k, new SLatched<vec_type>()) {}
+    void set_input(vec_type v) { impl.signal->value = v; }
     void run(vec_type *out) { impl.run(out); }
+    void peek(vec_type *out) { impl.peek(out); }
     void reset_and_next_row() { impl.reset_and_next_row(); }
 };
 template <typename vec_type, typename K>
 struct MaybeSConvolve<vec_type, K, false> {
-    explicit MaybeSConvolve(K) {}
+    explicit MaybeSConvolve(K *) {}
     void set_input(vec_type) {}
     void run(vec_type *out) { *out = 0; }
+    void peek(vec_type *out) { *out = 0; }
     void reset_and_next_row() {}
 };
 
@@ -1028,17 +1157,19 @@ struct MaybeSConvolve<vec_type, K, false> {
 template <typename vec_type, typename K, bool Active = (K::taps > 0)>
 struct MaybeSRecurse {
     SRecurse<vec_type, K, SLatched<vec_type>> impl;
-    explicit MaybeSRecurse(K k) : impl(k, SLatched<vec_type>{}) {}
-    void set_input(vec_type v) { impl.signal.value = v; }
+    explicit MaybeSRecurse(K *k) : impl(k, new SLatched<vec_type>()) {}
+    void set_input(vec_type v) { impl.signal->value = v; }
     void run(vec_type *out) { impl.run(out); }
+    void peek(vec_type *out) { impl.peek(out); }
     void reset_and_next_row() { impl.reset_and_next_row(); }
 };
 template <typename vec_type, typename K>
 struct MaybeSRecurse<vec_type, K, false> {
     SLatched<vec_type> latched;
-    explicit MaybeSRecurse(K) {}
-    void set_input(vec_type v) { latched.value = v; }
+    explicit MaybeSRecurse(K *) {}
+    void set_input(vec_type v) { latched->value = v; }
     void run(vec_type *out) { latched.run(out); }
+    void peek(vec_type *out) { latched.peek(out); }
     void reset_and_next_row() { latched.reset_and_next_row(); }
 };
 
@@ -1061,11 +1192,11 @@ struct SRecurseV2 {
     MaybeSConvolve<vec_type, K10> c10; // K10 * history(F[0])
     MaybeSRecurse<vec_type, K00> r0;   // K00 * F[0] + eff_g0
     MaybeSRecurse<vec_type, K11> r1;   // K11 * F[1] + eff_g1
-    S0 s0;
-    S1 s1;
+    S0 *s0;
+    S1 *s1;
     vec_type last_out0{0}, last_out1{0};
 
-    SRecurseV2(K00 k00, K01 k01, K10 k10, K11 k11, S0 s0, S1 s1)
+    SRecurseV2(K00 *k00, K01 *k01, K10 *k10, K11 *k11, S0 *s0, S1 *s1)
         : c01(k01), c10(k10), r0(k00), r1(k11), s0(s0), s1(s1) {}
 
     inline __attribute__((always_inline)) void run(vec_type *out) {
@@ -1080,8 +1211,8 @@ struct SRecurseV2 {
 
         // Read actual inputs and form effective inputs (G + cross)
         vec_type g0, g1;
-        s0.run(&g0);
-        s1.run(&g1);
+        s0->run(&g0);
+        s1->run(&g1);
         r0.set_input(g0 + cross0);
         r1.set_input(g1 + cross1);
 
@@ -1094,6 +1225,11 @@ struct SRecurseV2 {
         last_out1 = out[1];
     }
 
+    inline __attribute__((always_inline)) void peek(vec_type *out) {
+        out[0] = last_out0;
+        out[1] = last_out1;
+    }
+
     void reset_and_next_row() {
         last_out0 = 0;
         last_out1 = 0;
@@ -1101,16 +1237,16 @@ struct SRecurseV2 {
         c10.reset_and_next_row();
         r0.reset_and_next_row();
         r1.reset_and_next_row();
-        s0.reset_and_next_row();
-        s1.reset_and_next_row();
+        s0->reset_and_next_row();
+        s1->reset_and_next_row();
     }
 };
 
 template <typename vec_type,
           typename K00, typename K01, typename K10, typename K11,
           typename S0, typename S1>
-auto make_s_recurse_v2(K00 k00, K01 k01, K10 k10, K11 k11, S0 s0, S1 s1) {
-    return SRecurseV2<vec_type, K00, K01, K10, K11, S0, S1>(k00, k01, k10, k11, s0, s1);
+auto make_s_recurse_v2(K00 *k00, K01 *k01, K10 *k10, K11 *k11, S0 *s0, S1 *s1) {
+    return new SRecurseV2<vec_type, K00, K01, K10, K11, S0, S1>(k00, k01, k10, k11, s0, s1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,22 +1255,26 @@ auto make_s_recurse_v2(K00 k00, K01 k01, K10 k10, K11 k11, S0 s0, S1 s1) {
 
 template <typename vec_type, int n, int index, typename SVType>
 struct VectorAtN {
-    SVType signal_vec;
+    SVType *signal_vec;
+    vec_type all[n];
 
-    VectorAtN(SVType sv) : signal_vec(sv) {
+    VectorAtN(SVType *sv) : signal_vec(sv) {
         static_assert(index >= 0 && index < n, "VectorAtN: index out of range");
     }
 
     inline __attribute__((always_inline)) void run(vec_type *out) {
-        vec_type all[n];
-        signal_vec.run(all);
+        signal_vec->run(all);
         *out = all[index];
     }
 
-    void reset_and_next_row() { signal_vec.reset_and_next_row(); }
+    inline __attribute__((always_inline)) void peek(vec_type *out) {
+        *out = all[index];
+    }
+
+    void reset_and_next_row() { signal_vec->reset_and_next_row(); }
 };
 
 template <int n, int index, typename vec_type, typename SVType>
-auto make_vector_at(SVType sv) {
-    return VectorAtN<vec_type, n, index, SVType>(sv);
+auto make_vector_at(SVType *sv) {
+    return new VectorAtN<vec_type, n, index, SVType>(sv);
 }

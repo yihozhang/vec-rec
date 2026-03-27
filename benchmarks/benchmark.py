@@ -150,9 +150,11 @@ class Benchmark(ABC):
 
         # Check validation: half of the schedules are accurate enough
         validation_raw: dict[str, Any] = output.get("validation", {})
-        validation_ok = len(
-            [v is True or (isinstance(v, int) and v >= 256) for v in validation_raw.values()]
-        ) > 0.5 * len(validation_raw)
+        validation_ok = (
+            sum([v is True or (isinstance(v, int) and v >= 256) for v in validation_raw.values()])
+        ) > 0.5 * (
+            len(validation_raw)
+        )  # exclude "k0" reference
 
         # Find best (fastest) schedule: highest throughput
         timing_keys = [k for k in output if k != "validation"]

@@ -18,6 +18,8 @@ __all__ = [
     "Factorize",
     "Factorize2D",
     "DilateTVWithSingleOddOrder",
+    "DilateLTVArith",
+    "DilateLTVTrop",
 ]
 
 
@@ -271,6 +273,262 @@ class DilateTVWithSingleOddOrder(Transform):
                         raise NotImplementedError()
                     else:
                         return []
+
+            case _:
+                return []
+
+
+
+# ---------------------------------------------------------------------------
+# LTV (linear time-varying) tower decomposition: dk/fk algorithm
+# ---------------------------------------------------------------------------
+
+def _ltv_delay(sig: SignalExpr, n: int, ty: Type, et: ElementType) -> SignalExpr:
+    """Return sig delayed by n positions.  Constants are invariant to delay."""
+    if n == 0:
+        return sig
+    if isinstance(sig, Num):
+        return sig
+    return Convolve(TIKernel.z(ty, et, -n), sig)
+
+
+def _ltv_mul(a: SignalExpr, b: SignalExpr, ty: Type, et: ElementType) -> SignalExpr:
+    """Pointwise semiring-multiply with zero/one simplifications."""
+    zero = Num(ty.zero(), ty, et)
+    if isinstance(a, Num) and ty.is_zero(a.value):
+        return zero
+    if isinstance(b, Num) and ty.is_zero(b.value):
+        return zero
+    if isinstance(a, Num) and ty.is_one(a.value):
+        return b
+    if isinstance(b, Num) and ty.is_one(b.value):
+        return a
+    return PointwiseMul(a, b)
+
+
+def _ltv_add(a: SignalExpr, b: SignalExpr, ty: Type, et: ElementType) -> SignalExpr:
+    """Semiring add (+ for arith, min/max for tropical) with zero simplification."""
+    if isinstance(a, Num) and ty.is_zero(a.value):
+        return b
+    if isinstance(b, Num) and ty.is_zero(b.value):
+        return a
+    return SAdd(a, b)
+
+
+def _ltv_sub(a: SignalExpr, b: SignalExpr, ty: Type, et: ElementType) -> SignalExpr:
+    """Arithmetic subtraction with zero simplification."""
+    assert ty == Type.Arith
+    if isinstance(b, Num) and ty.is_zero(b.value):
+        return a
+    return SSub(a, b)
+
+
+def _build_ltv_tower(
+    a_sig: SignalExpr,
+    b_sig: SignalExpr,
+    g: SignalExpr,
+    ty: Type,
+    et: ElementType,
+    K: int,
+    tropical: bool,
+) -> Tuple[SignalExpr, SignalExpr, SignalExpr]:
+    """Build the dk/fk logarithmic tower for a 2nd-order LTV recurrence.
+
+    d_k(x) is the propagation weight (total contribution of f(x-k) to f(x)
+    summed over all paths in the arithmetic case, or minimum-weight path in
+    the tropical case).  f_k(x) is the windowed partial sum: the value f(x)
+    would take if all positions strictly before x-k+1 had g=zero.
+
+    Base cases: d[0]=1, d[1]=a, f[0]=0, f[1]=g.
+    Even doubling formula (same for arith and tropical, different ⊗/⊕):
+        d[2k] = d[k] ⊗ d[k](x-k)  ⊕  d[k-1] ⊗ b(x-k+1) ⊗ d[k-1](x-k-1)
+        f[2k] = f[k]  ⊕  d[k] ⊗ f[k](x-k)  ⊕  d[k-1] ⊗ b(x-k+1) ⊗ f_bridge(x-k-1)
+            where f_bridge = f[k-1] (arithmetic) or f[k] (tropical, wider is fine)
+    Odd window formula:
+        arithmetic: 3-term inclusion-exclusion for d[2k-1] and f[2k-1]
+        tropical:   2-term (idempotency eliminates subtraction) for d[2k-1];
+                    no f[2k-1] needed at all
+
+    Returns (d[K], d[K-1], f[K]).
+    """
+    def delay(sig: SignalExpr, n: int) -> SignalExpr:
+        return _ltv_delay(sig, n, ty, et)
+
+    def mul(a: SignalExpr, b: SignalExpr) -> SignalExpr:
+        return _ltv_mul(a, b, ty, et)
+
+    def add(a: SignalExpr, b: SignalExpr) -> SignalExpr:
+        return _ltv_add(a, b, ty, et)
+
+    def sub(a: SignalExpr, b: SignalExpr) -> SignalExpr:
+        return _ltv_sub(a, b, ty, et)
+
+    zero = Num(ty.zero(), ty, et)
+    one = Num(ty.one(), ty, et)
+
+    d: dict[int, SignalExpr] = {0: one, 1: a_sig}
+    f: dict[int, SignalExpr] = {0: zero, 1: g}
+
+    # Base case: k=1 -> 2k=2
+    # d[2] = a(x)*a(x-1) + b(x)   [one*b*one = b simplifies the third term]
+    d[2] = add(mul(d[1], delay(d[1], 1)),
+               mul(d[0], mul(b_sig, delay(d[0], 2))))
+    # f[2] = g(x) + a(x)*g(x-1)   [f[0]=zero so third term vanishes in both algebras]
+    f[2] = add(add(f[1], mul(d[1], delay(f[1], 1))),
+               mul(d[0], mul(b_sig, delay(f[0], 2))))
+
+    # Tower iterations: k = 2, 4, 8, ..., K/2
+    k = 2
+    while k < K:
+
+        # d[2k]: even window, split at midpoint x-k
+        d[2 * k] = add(
+            mul(d[k], delay(d[k], k)),
+            mul(d[k - 1], mul(delay(b_sig, k - 1), delay(d[k - 1], k + 1))),
+        )
+
+        # d[2k-1]: odd window
+        if tropical:
+            # Two-term: idempotency of ⊕ makes subtraction unnecessary
+            d[2 * k - 1] = add(
+                mul(d[k], delay(d[k - 1], k)),
+                mul(d[k - 1], delay(d[k], k-1)),
+            )
+        else:
+            # Three-term inclusion-exclusion
+            a_del_km1 = delay(a_sig, k - 1)
+            d[2 * k - 1] = sub(
+                add(mul(d[k], delay(d[k-1], k)), mul(d[k - 1], delay(d[k], k-1))),
+                mul(d[k - 1], mul(a_del_km1, delay(d[k-1], k))),
+            )
+
+        # f[2k]: even window
+        # Tropical uses f[k] as the bridge (wider window is ok by idempotency);
+        # arithmetic needs f[k-1] for exact counting.
+        f_bridge = f[k] if tropical else f[k - 1]
+        f[2 * k] = add(
+            add(f[k], mul(d[k], delay(f[k], k))),
+            mul(d[k - 1], mul(delay(b_sig, k - 1), delay(f_bridge, k + 1))),
+        )
+
+        # f[2k-1]: only needed for arithmetic (used as bridge in next iteration).
+        # f[2k](x) covers sources [x-2k+1, x]; f[2k-1](x) covers [x-2k+2, x].
+        # The difference is the leftmost source at y = x-2k+1:
+        #   f[2k-1](x) = f[2k](x) - g(x-(2k-1)) * d[2k-1](x)
+        if not tropical:
+            f[2 * k - 1] = sub(
+                f[2 * k],
+                mul(delay(g, 2 * k - 1), d[2 * k - 1]),
+            )
+
+        k *= 2
+
+    return d[K], d[K - 1], f[K]
+
+
+def _ltv_target_K(max_bits: int, et: ElementType) -> int:
+    """Return the largest power of 2 lanes that fit in max_bits for element type et."""
+    max_lanes = max_bits // et.bit_width()
+    K = 1
+    while K * 2 <= max_lanes:
+        K *= 2
+    return K
+
+
+@ArithTransform
+class DilateLTVArith(Transform):
+    """Vectorize a 2nd-order arithmetic LTV recurrence via the dk/fk tower.
+
+    Transforms::
+
+        Recurse(TVKernel([0, a(x), b(x)]), g)
+
+    into a stride-K recurrence::
+
+        Recurse(TVKernel([0]*K + [d_K(x), d_{K-1}(x)*b(x-K+1)]), f_K(x))
+
+    where K = max_bits // element_type.bit_width() (rounded to power of 2).
+    The resulting kernel has K leading zeros so AnnotateLanes assigns K lanes.
+    """
+
+    max_bits: int
+
+    def __init__(self, max_bits: int = 2**63) -> None:
+        self.max_bits = max_bits
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Recurse(TVKernel(data) as kernel, g):
+                if len(data) != 3:
+                    return []
+                if not (isinstance(data[0], Num) and kernel.ty.is_zero(data[0].value)):
+                    return []
+
+                ty = kernel.ty
+                et = kernel.element_type
+                K = _ltv_target_K(self.max_bits, et)
+                if K < 2:
+                    return []
+
+                a_sig: SignalExpr = data[1]
+                b_sig: SignalExpr = data[2]
+
+                d_K, d_Km1, f_K = _build_ltv_tower(a_sig, b_sig, g, ty, et, K, tropical=False)
+
+                zero = Num(ty.zero(), ty, et)
+                coeff_Kp1 = _ltv_mul(d_Km1, _ltv_delay(b_sig, K - 1, ty, et), ty, et)
+                stitching_data: List[SignalExpr] = [zero] * K + [d_K, coeff_Kp1]
+                return [Recurse(TVKernel(stitching_data, ty, et), f_K)]
+
+            case _:
+                return []
+
+
+@TropTransform
+class DilateLTVTrop(Transform):
+    """Vectorize a 2nd-order tropical LTV recurrence via the dk/fk tower.
+
+    Transforms::
+
+        Recurse(TVKernel([zero, a(x), b(x)]), g)   (TropMin or TropMax type)
+
+    into a stride-K recurrence::
+
+        Recurse(TVKernel([zero]*K + [d_K(x), d_{K-1}(x)⊗b(x-K+1)]), f_K(x))
+
+    The tropical version is simpler: odd-window f arrays are not needed at any
+    layer (idempotency of ⊕ absorbs double-counting), and d_{2k-1} uses only
+    two terms instead of three.
+    """
+
+    max_bits: int
+
+    def __init__(self, max_bits: int = 2**63) -> None:
+        self.max_bits = max_bits
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Recurse(TVKernel(data) as kernel, g):
+                if len(data) != 3:
+                    return []
+                if not (isinstance(data[0], Num) and kernel.ty.is_zero(data[0].value)):
+                    return []
+
+                ty = kernel.ty
+                et = kernel.element_type
+                K = _ltv_target_K(self.max_bits, et)
+                if K < 2:
+                    return []
+
+                a_sig: SignalExpr = data[1]
+                b_sig: SignalExpr = data[2]
+
+                d_K, d_Km1, f_K = _build_ltv_tower(a_sig, b_sig, g, ty, et, K, tropical=True)
+
+                zero = Num(ty.zero(), ty, et)
+                coeff_Kp1 = _ltv_mul(d_Km1, _ltv_delay(b_sig, K - 1, ty, et), ty, et)
+                stitching_data: List[SignalExpr] = [zero] * K + [d_K, coeff_Kp1]
+                return [Recurse(TVKernel(stitching_data, ty, et), f_K)]
 
             case _:
                 return []

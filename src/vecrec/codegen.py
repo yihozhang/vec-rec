@@ -48,12 +48,18 @@ class CodeGen:
     var2d_context: Dict[str, Union[str, int]]
     # Maps expressions (by structural equality) to Code object for caching identical AST structures
     expr_cache: Optional[Dict]
+    # Maps multi-use signal exprs to (ptr_var_name, primary_Code); populated on first visit
+    cse_ptr_vars: Dict
+    # Reference counts per non-trivial signal expression (structural equality)
+    ref_counts: Dict
 
     def __init__(self, cache_cse: bool = True):
         self.counter = 0
         self.prologue = []
         self.var2d_context = {}
         self.expr_cache = {} if cache_cse else None
+        self.cse_ptr_vars = {}
+        self.ref_counts = {}
 
     def get_new_var(self) -> str:
         self.counter += 1
@@ -109,7 +115,7 @@ class CodeGen:
             )
             vec_type = self.get_vec_type(expr.element_type, expr.lanes)
             return Code(
-                f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride)",
+                f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride, {expr.ty.zero()})",
                 expr.ty,
                 expr.element_type,
                 expr.lanes,
@@ -197,7 +203,7 @@ class CodeGen:
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
                 value_str = expr.element_type.val_to_str(value, expr.ty)
                 code = Code(
-                    f"Signal1DConstant<{vec_type}>({value_str})",
+                    f"new Signal1DConstant<{vec_type}>({value_str})",
                     expr.ty,
                     expr.element_type,
                     expr.lanes,
@@ -207,7 +213,7 @@ class CodeGen:
                 value_str = expr.element_type.val_to_str(value, expr.ty)
                 zero_str = expr.element_type.val_to_str(expr.ty.zero(), expr.ty)
                 code = Code(
-                    f"Signal1DImpulse<{vec_type}>({value_str}, {zero_str})",
+                    f"new Signal1DImpulse<{vec_type}>({value_str}, {zero_str})",
                     expr.ty,
                     expr.element_type,
                     expr.lanes,
@@ -241,7 +247,7 @@ class CodeGen:
             case Var():
                 assert expr.lanes is not None
                 code = Code(
-                    f"Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({expr.name})",
+                    f"new Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({expr.name})",
                     expr.ty,
                     expr.element_type,
                     expr.lanes,
@@ -254,7 +260,7 @@ class CodeGen:
                 )
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
                 code = Code(
-                    f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride)",
+                    f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride, {expr.ty.zero()})",
                     expr.ty,
                     expr.element_type,
                     expr.lanes,
@@ -375,7 +381,7 @@ class CodeGen:
                         code_s = self.generate_signal(a.b.data[j])
                         terms.append(f"make_s_convolve<{vec_type}>({code_k.text}, {code_s.text})")
                     if not terms:
-                        program = f"Signal1DConstant<{vec_type}>(0)"
+                        program = f"new Signal1DConstant<{vec_type}>(0)"
                     elif len(terms) == 1:
                         program = terms[0]
                     else:
@@ -394,8 +400,17 @@ class CodeGen:
             var = self.get_new_var()
             self.prologue.append(f"auto {var} = {code.text};")
             code = Code(var, code.ty, code.element_type, code.lanes, code.taps)
-        if self.expr_cache is not None:
-            self.expr_cache[expr] = code
+
+            assert self.expr_cache is not None
+            secondary_code = Code(
+                f"make_Secondary<{self.get_vec_type(code.element_type, code.lanes)}>({var})",
+                code.ty,
+                code.element_type,
+                code.lanes,
+                code.taps,
+            )
+            self.expr_cache[expr] = secondary_code
+
         return code
 
     def generate_kernel(self, expr: KernelExpr) -> Code:
@@ -414,7 +429,7 @@ class CodeGen:
 
                 if taps == 0:
                     code = Code(
-                        f"ZeroKernel<{vec_type}>()",
+                        f"new ZeroKernel<{vec_type}>()",
                         expr.ty,
                         expr.element_type,
                         expr.lanes,
@@ -435,7 +450,7 @@ class CodeGen:
                     )
 
                     code = Code(
-                        f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
+                        f"new TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
                         expr.ty,
                         expr.element_type,
                         expr.lanes,
@@ -477,8 +492,16 @@ class CodeGen:
             var = self.get_new_var()
             self.prologue.append(f"auto {var} = {code.text};")
             code = Code(var, code.ty, code.element_type, code.lanes, code.taps)
-        if self.expr_cache is not None:
-            self.expr_cache[expr] = code
+
+            assert self.expr_cache is not None
+            secondary_code = Code(
+                f"make_Secondary<{self.get_vec_type(code.element_type, code.lanes)}>({var})",
+                code.ty,
+                code.element_type,
+                code.lanes,
+                code.taps,
+            )
+            self.expr_cache[expr] = secondary_code
         return code
 
     def generate_signal_vector(self, expr: SignalVectorExpr) -> Code:
@@ -766,7 +789,7 @@ def _generate_benchmark_code(
         benchmark_text += "        // Warmup\n"
         benchmark_text += "        for (int i = 0; i < warmup; i++) {\n"
         benchmark_text += f"            {name}_vector_type out;\n"
-        benchmark_text += "            kernel.run(&out);\n"
+        benchmark_text += "            kernel->run(&out);\n"
         benchmark_text += "        }\n\n"
 
         benchmark_text += "        // Reset kernel state\n"
@@ -784,12 +807,12 @@ def _generate_benchmark_code(
         # This piece of code should be generalized.
         benchmark_text += "#pragma unroll\n"
         benchmark_text += f"                for (int i = 0; i < 16 / vec_lanes_of({name}_vector_type{{}}); i++) {{\n"
-        benchmark_text += "                    kernel.run(&out);\n"
+        benchmark_text += "                    kernel->run(&out);\n"
         benchmark_text += f"                    memcpy(&output_{name}[pos], &out, sizeof(out));\n"
         benchmark_text += "                    pos += vec_lanes_of(out);\n"
 
         benchmark_text += "                    if (pos % row_size == 0) {\n"
-        benchmark_text += "                        kernel.reset_and_next_row();\n"
+        benchmark_text += "                        kernel->reset_and_next_row();\n"
         benchmark_text += "                    }\n"
 
         benchmark_text += "                }\n"
@@ -1152,13 +1175,13 @@ def _generate_kernel_runner_code(
     text += "    int pos = 0;\n"
     text += "    while (pos < N) {\n"
     text += f"        {kernel_name}_vector_type out;\n"
-    text += "        kernel.run(&out);\n"
+    text += "        kernel->run(&out);\n"
     text += "        const int lanes = vec_lanes_of(out);\n"
     text += "        const int copy_count = (N - pos) < lanes ? (N - pos) : lanes;\n"
     text += f"        std::memcpy(output.data() + pos, &out, sizeof({output_cpp_type}) * copy_count);\n"
     text += "        pos += lanes;\n"
     text += "        if (pos % row_size == 0) {\n"
-    text += "            kernel.reset_and_next_row();\n"
+    text += "            kernel->reset_and_next_row();\n"
     text += "        }\n"
     text += "    }\n"
     text += "    auto end = std::chrono::high_resolution_clock::now();\n"
@@ -1225,6 +1248,7 @@ def generate_kernel_executable(
     )
     with open(runner_path, "w") as f:
         f.write(runner_code)
+    print(runner_path)
 
     compile_cmd = [compiler] + compiler_flags + [runner_path, "-o", executable_path]
     compile_result = subprocess.run(

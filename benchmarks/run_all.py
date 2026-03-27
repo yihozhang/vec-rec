@@ -23,7 +23,7 @@ import traceback
 from benchmark import Benchmark, BenchmarkResult
 from arith.prefix_sum import PrefixSumBenchmark
 
-from arith.first_order_ti import FirstOrderTIConstBenchmark, FirstOrderTIVarBenchmark
+# from arith.first_order_ti import FirstOrderTIConstBenchmark, FirstOrderTIVarBenchmark
 from arith.first_order_high_pass import FirstOrderHighPassBenchmark
 from arith.second_order_ti import SecondOrderTIBenchmark
 from arith.second_order_tv import SecondOrderTVBenchmark
@@ -34,6 +34,7 @@ from arith.continued_fraction import ContinuedFractionBenchmark
 from arith.box_filter_summed_area_table import BoxFilterSATBenchmark
 from arith.repeated_box_filter import RepeatedBoxFilterBenchmark
 from trop.second_order_ti_trop import SecondOrderTITropBenchmark
+from trop.second_order_tv_trop import SecondOrderTVTropBenchmark
 from trop.distance_transform import DistanceTransformBenchmark
 
 
@@ -48,12 +49,13 @@ REGISTRY.extend(
         FirstOrderHighPassBenchmark(),
         SecondOrderTIBenchmark(),
         SecondOrderHighPassBenchmark(),
-        # SecondOrderTVBenchmark(),
+        SecondOrderTVBenchmark(),
         AudioLargeFiltersBenchmark(),
-        # ContinuedFractionBenchmark(),
+        ContinuedFractionBenchmark(),
         *[BoxFilterSATBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
         *[RepeatedBoxFilterBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
         SecondOrderTITropBenchmark(),
+        SecondOrderTVTropBenchmark(),
         DistanceTransformBenchmark(),
     ]
 )
@@ -64,6 +66,11 @@ def main() -> None:
     args = sys.argv[1:]
     verbose = "--verbose" in args
     filters = [a for a in args if not a.startswith("--")]
+    if "--list" in args:
+        print("Registered benchmarks:")
+        for bench in REGISTRY:
+            print(f"  {bench.name}: {bench.description}")
+        sys.exit(0)
 
     benchmarks = list(REGISTRY)
     if filters:

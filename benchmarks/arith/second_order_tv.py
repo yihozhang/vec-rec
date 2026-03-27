@@ -11,6 +11,7 @@ from benchmark import Benchmark
 
 
 class SecondOrderTVBenchmark(Benchmark):
+    DEBUG = True
     @property
     def name(self) -> str:
         return "second-order-tv"
