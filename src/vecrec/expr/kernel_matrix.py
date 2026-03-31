@@ -1,8 +1,12 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
-from .base import KernelExpr, KernelMatrixExpr
+from vecrec.expr.kernel import TIKernel
+from vecrec.util import ElementType
+from vecrec.util import ElementType
+
+from .base import KernelExpr, KernelMatrixExpr, Type
 
 
 @dataclass(unsafe_hash=True)
@@ -38,6 +42,12 @@ class KernelMatrix(KernelMatrixExpr):
 
         super().__init__(ty, element_type, n)
         self.data = tuple(rows)
+    
+    @staticmethod
+    def i(n: int, ty: Optional[Type] = None, element_type: Optional[ElementType] = None) -> KernelMatrix:
+        """Return the identity kernel matrix."""
+        identity_kernel = TIKernel.i(ty, element_type)
+        return KernelMatrix([[identity_kernel if i == j else TIKernel([], ty, element_type) for j in range(n)] for i in range(n)])
 
     def children(self) -> List[KernelExpr]:  # type: ignore[override]
         return [k for row in self.data for k in row]
@@ -49,3 +59,34 @@ class KernelMatrix(KernelMatrixExpr):
 
     def __repr__(self) -> str:
         return f"KernelMatrix(n={self.n}, data={self.data})"
+    
+    def __sub__(self, other: KernelMatrix) -> KernelMatrix:
+        assert self.n == other.n and self.ty == other.ty and self.element_type == other.element_type, "KernelMatrix subtraction requires matching dimensions and types"
+        return KernelMatrix(
+            [[self.data[i][j] - other.data[i][j] for j in range(self.n)] for i in range(self.n)], # type: ignore
+        )
+    
+    def __add__(self, other: KernelMatrix) -> KernelMatrix:
+        assert self.n == other.n and self.ty == other.ty and self.element_type == other.element_type, "KernelMatrix addition requires matching dimensions and types"
+        return KernelMatrix(
+            # TODO: get rid of KAdd, KSub, KConvolve and use +/-/* directly
+            [[self.data[i][j] + other.data[i][j] for j in range(self.n)] for i in range(self.n)], # type: ignore
+        )
+    
+    def __neg__(self):
+        return KernelMatrix(
+            [[-k for k in row] for row in self.data], # type: ignore
+        )
+    
+    def __matmul__(self, other: KernelMatrix) -> KernelMatrix:
+        assert self.n == other.n and self.ty == other.ty and self.element_type == other.element_type, "KernelMatrix multiplication requires matching dimensions and types"
+        return KernelMatrix(
+            [[sum(self.data[i][k] * other.data[k][j] for k in range(self.n)) for j in range(self.n)] for i in range(self.n)], # type: ignore
+        )
+    
+    def __mul__(self, other: float | int) -> KernelMatrix:
+        return KernelMatrix(
+            [[k * other for k in row] for row in self.data], # type: ignore
+        )
+    
+    __rmul__ = __mul__

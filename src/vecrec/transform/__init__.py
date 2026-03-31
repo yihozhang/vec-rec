@@ -29,9 +29,10 @@ class Transform:
             return self.apply_kernel2d(expr)
         elif isinstance(expr, SignalExpr2D):
             return self.apply_signal2d(expr)
-        elif isinstance(expr, (KernelMatrixExpr, SignalVectorExpr)):
-            # Transforms do not yet handle vector/matrix expressions; pass through unchanged.
-            return [expr]
+        elif isinstance(expr, KernelMatrixExpr):
+            return self.apply_kernel_matrix(expr)
+        elif isinstance(expr, SignalVectorExpr):
+            return self.apply_signal_vector(expr)
         else:
             raise TypeError(f"Unknown expression type: {type(expr)}")
 
@@ -45,6 +46,12 @@ class Transform:
         return []
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        return []
+    
+    def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        return []
+    
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
         return []
 
 def ArithTransform(cls):

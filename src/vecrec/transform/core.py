@@ -68,6 +68,50 @@ class Dilate(Transform):
             return f, i
         return None
 
+    def op_mutual(self, k: Tuple[Tuple[TIKernel]]) -> typing.Optional[Tuple[KernelMatrix, KernelMatrix]]:
+        assert all(k0.ty == Type.Arith for row in k for k0 in row)
+        element_type = k[0][0].element_type
+        assert all(k0.element_type == element_type for row in k for k0 in row)
+        max_stride = self.max_lanes(element_type)
+        n = len(k)  # kernel matrix is n x n
+        # taps = max(len(k[i][j]) for i in range(n) for j in range(n))
+
+        stride = 2
+        while stride <= max_stride:
+            evens = []
+            odds = []
+            odd_len = 0
+            for i in range(n):
+                even_row = []
+                odd_row = []
+                for j in range(n):
+                    taps_ij = len(k[i][j])
+                    even = [0.0] * taps_ij
+                    even[0:taps_ij:stride] = k[i][j].data[0::stride]
+                    even_row.append(TIKernel(even, Type.Arith, element_type))
+
+                    odd = [a - b for a, b in zip(k[i][j].data, even)]
+                    odd_row.append(TIKernel(odd, Type.Arith, element_type))
+
+                    odd_len = max(odd_len, len(odd))
+                evens.append(even_row)
+                odds.append(odd_row)
+
+            even_t = tuple(tuple(evens[i]) for i in range(n))
+            odd_t = tuple(tuple(odds[i]) for i in range(n))
+
+            even_k = KernelMatrix(even_t)
+            odd_k = KernelMatrix(odd_t)
+
+            if odd_len == 0:
+                stride *= 2
+                continue
+
+            f = KernelMatrix.i(n, Type.Arith, element_type) - even_k + odd_k
+            i = -even_k @ even_k + 2 * even_k + odd_k @ odd_k
+            return f, i
+        return None
+
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(a, g) if isinstance(a, TIKernel):
@@ -76,6 +120,18 @@ class Dilate(Transform):
                     return []
                 f, i = result
                 return [Recurse(i, Convolve(f, g))]
+            case _:
+                return []
+
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        match expr:
+            case RecurseV(KernelMatrix(a), g) if all(isinstance(k, TIKernel) for row in a for k in row):
+                result = self.op_mutual(a)  # type: ignore[arg-type]
+                print("result:", result)
+                if not result:
+                    return []
+                f, i = result
+                return [RecurseV(i, ConvolveV(f, g))]
             case _:
                 return []
 
@@ -180,9 +236,7 @@ class Factorize(Transform):
             case Convolve(TIKernel(a) as kernel, g):
                 if len(a) < 2:
                     return []  # Constant kernel, nothing to factorize
-                factors: Sequence[KernelExpr] = factorize_polynomial(
-                    a, kernel.element_type
-                )
+                factors: Sequence[KernelExpr] = factorize_polynomial(a, kernel.element_type)
                 if len(factors) == 0:
                     return []
                 # e = reduce(lambda acc, factor: KConvolve(factor, acc), factors)
@@ -247,22 +301,28 @@ class DilateTVWithSingleOddOrder(Transform):
                         A = TVKernel(even)
                         B = TVKernel(odd)
                         C = TVKernel(
-                                [
+                            [
+                                (
                                     PointwiseDiv(
                                         PointwiseMul(odd[inz], Convolve(TIKernel.z(n=-1), even[2])),
                                         Convolve(TIKernel.z(n=-i), odd[inz]),
-                                    ) if a != Num(0) else Num(0)
-                                    for i, a in enumerate(even)
-                                ]
-                            )
-                        new_numer = [TIKernel.i(), B, KNeg(C)]
-                        new_denom = [KConvolve(B, B), A, KConvolve(
-                         C,   
-                            (TIKernel.i() - A),
-                        )]
-                        expr = Recurse(
-                            KAdd.of(new_denom), Convolve(KAdd.of(new_numer), g)
+                                    )
+                                    if a != Num(0)
+                                    else Num(0)
+                                )
+                                for i, a in enumerate(even)
+                            ]
                         )
+                        new_numer = [TIKernel.i(), B, KNeg(C)]
+                        new_denom = [
+                            KConvolve(B, B),
+                            A,
+                            KConvolve(
+                                C,
+                                (TIKernel.i() - A),
+                            ),
+                        ]
+                        expr = Recurse(KAdd.of(new_denom), Convolve(KAdd.of(new_numer), g))
                         # print(pp(expr))
                         print(pp(C))
                         return [expr]

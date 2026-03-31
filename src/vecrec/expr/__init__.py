@@ -48,6 +48,7 @@ __all__ = [
     "SignalVector",
     "ConvolveV",
     "RecurseV",
+    "ConvertLanesV",
     "VectorAt",
     "pp",
     "pps",

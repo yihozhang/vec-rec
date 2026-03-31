@@ -5,7 +5,12 @@ import itertools
 import copy
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
-from vecrec.expr.base import KernelExpr2D, SignalExpr2D
+from vecrec.expr.base import (
+    KernelExpr2D,
+    KernelMatrixExpr,
+    SignalExpr2D,
+    SignalVectorExpr,
+)
 from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D
 from vecrec.expr.signal_vec import VectorAt
@@ -42,24 +47,22 @@ __all__ = [
 
 
 class Noop(Transform):
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+    @typing.no_type_check
+    def apply_generic(self, expr):
         return [expr]
 
-    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        return [expr]
-
-    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
-        return [expr]
-
-    def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
-        return [expr]
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic
 
 
 class Seq(Transform):
     def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
-        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
-
+        
     @typing.no_type_check
     def apply_generic(self, expr):
         results = [expr]
@@ -69,12 +72,17 @@ class Seq(Transform):
             )
         return results
 
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic
 
 class Repeat(Transform):
     def __init__(self, times: int, *transforms: Transform) -> None:
         self.transform = Seq(*transforms)
         self.times = times
-        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
     @typing.no_type_check
     def apply_generic(self, expr):
@@ -85,12 +93,17 @@ class Repeat(Transform):
             )
         return results
 
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic
 
 class RepeatUpTo(Transform):
     def __init__(self, max_times: int, *transforms: Transform) -> None:
         self.transform = Seq(*transforms)
         self.max_times = max_times
-        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
     @typing.no_type_check
     def apply_generic(self, expr):
@@ -102,6 +115,13 @@ class RepeatUpTo(Transform):
             new_results = _dedup_exprs(new_results)
             results.append(new_results)
         return _dedup_exprs([s for res in results for s in res])
+    
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic
 
 
 class Optional(Transform):
@@ -109,7 +129,6 @@ class Optional(Transform):
 
     def __init__(self, transform: Transform) -> None:
         self.transform = transform
-        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
     def apply_generic(self, expr):
         results = self.transform.apply_generic(expr)
@@ -119,21 +138,32 @@ class Optional(Transform):
         # Otherwise, prepend the original expression
         return [expr] + list(results)
 
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic
+
 
 class Try(Transform):
     def __init__(self, transform: Transform) -> None:
         self.transform = transform
-        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
     def apply_generic(self, expr):
         results = self.transform.apply_generic(expr)
         return results if len(results) > 0 else [expr]
 
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic
 
 class Any(Transform):
     def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
-        self.apply_kernel = self.apply_kernel2d = self.apply_signal = self.apply_signal2d = self.apply_generic  # type: ignore
 
     def apply_generic(self, expr):
         results = [
@@ -143,6 +173,12 @@ class Any(Transform):
         ]
         return _dedup_exprs(results)
 
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic
 
 class Preorder(Transform):
     def __init__(self, transform: Transform) -> None:
@@ -258,6 +294,51 @@ class Preorder(Transform):
                     )
         return results
 
+    def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        results: List[KernelMatrixExpr] = []
+        for expr in self.transform.apply_generic(expr):
+            match expr:
+                case KernelMatrix(data):
+                    results += [
+                        KernelMatrix([list(row) for row in matrix_data]).with_lanes(
+                            expr.lanes
+                        )
+                        for matrix_data in itertools.product(
+                            *[
+                                itertools.product(*(self.apply_kernel(k) for k in row))
+                                for row in data
+                            ]
+                        )
+                    ]
+                case _:
+                    raise NotImplementedError()
+        return results
+
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        def cartesian(constructor, lists, lanes) -> Sequence[SignalVectorExpr]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
+
+        results: List[SignalVectorExpr] = []
+        for expr in self.transform.apply_generic(expr):
+            match expr:
+                case SignalVector(data):
+                    results += [
+                        SignalVector(vec_data).with_lanes(expr.lanes)
+                        for vec_data in itertools.product(
+                            *[self.apply_signal(s) for s in data]
+                        )
+                    ]
+                case _:
+                    results += cartesian(
+                        type(expr),
+                        [self.apply_generic(child) for child in expr.children()],
+                        expr.lanes,
+                    )
+        return results
+
 
 class Postorder(Transform):
     def __init__(self, transform: Transform) -> None:
@@ -365,6 +446,57 @@ class Postorder(Transform):
                 )
         return [e for result in results for e in self.transform.apply_signal2d(result)]
 
+    def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        def cartesian(constructor, lists, lanes) -> Sequence[KernelMatrixExpr]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
+
+        results: Sequence[KernelMatrixExpr]
+        match expr:
+            case KernelMatrix(data):
+                results = [
+                    KernelMatrix([list(row) for row in matrix_data]).with_lanes(
+                        expr.lanes
+                    )
+                    for matrix_data in itertools.product(
+                        *[
+                            itertools.product(*(self.apply_kernel(k) for k in row))
+                            for row in data
+                        ]
+                    )
+                ]
+            case _:
+                raise NotImplementedError()
+        return [
+            e for result in results for e in self.transform.apply_kernel_matrix(result)
+        ]
+
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        def cartesian(constructor, lists, lanes) -> Sequence[SignalVectorExpr]:  # type: ignore
+            return [
+                constructor(*args).with_lanes(lanes)
+                for args in itertools.product(*lists)
+            ]
+
+        results: Sequence[SignalVectorExpr]
+        match expr:
+            case SignalVector(data):
+                results = [
+                    SignalVector(vec_data).with_lanes(expr.lanes)
+                    for vec_data in itertools.product(*[self.apply_signal(s) for s in data])
+                ]
+            case _:
+                results = cartesian(
+                    type(expr),
+                    [self.apply_generic(child) for child in expr.children()],
+                    expr.lanes,
+                )
+        return [
+            e for result in results for e in self.transform.apply_signal_vector(result)
+        ]
+
 
 class SaturatePreorder(Transform):
     transform: Transform
@@ -373,7 +505,6 @@ class SaturatePreorder(Transform):
         def __init__(self, transform: Transform) -> None:
             self.transform = transform
             self.success = False
-            self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
 
         def apply_generic(self, expr):
             results = self.transform.apply_generic(expr)
@@ -382,10 +513,17 @@ class SaturatePreorder(Transform):
                 return results
             else:
                 return [expr]
+            
+        apply_kernel = apply_generic
+        apply_signal = apply_generic
+        apply_signal2d = apply_generic
+        apply_kernel2d = apply_generic
+        apply_kernel_matrix = apply_generic
+        apply_signal_vector = apply_generic
+
 
     def __init__(self, transform: Transform) -> None:
         self.transform = transform
-        self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
 
     @typing.no_type_check
     def apply_generic(self, expr):
@@ -402,6 +540,14 @@ class SaturatePreorder(Transform):
                 worklist.extend(rewritten)
         return _dedup_exprs(results)
 
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic
+
+
 
 class SaturatePreorderUpTo(SaturatePreorder):
     @typing.no_type_check
@@ -416,3 +562,10 @@ class SaturatePreorderUpTo(SaturatePreorder):
                 results.extend(rewritten)
                 worklist.extend(rewritten)
         return _dedup_exprs(results)
+
+    apply_kernel = apply_generic
+    apply_signal = apply_generic
+    apply_signal2d = apply_generic
+    apply_kernel2d = apply_generic
+    apply_kernel_matrix = apply_generic
+    apply_signal_vector = apply_generic

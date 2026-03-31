@@ -177,55 +177,24 @@ class AnnotateLanes(Transform):
             else:
                 return e
 
-        if isinstance(e, KernelMatrixExpr | SignalVectorExpr):
+        if isinstance(e, KernelMatrixExpr):
             raise NotImplementedError("Lane annotation for mutual recurrences not implemented")
 
         if e.lanes != lanes:
-            new_expr = ConvertLanes(e) if isinstance(e, SignalExpr) else KConvertLanes(e)
+            new_expr = (
+                ConvertLanes(e)
+                if isinstance(e, SignalExpr)
+                else (
+                    KConvertLanes(e)
+                    if isinstance(e, KernelExpr)
+                    else ConvertLanesV(e) if isinstance(e, SignalVectorExpr) else None
+                )
+            )
+            assert new_expr is not None, "Unsupported expression type for lane conversion"
             new_expr.lanes = lanes
             return new_expr
         else:
             return e
-
-    def _annotate_signal_vector(self, expr: SignalVectorExpr, lanes: int) -> SignalVectorExpr:
-        """Propagate lane annotations into a SignalVectorExpr and its children."""
-        if isinstance(expr, RecurseV):
-            assert isinstance(expr.a, KernelMatrix)
-            assert isinstance(expr.g, SignalVector)
-            new_kernel_rows = []
-            for row in expr.a.data:
-                new_row = [self.convert_lanes(self.apply_kernel(k)[0], lanes) for k in row]
-                new_kernel_rows.append(new_row)
-            new_km = KernelMatrix(new_kernel_rows)
-            new_km.lanes = lanes
-            new_signals = [self.convert_lanes(self.apply_signal(s)[0], lanes) for s in expr.g.data]
-            new_sv: SignalVector = SignalVector(new_signals)
-            new_sv.lanes = lanes
-            new_rv: SignalVectorExpr = RecurseV(new_km, new_sv)
-            new_rv.lanes = lanes
-            return new_rv
-        elif isinstance(expr, ConvolveV):
-            assert isinstance(expr.a, KernelMatrix)
-            assert isinstance(expr.b, SignalVector)
-            new_kernel_rows = []
-            for row in expr.a.data:
-                new_row = [self.convert_lanes(self.apply_kernel(k)[0], lanes) for k in row]
-                new_kernel_rows.append(new_row)
-            new_km = KernelMatrix(new_kernel_rows)
-            new_km.lanes = lanes
-            new_signals = [self.convert_lanes(self.apply_signal(s)[0], lanes) for s in expr.b.data]
-            new_sv = SignalVector(new_signals)
-            new_sv.lanes = lanes
-            new_cv: SignalVectorExpr = ConvolveV(new_km, new_sv)
-            new_cv.lanes = lanes
-            return new_cv
-        elif isinstance(expr, SignalVector):
-            new_signals = [self.convert_lanes(self.apply_signal(s)[0], lanes) for s in expr.data]
-            new_sv = SignalVector(new_signals)
-            new_sv.lanes = lanes
-            return new_sv
-        else:
-            return expr.with_lanes(lanes)
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         """Handle signal expressions that involve 2D data (Repeater, Convolve2D)."""
@@ -265,7 +234,7 @@ class AnnotateLanes(Transform):
 
         if isinstance(expr, VectorAt):
             lanes = self.max_lanes(element_type)
-            vec_inner = self._annotate_signal_vector(expr.a, lanes)
+            vec_inner = self.convert_lanes(self.apply_generic(expr.a)[0], lanes)
             new_vec_at = VectorAt(vec_inner, expr.i)
             new_vec_at.lanes = lanes
             return [new_vec_at]
@@ -316,6 +285,44 @@ class AnnotateLanes(Transform):
             new_expr = type(expr)(*args)  # type: ignore
             new_expr.lanes = max_lanes
             return [new_expr]
+
+    def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        lanes = self.max_lanes(expr.element_type)
+
+        if isinstance(expr, KernelMatrix):
+            new_rows = []
+            for row in expr.data:
+                new_row = [self.convert_lanes(self.apply_kernel(k)[0], lanes) for k in row]
+                new_rows.append(new_row)
+            new_expr: KernelMatrixExpr = KernelMatrix(new_rows)
+            new_expr.lanes = lanes
+            return [new_expr]
+
+        if expr.is_leaf():
+            return [expr.with_lanes(lanes)]
+
+        raise NotImplementedError("Lane annotation for non-KernelMatrix KernelMatrixExpr not implemented")
+
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        lanes = self.max_lanes(expr.element_type)
+
+        if isinstance(expr, RecurseV | ConvolveV):
+            assert isinstance(expr.a, KernelMatrix)
+            if isinstance(expr, RecurseV):
+                lanes = min(k.time_delay(lanes)[0] for row in expr.a.data for k in row)
+            new_kernel_rows = [[self.convert_lanes(self.apply_kernel(k)[0], lanes) for k in row] for row in expr.a.data]
+            new_km = KernelMatrix(new_kernel_rows).with_lanes(lanes)
+
+            new_sv = self.convert_lanes(self.apply_signal_vector(expr.g)[0], lanes)
+
+            new_expr: SignalVectorExpr = expr.__class__(new_km, new_sv).with_lanes(lanes)
+            return [new_expr]
+        elif isinstance(expr, SignalVector):
+            new_signals = [self.convert_lanes(self.apply_signal(s)[0], lanes) for s in expr.data]
+            new_sv = SignalVector(new_signals).with_lanes(lanes)
+            return [new_sv]
+        else:
+            return [expr.with_lanes(lanes)]
 
 
 class PushDownConvertLanesImpl(Transform):

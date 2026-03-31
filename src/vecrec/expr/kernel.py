@@ -51,9 +51,7 @@ class TIKernel(KernelExpr):
         for i, v in enumerate(self.data[:max_delay]):
             if not self.ty.is_zero(v):
                 return i, TIKernel(self.data[i:], self.ty, self.element_type).with_lanes(self.lanes)
-        if max_delay < len(self.data):
-            return max_delay, TIKernel(self.data[max_delay:], self.ty, self.element_type).with_lanes(self.lanes)
-        assert False, "max_delay exceeds kernel length"
+        return max_delay, TIKernel(self.data[max_delay:], self.ty, self.element_type).with_lanes(self.lanes)
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[float]]:
         """Returns a tuple of (num_nonzero, indices, values) representing the sparse form of the kernel."""

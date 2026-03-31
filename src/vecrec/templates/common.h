@@ -767,12 +767,11 @@ struct KConvertN2One {
 #pragma unroll
         for (int i = 0; i < factor; i++) {
             vec_type_in in[taps];
-            inner.run(&in);
+            inner.run(in);
 #pragma unroll
             for (int j = 0; j < taps; j++) {
                 p[j * factor + i] = in[j];
             }
-            *p++ = in;
         }
     }
 
@@ -994,8 +993,33 @@ auto make_time_varying_kernel(Args... args) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers for SRecurseV2
+// Mutual recurrences
 // ---------------------------------------------------------------------------
+
+template <typename vec_type, typename S1, typename S2>
+struct SignalVector2 {
+    S1 s1;
+    S2 s2;
+    SignalVector2(S1 s1, S2 s2) : s1(s1), s2(s2) {}
+
+    inline __attribute__((always_inline)) void run(vec_type *out) {
+        vec_type v1, v2;
+        s1.run(&v1);
+        s2.run(&v2);
+        out[0] = v1;
+        out[1] = v2;
+    }
+
+    void reset_and_next_row() {
+        s1.reset_and_next_row();
+        s2.reset_and_next_row();
+    }
+};
+
+template <typename vec_type, typename S1, typename S2>
+auto make_signal_vector2(S1 s1, S2 s2) {
+    return SignalVector2<vec_type, S1, S2>(s1, s2);
+}
 
 // SLatched: a signal whose value is set externally each step.
 template <typename vec_type>
@@ -1055,18 +1079,17 @@ struct MaybeSRecurse<vec_type, K, false> {
 template <typename vec_type,
           typename K00, typename K01,
           typename K10, typename K11,
-          typename S0, typename S1>
+          typename S>
 struct SRecurseV2 {
     MaybeSConvolve<vec_type, K01> c01; // K01 * history(F[1])
     MaybeSConvolve<vec_type, K10> c10; // K10 * history(F[0])
     MaybeSRecurse<vec_type, K00> r0;   // K00 * F[0] + eff_g0
     MaybeSRecurse<vec_type, K11> r1;   // K11 * F[1] + eff_g1
-    S0 s0;
-    S1 s1;
+    S s;
     vec_type last_out0{0}, last_out1{0};
 
-    SRecurseV2(K00 k00, K01 k01, K10 k10, K11 k11, S0 s0, S1 s1)
-        : c01(k01), c10(k10), r0(k00), r1(k11), s0(s0), s1(s1) {}
+    SRecurseV2(K00 k00, K01 k01, K10 k10, K11 k11, S s)
+        : c01(k01), c10(k10), r0(k00), r1(k11), s(s) {}
 
     inline __attribute__((always_inline)) void run(vec_type *out) {
         // Inject previous outputs into cross-term sliding windows
@@ -1079,11 +1102,10 @@ struct SRecurseV2 {
         c10.run(&cross1);
 
         // Read actual inputs and form effective inputs (G + cross)
-        vec_type g0, g1;
-        s0.run(&g0);
-        s1.run(&g1);
-        r0.set_input(g0 + cross0);
-        r1.set_input(g1 + cross1);
+        vec_type g[2];
+        s.run(g);
+        r0.set_input(g[0] + cross0);
+        r1.set_input(g[1] + cross1);
 
         // Compute diagonal recurrences
         r0.run(&out[0]);
@@ -1101,16 +1123,138 @@ struct SRecurseV2 {
         c10.reset_and_next_row();
         r0.reset_and_next_row();
         r1.reset_and_next_row();
-        s0.reset_and_next_row();
-        s1.reset_and_next_row();
+        s.reset_and_next_row();
     }
 };
 
 template <typename vec_type,
           typename K00, typename K01, typename K10, typename K11,
-          typename S0, typename S1>
-auto make_s_recurse_v2(K00 k00, K01 k01, K10 k10, K11 k11, S0 s0, S1 s1) {
-    return SRecurseV2<vec_type, K00, K01, K10, K11, S0, S1>(k00, k01, k10, k11, s0, s1);
+          typename S>
+auto make_s_recurse_v2(K00 k00, K01 k01, K10 k10, K11 k11, S s) {
+    return SRecurseV2<vec_type, K00, K01, K10, K11, S>(k00, k01, k10, k11, s);
+}
+
+template <typename vec_type,
+          typename K00, typename K01,
+          typename K10, typename K11,
+          typename S>
+struct SConvolveV2 {
+    MaybeSConvolve<vec_type, K01> c01;
+    MaybeSConvolve<vec_type, K10> c10;
+    MaybeSConvolve<vec_type, K00> c00;
+    MaybeSConvolve<vec_type, K11> c11;
+    S s;
+
+    SConvolveV2(K00 k00, K01 k01, K10 k10, K11 k11, S s)
+        : c01(k01), c10(k10), c00(k00), c11(k11), s(s) {}
+
+    inline __attribute__((always_inline)) void run(vec_type *out) {
+        vec_type g[2];
+        s.run(g);
+
+        c00.set_input(g[0]);
+        c10.set_input(g[0]);
+        c01.set_input(g[1]);
+        c11.set_input(g[1]);
+
+        vec_type k00, k01, k10, k11;
+        c01.run(&k01);
+        c10.run(&k10);
+        c00.run(&k00);
+        c11.run(&k11);
+
+        out[0] = k00 + k01;
+        out[1] = k10 + k11;
+    }
+
+    void reset_and_next_row() {
+        c01.reset_and_next_row();
+        c10.reset_and_next_row();
+        c00.reset_and_next_row();
+        c11.reset_and_next_row();
+        s.reset_and_next_row();
+    }
+};
+
+template <typename vec_type,
+          typename K00, typename K01, typename K10, typename K11,
+          typename S>
+auto make_s_convolve_v2(K00 k00, K01 k01, K10 k10, K11 k11, S s) {
+    return SConvolveV2<vec_type, K00, K01, K10, K11, S>(k00, k01, k10, k11, s);
+}
+
+template <typename vec_type_in, typename vec_type_out, typename Inner>
+struct ConvertN2OneV2 {
+    constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
+    constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
+    constexpr static int factor = lanes_out / lanes_in;
+    static_assert(lanes_out % lanes_in == 0, "lanes_in must be multiple of lanes_out");
+
+    Inner inner;
+
+    ConvertN2OneV2(Inner inner) : inner(inner) {}
+    inline __attribute__((always_inline)) void run(vec_type_out *out) {
+
+        vec_type_in *p = (vec_type_in *)out;
+#pragma unroll
+        for (int i = 0; i < factor; i++) {
+            vec_type_in in[2];
+            inner.run(in);
+#pragma unroll
+            for (int j = 0; j < 2; j++) {
+                p[j * factor + i] = in[j];
+            }
+        }
+    }
+
+    void reset_and_next_row() { inner.reset_and_next_row(); }
+};
+
+template <typename vec_type_in, typename vec_type_out, typename Inner>
+struct ConvertOne2NV2 {
+    constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
+    constexpr static int lanes_out = vec_lanes_of(vec_type_out{});
+    constexpr static int factor = lanes_in / lanes_out;
+    static_assert(lanes_in % lanes_out == 0, "lanes_out must be multiple of lanes_in");
+
+    Inner inner;
+    vec_type_in buffer[2];
+    vec_type_out out_buffer[2][factor];
+    int offset;
+
+    ConvertOne2NV2(Inner inner) : inner(inner), offset(0) {}
+
+    inline __attribute__((always_inline)) void run(vec_type_out *out) {
+        if (offset == 0) {
+            inner.run(buffer);
+#pragma unroll
+            for (int i = 0; i < 2; i++) {
+                for_<factor>([&](auto j) {
+                    out_buffer[i][j.value] = ExtractSubVector<vec_type_in, vec_type_out, j.value>::extract_sub_vector(buffer[i]);
+                });
+            }
+        }
+#pragma unroll
+        for (int i = 0; i < 2; i++) {
+            out[i] = out_buffer[i][offset];
+        }
+        offset = (offset + 1) % factor;
+    }
+
+    void reset_and_next_row() {
+        offset = 0;
+        inner.reset_and_next_row();
+    }
+};
+
+template <typename vec_type_in, typename vec_type_out, typename Inner>
+auto make_convert_n2one_v2(Inner inner) {
+    return ConvertN2OneV2<vec_type_in, vec_type_out, Inner>(inner);
+}
+
+template <typename vec_type_in, typename vec_type_out, typename Inner>
+auto make_convert_one2n_v2(Inner inner) {
+    return ConvertOne2NV2<vec_type_in, vec_type_out, Inner>(inner);
 }
 
 // ---------------------------------------------------------------------------

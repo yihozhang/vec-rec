@@ -46,24 +46,26 @@ class ConvolveV(SignalVectorExpr):
     """
 
     a: KernelMatrixExpr
-    b: SignalVectorExpr
-    __match_args__ = ("a", "b")
+    g: SignalVectorExpr
+    __match_args__ = ("a", "g")
 
-    def __init__(self, a: KernelMatrixExpr, b: SignalVectorExpr) -> None:
-        assert a.n == b.n, f"KernelMatrix and SignalVector size mismatch: {a.n} vs {b.n}"
-        assert a.ty == b.ty, f"Type mismatch in ConvolveV: {a.ty} vs {b.ty}"
-        assert a.element_type == b.element_type, f"ElementType mismatch in ConvolveV: {a.element_type} vs {b.element_type}"
+    def __init__(self, a: KernelMatrixExpr, g: SignalVectorExpr) -> None:
+        assert a.n == g.n, f"KernelMatrix and SignalVector size mismatch: {a.n} vs {g.n}"
+        assert a.ty == g.ty, f"Type mismatch in ConvolveV: {a.ty} vs {g.ty}"
+        assert (
+            a.element_type == g.element_type
+        ), f"ElementType mismatch in ConvolveV: {a.element_type} vs {g.element_type}"
         super().__init__(a.ty, a.element_type, a.n)
         self.a = a
-        self.b = b
+        self.g = g
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ConvolveV):
             return False
-        return self.lanes == other.lanes and self.a == other.a and self.b == other.b
+        return self.lanes == other.lanes and self.a == other.a and self.g == other.g
 
     def __repr__(self) -> str:
-        return f"ConvolveV({self.a}, {self.b})"
+        return f"ConvolveV({self.a}, {self.g})"
 
 
 @dataclass(unsafe_hash=True)
@@ -83,7 +85,9 @@ class RecurseV(SignalVectorExpr):
     def __init__(self, a: KernelMatrixExpr, g: SignalVectorExpr) -> None:
         assert a.n == g.n, f"KernelMatrix and SignalVector size mismatch: {a.n} vs {g.n}"
         assert a.ty == g.ty, f"Type mismatch in RecurseV: {a.ty} vs {g.ty}"
-        assert a.element_type == g.element_type, f"ElementType mismatch in RecurseV: {a.element_type} vs {g.element_type}"
+        assert (
+            a.element_type == g.element_type
+        ), f"ElementType mismatch in RecurseV: {a.element_type} vs {g.element_type}"
         super().__init__(a.ty, a.element_type, a.n)
         self.a = a
         self.g = g
@@ -95,6 +99,20 @@ class RecurseV(SignalVectorExpr):
 
     def __repr__(self) -> str:
         return f"RecurseV({self.a}, {self.g})"
+
+
+@dataclass(unsafe_hash=True)
+class ConvertLanesV(SignalVectorExpr):
+    a: SignalVectorExpr
+    __match_args__ = ("a",)
+
+    def __init__(self, a: SignalVectorExpr) -> None:
+        super().__init__(a.ty, a.element_type, a.n)
+        self.a = a
+        self.lanes = None
+
+    def __repr__(self) -> str:
+        return f"ConvertLanesV({self.lanes}, {self.a})"
 
 
 @dataclass(unsafe_hash=True)

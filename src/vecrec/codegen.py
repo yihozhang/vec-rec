@@ -355,36 +355,15 @@ class CodeGen:
 
                 # Wrap with ConvertOne2N (downscale) or ConvertN2One (upscale) if needed
                 if signal2d_lanes != expr.lanes:
-                    code = self.enforce_lanes(code, expr.lanes)
+                    code = self.enforce_lanes(code, expr.lanes, "signal")
             case ConvertLanes(a):
                 code_a = self.generate_signal(a)
-                code = self.enforce_lanes(code_a, expr.lanes)
+                code = self.enforce_lanes(code_a, expr.lanes, "signal")
             case VectorAt(a, i):
                 vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                if isinstance(a, ConvolveV):
-                    # FIR: out[i] = sum_j K[i][j] * g[j]
-                    # Decompose into SConvolve + SAdd — no shared state between rows.
-                    assert isinstance(a.a, KernelMatrix) and isinstance(a.b, SignalVector)
-                    terms = []
-                    for j in range(a.n):
-                        k = a.a.data[i][j]
-                        assert isinstance(k, TIKernel)
-                        if len(k.data) == 0:
-                            continue  # zero kernel: no contribution
-                        code_k = self.generate_kernel(k)
-                        code_s = self.generate_signal(a.b.data[j])
-                        terms.append(f"make_s_convolve<{vec_type}>({code_k.text}, {code_s.text})")
-                    if not terms:
-                        program = f"Signal1DConstant<{vec_type}>(0)"
-                    elif len(terms) == 1:
-                        program = terms[0]
-                    else:
-                        program = f"make_s_add<{vec_type}>({terms[0]}, {terms[1]})"
-                else:
-                    # IIR (RecurseV): generate the shared vector object, then extract component i
-                    code_vec = self.generate_signal_vector(a)
-                    n = a.n
-                    program = f"make_vector_at<{n}, {i}, {vec_type}>({code_vec.text})"
+                code_vec = self.generate_signal_vector(a)
+                n = a.n
+                program = f"make_vector_at<{n}, {i}, {vec_type}>({code_vec.text})"
                 code = Code(program, expr.ty, expr.element_type, expr.lanes)
             case _:
                 assert False, f"CodeGen: unhandled case for expr {expr} of type {type(expr)}"
@@ -466,7 +445,7 @@ class CodeGen:
                 )
             case KConvertLanes(a):
                 code_a = self.generate_kernel(a)
-                code = self.enforce_lanes(code_a, expr.lanes)
+                code = self.enforce_lanes(code_a, expr.lanes, "kernel")
             case KAdd(_, _) | KSub(_, _) | KNeg(_) | KConvolve(_, _):
                 raise NotImplementedError("These apps should have been eliminated by constant folding")
             case _:
@@ -493,47 +472,26 @@ class CodeGen:
         assert expr.lanes is not None
 
         match expr:
-            case SignalVector(_data):
-                # Individual signals: code is just comma-separated, not a single object.
-                # We don't have a C++ struct for this directly; it's consumed by RecurseV/ConvolveV.
-                raise NotImplementedError(
-                    "SignalVector has no standalone C++ object; it must appear as the input to RecurseV or ConvolveV"
-                )
-
-            case RecurseV(a, g):
-                assert isinstance(a, KernelMatrix), f"RecurseV kernel must be KernelMatrix, got {type(a)}"
-                assert isinstance(g, SignalVector), f"RecurseV input must be SignalVector, got {type(g)}"
+            case SignalVector(data):
+                assert expr.n == 2, f"Currently only SignalVector of size 2 is supported, got n={expr.n}"
+                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
+                s0, s1 = [self.generate_signal(s) for s in data]
+                code = Code(f"make_signal_vector2<{vec_type}>({s0.text}, {s1.text})", expr.ty, expr.element_type, expr.lanes)
+                
+            case ConvolveV(a, g):
+                assert isinstance(a, KernelMatrix)
                 n = a.n
-                assert n == 2, f"RecurseV currently only supports n=2, got n={n}"
+                assert n == 2, f"ConvolveV currently only supports n=2, got n={n}"
                 lanes = expr.lanes
                 vec_type = self.get_vec_type(expr.element_type, lanes)
 
-                # Strip time delay from each kernel and assert delay == lanes
-                stripped: List[List[TIKernel]] = []
-                for i in range(n):
-                    row: List[TIKernel] = []
-                    for j in range(n):
-                        k = a.data[i][j]
-                        assert isinstance(k, TIKernel), f"RecurseV kernels must be TIKernel, got {type(k)}"
-                        if len(k.data) == 0:
-                            # Zero kernel – no feedback on this path
-                            row.append(TIKernel([], k.ty, k.element_type).with_lanes(lanes))  # type: ignore[arg-type]
-                        else:
-                            delay, stripped_k = k.time_delay(lanes)
-                            assert delay == lanes, (
-                                f"RecurseV kernel A[{i}][{j}] has time delay {delay}, expected {lanes}. "
-                                "Each kernel must have a causal delay equal to the number of lanes."
-                            )
-                            row.append(cast(TIKernel, stripped_k))
-                    stripped.append(row)
-
                 # Generate C++ code for each kernel
                 kernel_codes: List[List[Code]] = [
-                    [self.generate_kernel(stripped[i][j]) for j in range(n)] for i in range(n)
+                    [self.generate_kernel(a.data[i][j]) for j in range(n)] for i in range(n)
                 ]
 
                 # Generate C++ code for each input signal
-                signal_codes = [self.generate_signal(g.data[i]) for i in range(n)]
+                signal = self.generate_signal_vector(g)
 
                 # Build factory call for n=2
                 k00, k01, k10, k11 = (
@@ -542,11 +500,53 @@ class CodeGen:
                     kernel_codes[1][0].text,
                     kernel_codes[1][1].text,
                 )
-                s0, s1 = signal_codes[0].text, signal_codes[1].text
 
-                program = f"make_s_recurse_v2<{vec_type}>({k00}, {k01}, {k10}, {k11}, {s0}, {s1})"
+                program = f"make_s_convolve_v2<{vec_type}>({k00}, {k01}, {k10}, {k11}, {signal.text})"
                 code = Code(program, expr.ty, expr.element_type, lanes)
+                
+            case RecurseV(a, g):
+                assert isinstance(a, KernelMatrix), f"RecurseV kernel must be KernelMatrix, got {type(a)}"
+                n = a.n
+                assert n == 2, f"RecurseV currently only supports n=2, got n={n}"
+                lanes = expr.lanes
+                vec_type = self.get_vec_type(expr.element_type, lanes)
 
+                # Strip time delay from each kernel and assert delay == lanes
+                stripped: List[List[KernelExpr]] = []
+                for i in range(n):
+                    row: List[KernelExpr] = []
+                    for j in range(n):
+                        k = a.data[i][j]
+                        delay, stripped_k = k.time_delay(lanes)
+                        assert delay >= lanes, (
+                            f"RecurseV kernel A[{i}][{j}] has time delay {delay}, expected {lanes}. "
+                            "Each kernel must have a causal delay equal to the number of lanes."
+                        )
+                        row.append(stripped_k)
+                    stripped.append(row)
+
+                # Generate C++ code for each kernel
+                kernel_codes = [
+                    [self.generate_kernel(stripped[i][j]) for j in range(n)] for i in range(n)
+                ]
+
+                # Generate C++ code for each input signal
+                signal_code = self.generate_signal_vector(g)
+
+                # Build factory call for n=2
+                k00, k01, k10, k11 = (
+                    kernel_codes[0][0].text,
+                    kernel_codes[0][1].text,
+                    kernel_codes[1][0].text,
+                    kernel_codes[1][1].text,
+                )
+
+                program = f"make_s_recurse_v2<{vec_type}>({k00}, {k01}, {k10}, {k11}, {signal_code.text})"
+                code = Code(program, expr.ty, expr.element_type, lanes)
+            
+            case ConvertLanesV(a):
+                code_a = self.generate_signal_vector(a)
+                code = self.enforce_lanes(code_a, expr.lanes, "signalvector")
             case _:
                 assert False, f"Unsupported SignalVectorExpr: {type(expr)}"
 
@@ -558,7 +558,7 @@ class CodeGen:
             self.expr_cache[expr] = code
         return code
 
-    def enforce_lanes(self, code: Code, lanes: int) -> Code:
+    def enforce_lanes(self, code: Code, lanes: int, expr_type: str) -> Code:
         """
         Return the code adapted to produce a vector of maximum lanes possible.
         This is a no-op if the code is already producing maximum lanes
@@ -570,11 +570,13 @@ class CodeGen:
         vec_type_out = self.get_vec_type(code.element_type, lanes)
 
         function_name = {
-            (True, True): "make_convert_n2one",
-            (True, False): "make_convert_one2n",
-            (False, True): "make_k_convert_n2one",
-            (False, False): "make_k_convert_one2n",
-        }[(code.taps is None, code.lanes < lanes)]
+            ("signal", True): "make_convert_n2one",
+            ("signal", False): "make_convert_one2n",
+            ("kernel", True): "make_k_convert_n2one",
+            ("kernel", False): "make_k_convert_one2n",
+            ("signalvector", True): "make_convert_n2one_v2",
+            ("signalvector", False): "make_convert_one2n_v2",
+        }[(expr_type, code.lanes < lanes)]
 
         if code.lanes < lanes:
             # upscale lanes

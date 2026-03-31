@@ -4,7 +4,13 @@ from __future__ import annotations
 from typing import Sequence
 
 from vecrec.expr import *
-from vecrec.expr.base import KernelExpr, KernelExpr2D, SignalExpr2D
+from vecrec.expr.base import (
+    KernelExpr,
+    KernelExpr2D,
+    KernelMatrixExpr,
+    SignalExpr2D,
+    SignalVectorExpr,
+)
 from vecrec.expr.kernel import TIKernel, TVKernel, TIKernel2D, TVKernel2D
 from vecrec.expr.signal import Var, Var2D
 from vecrec.expr.signal_ops import Convolve, Convolve2D, Recurse2D, Ith, Repeater, SAdd
@@ -38,6 +44,15 @@ class OrderRecorder(Transform):
         return [expr]
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        self.visit_order.append(("kernel", expr))
+        return [expr]
+
+    def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        self.visit_order.append(("kernel_matrix", expr))
+        return [expr]
+
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        self.visit_order.append(("signal_vector", expr))
         return [expr]
 
 
@@ -45,9 +60,16 @@ class RecordingTransform(Transform):
     """Records which expressions it is applied to and returns them unchanged."""
 
     def __init__(self) -> None:
+        self.kernel_calls: list[KernelExpr] = []
         self.kernel2d_calls: list[KernelExpr2D] = []
+        self.kernel_matrix_calls: list[KernelMatrixExpr] = []
         self.signal_calls: list[SignalExpr] = []
         self.signal2d_calls: list[SignalExpr2D] = []
+        self.signal_vector_calls: list[SignalVectorExpr] = []
+
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        self.kernel_calls.append(expr)
+        return [expr]
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         self.kernel2d_calls.append(expr)
@@ -61,7 +83,12 @@ class RecordingTransform(Transform):
         self.signal2d_calls.append(expr)
         return [expr]
 
-    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+    def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        self.kernel_matrix_calls.append(expr)
+        return [expr]
+
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        self.signal_vector_calls.append(expr)
         return [expr]
 
 
@@ -325,9 +352,7 @@ class BranchingTransform(Transform):
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         if isinstance(expr, TIKernel2D):
-            negated = TIKernel2D(
-                [[-v for v in row] for row in expr.data], expr.ty, expr.element_type
-            )
+            negated = TIKernel2D([[-v for v in row] for row in expr.data], expr.ty, expr.element_type)
             return [expr, negated]
         return [expr]
 
@@ -344,6 +369,96 @@ class BranchingTransform(Transform):
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         return [expr]
+
+    def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        return [expr]
+
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        return [expr]
+
+
+def test_preorder_recursev_visits_matrix_vector_and_kernel_children():
+    """Preorder traversal of RecurseV visits matrix/vector nodes and matrix entries."""
+    with with_types(Type.Arith, ElementType.Float):
+        feedback = TIKernel([0.0, 0.5])
+        km = KernelMatrix([[feedback]])
+        g = SignalVector([Var("x")])
+        expr = RecurseV(km, g)
+        recorder = RecordingTransform()
+        results = Preorder(recorder).apply_signal_vector(expr)
+
+    assert len(results) == 1
+    assert km in recorder.kernel_matrix_calls
+    assert g in recorder.signal_vector_calls
+    assert feedback in recorder.kernel_calls
+    assert any(isinstance(s, Var) and s.name == "x" for s in recorder.signal_calls)
+
+
+def test_postorder_convolvev_visits_matrix_vector_and_children():
+    """Postorder traversal of ConvolveV visits matrix/vector nodes and matrix entries."""
+    with with_types(Type.Arith, ElementType.Float):
+        k_id = TIKernel([1.0])
+        km = KernelMatrix([[k_id]])
+        g = SignalVector([Var("u")])
+        expr = ConvolveV(km, g)
+        recorder = RecordingTransform()
+        results = Postorder(recorder).apply_signal_vector(expr)
+
+    assert len(results) == 1
+    assert km in recorder.kernel_matrix_calls
+    assert g in recorder.signal_vector_calls
+    assert k_id in recorder.kernel_calls
+    assert any(isinstance(s, Var) and s.name == "u" for s in recorder.signal_calls)
+
+
+def test_preorder_cartesian_product_convolvev():
+    """Preorder computes Cartesian products across KernelMatrix and SignalVector children."""
+    with with_types(Type.Arith, ElementType.Float):
+        k = TIKernel([1.0, -1.0])
+        x = Var("x")
+        expr = ConvolveV(KernelMatrix([[k]]), SignalVector([x]))
+        results = Preorder(BranchingTransform()).apply_signal_vector(expr)
+
+    assert len(results) == 4
+    assert all(isinstance(r, ConvolveV) for r in results)
+    convolve_results = [r for r in results if isinstance(r, ConvolveV)]
+
+    kernel_datas = {
+        tuple(r.a.data[0][0].data)
+        for r in convolve_results
+        if isinstance(r.a, KernelMatrix)
+        if isinstance(r.a.data[0][0], TIKernel)
+    }
+    var_names = {
+        r.g.data[0].name for r in convolve_results if isinstance(r.g, SignalVector) and isinstance(r.g.data[0], Var)
+    }
+    assert kernel_datas == {(1.0, -1.0), (-1.0, 1.0)}
+    assert var_names == {"x", "x_alt"}
+
+
+def test_postorder_cartesian_product_convolvev():
+    """Postorder computes Cartesian products across KernelMatrix and SignalVector children."""
+    with with_types(Type.Arith, ElementType.Float):
+        k = TIKernel([1.0, -1.0])
+        x = Var("x")
+        expr = ConvolveV(KernelMatrix([[k]]), SignalVector([x]))
+        results = Postorder(BranchingTransform()).apply_signal_vector(expr)
+
+    assert len(results) == 4
+    assert all(isinstance(r, ConvolveV) for r in results)
+    convolve_results = [r for r in results if isinstance(r, ConvolveV)]
+
+    kernel_datas = {
+        tuple(r.a.data[0][0].data)
+        for r in convolve_results
+        if isinstance(r.a, KernelMatrix)
+        if isinstance(r.a.data[0][0], TIKernel)
+    }
+    var_names = {
+        r.g.data[0].name for r in convolve_results if isinstance(r.g, SignalVector) and isinstance(r.g.data[0], Var)
+    }
+    assert kernel_datas == {(1.0, -1.0), (-1.0, 1.0)}
+    assert var_names == {"x", "x_alt"}
 
 
 def test_postorder_cartesian_product_recurse2d():
