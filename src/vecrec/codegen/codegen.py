@@ -29,6 +29,13 @@ class Code:
         self.lanes = lanes
         self.taps = taps
 
+class KernelProgram:
+    text: str
+    element_per_iter: int
+    
+    def __init__(self, text: str, element_per_iter: int):
+        self.text = text
+        self.element_per_iter = element_per_iter
 
 class TopoSort(Transform):
     nodes: List[RecLang]
@@ -104,7 +111,7 @@ class CodeGen:
         self.prologue = []
         self.var2d_context = {}
 
-    def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> str:
+    def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> KernelProgram:
 
         self.clear()
         result = self.generate_signal(expr)
@@ -115,6 +122,7 @@ class CodeGen:
         args = ", ".join(all_args)
         total_regs = self.reg_counter
         new_line = "\n            "
+        assert expr.lanes is not None
         result_vec_type = self.get_vec_type(expr.element_type, expr.lanes)
 
         def generate_run_calls(x: Node) -> str:
@@ -151,7 +159,7 @@ class CodeGen:
             return {name}({", ".join(list(vars.keys()) + list(vars2d.keys()) + ["row_size"])});
         }}
         """
-        return text
+        return KernelProgram(text, self.ele_per_iter)
 
     def generate_signal(self, expr: SignalExpr | SignalExpr2D | KernelExpr) -> Tuple[List[int], Code]:
         if expr in self.mapping:
@@ -187,12 +195,6 @@ class CodeGen:
                 case Var(name):
                     regs = self._new_registers(n_slices)
                     code = self._declare_node(f"Signal1D<{vec_type}>", f"{name}", [[r] for r in regs], vec_type, vec_type)
-                case Var2D(name, n_rows):
-                    assert n_rows is not None
-                    regs = self._new_registers(n_slices, n_rows)
-                    code = self._declare_node(
-                        f"InputSignal2D<{vec_type}, {n_rows}>", f"{name}, {name}_stride, {ty.zero()}", [[r] for r in regs], vec_type, vec_type
-                    )
 
                 case SignalExprBinOp(a, b):
                     a_regs = self.generate_signal(a)[0]
@@ -240,10 +242,6 @@ class CodeGen:
                         vec_type, vec_type,
                     )
 
-                case Repeater(a, n_rows, prev_rows_var):
-                    raise NotImplementedError("Repeater not yet implemented in CodeGen")
-                case RVar2D(name):
-                    raise NotImplementedError("RVar2D not yet implemented in CodeGen")
                 case Ith(signal2d, ith_row):
                     raise NotImplementedError("Ith not yet implemented in CodeGen")
 
@@ -252,8 +250,9 @@ class CodeGen:
 
                 case _:
                     raise NotImplementedError(f"CodeGen: unhandled SignalExpr {type(expr)}")
-
+    
         elif isinstance(expr, KernelExpr):
+            coeffs: List[float] | List[SignalExpr]
             if isinstance(expr, TIKernel):
                 taps, indices, coeffs = expr.to_sparse_repr()
                 index_var = self._declare_array("int", indices)
@@ -282,6 +281,23 @@ class CodeGen:
                 taps = self.generate_signal(expr.a)[1].taps
                 assert taps is not None, "KConvertLanes should have taps information from its child kernel"
                 regs, code = self.enforce_lanes(expr, n_slices, taps)
+
+        if isinstance(expr, SignalExpr2D):
+            match expr:
+                case Repeater(a, n_rows, prev_rows_var):
+                    raise NotImplementedError("Repeater not yet implemented in CodeGen")
+                
+                case RVar2D(name):
+                    raise NotImplementedError("RVar2D not yet implemented in CodeGen")
+                case Var2D(name, n_rows):
+                    assert n_rows is not None
+                    regs = self._new_registers(n_slices, n_rows)
+                    code = self._declare_node(
+                        f"InputSignal2D<{vec_type}, {n_rows}>", f"{name}, {name}_stride, {ty.zero()}", [[r] for r in regs], vec_type, vec_type
+                    )
+
+                case _:
+                    raise NotImplementedError(f"CodeGen: unhandled SignalExpr2D {type(expr)}")
         else:
             raise NotImplementedError(f"CodeGen: unhandled expr type {type(expr)}")
 

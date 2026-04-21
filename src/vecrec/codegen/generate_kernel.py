@@ -1,5 +1,5 @@
 from typing import List, Optional, Sequence, Dict, Tuple, Union, __all__, cast
-from vecrec.codegen.codegen import Code, CodeGen
+from vecrec.codegen.codegen import Code, CodeGen, KernelProgram
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D, SignalVectorExpr
 from vecrec.expr.signal import RVar2D, Var2D
@@ -24,10 +24,10 @@ __all__ = [
 TEMPLATE = files("vecrec.templates") / "common.h"
 
 
-def instantiate_kernels(path: str, codes: List[Code] | List[str]) -> None:
+def instantiate_kernels(path: str, codes: List[KernelProgram] | List[str]) -> None:
     text = TEMPLATE.read_text()
     for code in codes:
-        text += "\n" + (code.text if isinstance(code, Code) else code)
+        text += "\n" + (code.text if isinstance(code, KernelProgram) else code)
     with open(path, "w") as f:
         f.write(text)
 
