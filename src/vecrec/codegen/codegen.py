@@ -1,6 +1,4 @@
-from typing import List, Optional, Sequence, Dict, Set, Tuple, Union, cast
-from unittest import case
-from unittest import case
+from typing import List, Optional, Dict, Set, Tuple, Union, cast
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D, SignalVectorExpr
 from vecrec.expr.signal import RVar2D, Var2D
@@ -242,7 +240,7 @@ class CodeGen:
                         vec_type, vec_type,
                     )
 
-                case Ith(signal2d, ith_row):
+                case Ith(_signal2d, _ith_row):
                     raise NotImplementedError("Ith not yet implemented in CodeGen")
 
                 case ConvertLanes(a):
@@ -284,7 +282,7 @@ class CodeGen:
 
         if isinstance(expr, SignalExpr2D):
             match expr:
-                case Repeater(a, n_rows, prev_rows_var):
+                case Repeater(a, n_rows, _prev_rows_var):
                     raise NotImplementedError("Repeater not yet implemented in CodeGen")
                 
                 case RVar2D(name):
