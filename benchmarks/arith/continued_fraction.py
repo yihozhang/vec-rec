@@ -71,7 +71,7 @@ class ContinuedFractionBenchmark(Benchmark):
         as in the original continued-fraction.py.
         """
         try:
-            codegen = CodeGen(cache_cse=True)
+            codegen = CodeGen()
             runner = generate_kernel_executable(codegen, expr)
 
             rng = np.random.default_rng(42)

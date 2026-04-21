@@ -100,7 +100,7 @@ class Benchmark(ABC):
         Returns (ok, error_message).
         """
         try:
-            codegen = CodeGen(cache_cse=True)
+            codegen = CodeGen()
             runner = generate_kernel_executable(codegen, expr, row_size=256)
 
             n_1d = runner.row_size  # 1024 by default
@@ -140,7 +140,7 @@ class Benchmark(ABC):
 
     def run(self) -> BenchmarkResult:
         """Run the full benchmark: timing, validation, and schedule verification."""
-        codegen = CodeGen(cache_cse=True)
+        codegen = CodeGen()
         schedules = self.build_schedules()
         original = self.original_expr()
 
