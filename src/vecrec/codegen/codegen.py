@@ -53,13 +53,15 @@ class Node:
     class_name: str
     var_name: str
     constructor_args: str
+    run_args_list: List[List[str]]
     input_type: str
     output_type: str
 
-    def __init__(self, class_name: str, var_name: str, constructor_args: str, input_type: str, output_type: str):
+    def __init__(self, class_name: str, var_name: str, constructor_args: str, run_args_list: List[List[str]], input_type: str, output_type: str):
         self.class_name = class_name
         self.var_name = var_name
         self.constructor_args = constructor_args
+        self.run_args_list = run_args_list
         self.input_type = input_type
         self.output_type = output_type
 
@@ -115,11 +117,12 @@ class CodeGen:
         new_line = "\n            "
         result_vec_type = self.get_vec_type(expr.element_type, expr.lanes)
 
-        generate_run_call = lambda x: (
-            f"{x.var_name}.run(reg_{x.output_type});"
-            if x.output_type == x.input_type
-            else f"{x.var_name}.run(reg_{x.input_type}, reg_{x.output_type});"
-        )
+        def generate_run_calls(x: Node) -> str:
+            reg_prefix = f"reg_{x.output_type}" if x.output_type == x.input_type else f"reg_{x.input_type}, reg_{x.output_type}"
+            return new_line.join(
+                f"{x.var_name}.run({reg_prefix}, {', '.join(run_args)});"
+                for run_args in x.run_args_list
+            )
         text = f"""
         struct {name} {{
             // static array declarations
@@ -133,7 +136,7 @@ class CodeGen:
               {{}}
             
             void run({result_vec_type} *out) {{
-                {new_line.join(map(generate_run_call, self.program))}
+                {new_line.join(map(generate_run_calls, self.program))}
                 {new_line.join(map(lambda i: f"memcpy(out + {i}, reg_{result_vec_type}.data + {result[0][i]}, sizeof({result_vec_type}));", range(len(result[0]))))}
             }}
 
@@ -162,135 +165,134 @@ class CodeGen:
         element_type = expr.element_type
         ty = expr.ty
 
-        regs = []
+        n_slices = self.ele_per_iter // expr.lanes
+        taps: int | None = None
 
-        for i in range(self.ele_per_iter // expr.lanes):
-            taps = None
-            if isinstance(expr, SignalExpr):
-                reg = self._new_register()
-                match expr:
-                    case Num(value):
-                        code = self._declare_node(
-                            f"Signal1DConstant<{vec_type}>", f"{reg}, {value}", vec_type, vec_type
-                        )
-                    case Impulse(value):
-                        code = self._declare_node(f"Signal1DImpulse<{vec_type}>", f"{reg}, {value}", vec_type, vec_type)
-                    case Var(name):
-                        code = self._declare_node(f"Signal1D<{vec_type}>", f"{reg}, {name}", vec_type, vec_type)
-                    case Var2D(name, n_rows):
-                        code = self._declare_node(
-                            f"Signal2D<{vec_type}, {n_rows}>", f"{reg}, {name}, {name}_stride, {ty.zero()}"
-                        )
-
-                    case SignalExprBinOp(a, b):
-                        a_reg = self.generate_signal(a)[0][i]
-                        b_reg = self.generate_signal(b)[0][i]
-                        constructor = type(expr).__name__ + self.get_sem_suffix(ty)
-                        code = self._declare_node(
-                            f"{constructor}<{vec_type}>", f"{reg}, {a_reg}, {b_reg}", vec_type, vec_type
-                        )
-                    case SNeg(a):
-                        a_reg = self.generate_signal(a)[0][i]
-                        code = self._declare_node(f"SNeg<{vec_type}>", f"{reg}, {a_reg}", vec_type, vec_type)
-
-                    case Convolve(a, f):
-                        taps, idxs, _ = a.to_sparse_repr()
-                        idx_var = self._declare_array("int", list(map(str, idxs)))
-                        a_reg = self.generate_signal(a)[0][i]
-                        f_reg = self.generate_signal(f)[0][i]
-                        constructor = "SConvolve" + self.get_sem_suffix(ty)
-                        code = self._declare_node(
-                            f"{constructor}<{vec_type}, {taps}, {idx_var}>",
-                            f"{reg}, {a_reg}, {f_reg}",
-                            vec_type,
-                            vec_type,
-                        )
-                    case Recurse(a, g):
-                        time_delay, a = a.time_delay(expr.lanes)
-                        assert time_delay == a.lanes
-                        taps, idxs, _ = a.to_sparse_repr()
-                        idx_var = self._declare_array("int", list(map(str, idxs)))
-                        a_reg = self.generate_signal(a)[0][i]
-                        g_reg = self.generate_signal(g)[0][i]
-                        constructor = "SRecurse" + self.get_sem_suffix(ty)
-                        code = self._declare_node(
-                            f"{constructor}<{vec_type}, {taps}, {idx_var}>",
-                            f"{reg}, {a_reg}, {g_reg}",
-                            vec_type,
-                            vec_type,
-                        )
-
-                    case Repeater(a, n_rows, prev_rows_var):
-                        pass
-                    case RVar2D(name):
-                        code = self._declare_node("TODO", "", vec_type, vec_type)
-                        # TODO
-                        # # RVar2D should only appear within a Repeater context
-                        # if name not in self.var2d_context:
-                        #     self.var2d_context[name] = (f"repeater_context_{name}", max_lanes)
-
-                        # context_var = self.var2d_context[name]
-                        # vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                        # n_rows = cast(int, self.var2d_context[f"{name}_n_rows"])
-
-                        # code = Code(
-                        #     f"make_signal2d<{vec_type}, {n_rows}>({context_var})",
-                        #     expr.ty,
-                        #     expr.element_type,
-                        #     expr.lanes,
-                        # )
-                    case Ith(signal2d, i):
-                        pass
-
-                    case ConvertLanes(a):
-                        code = self.enforce_lanes(expr, reg, i)
-
-            elif isinstance(expr, KernelExpr):
-                if isinstance(expr, TIKernel):
-                    taps, indices, coeffs = expr.to_sparse_repr()
-                    reg = self._new_register(taps)
-
-                    index_var = self._declare_array("int", list(map(str, indices)))
-                    value_var = self._declare_array(
-                        element_type.to_str(), [f"{expr.element_type.val_to_str(v, expr.ty)}" for v in coeffs]
-                    )
-
+        if isinstance(expr, SignalExpr):
+            match expr:
+                case Num(value):
+                    regs = self._new_registers(n_slices)
                     code = self._declare_node(
-                        f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>",
-                        f"{reg}",
-                        vec_type,
-                        vec_type,
+                        f"Signal1DConstant<{vec_type}>",
+                        expr.element_type.val_to_str(value, ty),
+                        [[r] for r in regs], vec_type, vec_type,
                     )
-                elif isinstance(expr, TVKernel):
-                    taps, indices, coeffs = expr.to_sparse_repr()
-                    reg = self._new_register(taps)
+                case Impulse(value):
+                    regs = self._new_registers(n_slices)
+                    value_str = expr.element_type.val_to_str(value, ty)
+                    zero_str = expr.element_type.val_to_str(ty.zero(), ty)
+                    code = self._declare_node(
+                        f"Signal1DImpulse<{vec_type}>", f"{value_str}, {zero_str}", [[r] for r in regs], vec_type, vec_type
+                    )
+                case Var(name):
+                    regs = self._new_registers(n_slices)
+                    code = self._declare_node(f"Signal1D<{vec_type}>", f"{name}", [[r] for r in regs], vec_type, vec_type)
+                case Var2D(name, n_rows):
+                    assert n_rows is not None
+                    regs = self._new_registers(n_slices, n_rows)
+                    code = self._declare_node(
+                        f"InputSignal2D<{vec_type}, {n_rows}>", f"{name}, {name}_stride, {ty.zero()}", [[r] for r in regs], vec_type, vec_type
+                    )
 
-                    index_var = self._declare_array("int", list(map(str, indices)))
+                case SignalExprBinOp(a, b):
+                    a_regs = self.generate_signal(a)[0]
+                    b_regs = self.generate_signal(b)[0]
+                    regs = self._new_registers(n_slices)
+                    constructor = type(expr).__name__ + self.get_sem_suffix(ty)
+                    code = self._declare_node(
+                        f"{constructor}<{vec_type}>", "",
+                        [[regs[i], a_regs[i], b_regs[i]] for i in range(n_slices)],
+                        vec_type, vec_type,
+                    )
+                case SNeg(a):
+                    a_regs = self.generate_signal(a)[0]
+                    regs = self._new_registers(n_slices)
+                    code = self._declare_node(
+                        f"SNeg<{vec_type}>", "",
+                        [[regs[i], a_regs[i]] for i in range(n_slices)],
+                        vec_type, vec_type,
+                    )
+
+                case Convolve(a, f):
+                    taps, idxs, _ = a.to_sparse_repr()
+                    idx_var = self._declare_array("int", idxs)
+                    a_regs = self.generate_signal(a)[0]
+                    f_regs = self.generate_signal(f)[0]
+                    regs = self._new_registers(n_slices)
+                    constructor = "SConvolve" + self.get_sem_suffix(ty)
+                    code = self._declare_node(
+                        f"{constructor}<{vec_type}, {taps}, {idx_var}>", "",
+                        [[regs[i], a_regs[i], f_regs[i]] for i in range(n_slices)],
+                        vec_type, vec_type,
+                    )
+                case Recurse(a, g):
+                    time_delay, a = a.time_delay(expr.lanes)
+                    assert time_delay == a.lanes
+                    taps, idxs, _ = a.to_sparse_repr()
+                    idx_var = self._declare_array("int", idxs)
+                    a_regs = self.generate_signal(a)[0]
+                    g_regs = self.generate_signal(g)[0]
+                    regs = self._new_registers(n_slices)
+                    constructor = "SRecurse" + self.get_sem_suffix(ty)
+                    code = self._declare_node(
+                        f"{constructor}<{vec_type}, {taps}, {idx_var}>", "",
+                        [[regs[i], a_regs[i], g_regs[i]] for i in range(n_slices)],
+                        vec_type, vec_type,
+                    )
+
+                case Repeater(a, n_rows, prev_rows_var):
+                    raise NotImplementedError("Repeater not yet implemented in CodeGen")
+                case RVar2D(name):
+                    raise NotImplementedError("RVar2D not yet implemented in CodeGen")
+                case Ith(signal2d, ith_row):
+                    raise NotImplementedError("Ith not yet implemented in CodeGen")
+
+                case ConvertLanes(a):
+                    regs, code = self.enforce_lanes(expr, n_slices)
+
+                case _:
+                    raise NotImplementedError(f"CodeGen: unhandled SignalExpr {type(expr)}")
+
+        elif isinstance(expr, KernelExpr):
+            if isinstance(expr, TIKernel):
+                taps, indices, coeffs = expr.to_sparse_repr()
+                index_var = self._declare_array("int", indices)
+                value_var = self._declare_array(
+                    element_type.to_str(), [f"{expr.element_type.val_to_str(v, expr.ty)}" for v in coeffs]
+                )
+                regs = self._new_registers(n_slices, taps)
+                code = self._declare_node(
+                    f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>",
+                    "", [[r] for r in regs], vec_type, vec_type,
+                )
+            elif isinstance(expr, TVKernel):
+                taps, indices, coeffs = expr.to_sparse_repr()
+                regs = self._new_registers(n_slices, taps)
+                index_var = self._declare_array("int", indices)
+                run_args_list = []
+                for i in range(n_slices):
                     signal_regs = [self.generate_signal(coeff)[0][i] for coeff in coeffs]
-
-                    arguments = "{" + self._to_cpp_list(signal_regs) + "}"
-
-                    code = self._declare_node(
-                        f"TimeVaryingKernel<{taps}, {vec_type}, {index_var}>", f"{arguments}", vec_type, vec_type
-                    )
-                else:
-                    assert isinstance(expr, KConvertLanes)
-                    taps = self.generate_signal(expr.a)[1].taps
-                    assert taps is not None, "KConvertLanes should have taps information from its child kernel"
-                    reg = self._new_register(taps)
-                    code = self.enforce_lanes(expr, reg, i)
-
-            regs.append(reg)
+                    signal_regs_var = self._declare_array("int", signal_regs)
+                    run_args_list.append([regs[i], signal_regs_var])
+                code = self._declare_node(
+                    f"TimeVaryingKernel<{taps}, {vec_type}, {index_var}>", "", run_args_list, vec_type, vec_type
+                )
+            else:
+                assert isinstance(expr, KConvertLanes)
+                taps = self.generate_signal(expr.a)[1].taps
+                assert taps is not None, "KConvertLanes should have taps information from its child kernel"
+                regs, code = self.enforce_lanes(expr, n_slices, taps)
+        else:
+            raise NotImplementedError(f"CodeGen: unhandled expr type {type(expr)}")
 
         assert expr not in self.mapping
         self.mapping[expr] = (regs, Code(code, ty, element_type, expr.lanes, taps))
         return self.mapping[expr]
 
-    def enforce_lanes(self, node: ConvertLanes | KConvertLanes, reg: int, ith: int) -> str:
+    def enforce_lanes(self, node: ConvertLanes | KConvertLanes, n_slices: int, kernel_taps: int | None = None) -> Tuple[List[int], str]:
         prefix = "K" if isinstance(node, KConvertLanes) else ""
-        taps = ""
-        if isinstance(node, KConvertLanes):
-            taps = f", {self.generate_signal(node.a)[1].taps}"
+        taps_suffix = f", {kernel_taps}" if kernel_taps is not None else ""
+        reg_size = kernel_taps if kernel_taps is not None else 1
 
         a = node.a
         lanes = node.lanes
@@ -298,28 +300,29 @@ class CodeGen:
         assert lanes is not None and child_lanes is not None
         vec_type = self.get_vec_type(node.element_type, lanes)
         child_vec_type = self.get_vec_type(a.element_type, child_lanes)
+        a_regs = self.generate_signal(a)[0]
+        regs = self._new_registers(n_slices, reg_size)
 
         assert lanes != child_lanes, "ConvertLanes should change the number of lanes"
         if lanes > child_lanes:
-            constructor = prefix + "ConvertN2One"
-            assert lanes % child_lanes == 0
             factor = lanes // child_lanes
-            a_regs = self.generate_signal(a)[0][ith * factor : ith * factor + factor]
-            inners = "{" + self._to_cpp_list(a_regs) + "}"
+            assert lanes % child_lanes == 0
             code = self._declare_node(
-                f"{constructor}<{child_vec_type}, {vec_type}{taps}>", f"{reg}, {inners}", child_vec_type, vec_type
+                f"{prefix}ConvertN2One<{child_vec_type}, {vec_type}{taps_suffix}>", "",
+                [[regs[i], a_regs[i * factor]] for i in range(n_slices)],
+                child_vec_type, vec_type,
             )
         else:
-            constructor = prefix + "ConvertOne2N"
             factor = child_lanes // lanes
-            a_reg = self.generate_signal(a)[0][ith // factor]
-            code = self._declare_node(
-                f"{constructor}<{child_vec_type}, {vec_type}{taps}, {ith % factor}>",
-                f"{reg}, {a_reg}",
-                child_vec_type,
-                vec_type,
-            )
-        return code
+            assert child_lanes % lanes == 0
+            code = ""
+            for off in range(factor):
+                code = self._declare_node(
+                    f"{prefix}ConvertOne2N<{child_vec_type}, {vec_type}{taps_suffix}, {off}>", "",
+                    [[regs[i], a_regs[i // factor]] for i in range(n_slices) if i % factor == off],
+                    child_vec_type, vec_type,
+                )
+        return regs, code
 
     def collect_input_variables(
         self,
@@ -367,20 +370,24 @@ class CodeGen:
         self.reg_counter += n
         return curr
 
+    def _new_registers(self, n_slices: int, n: int = 1) -> List[int]:
+        return [self._new_register(n) for _ in range(n_slices)]
+
     def _new_var(self) -> str:
         k = self.var_counter
         self.var_counter += 1
         return f"v{k}"
 
-    def _declare_array(self, ty: str, value: list[str]) -> str:
+    def _declare_array(self, ty: str, value: list) -> str:
         var = self._new_var()
-        value_args = ", ".join(value)
+        value_args = ", ".join(map(str, value))
         self.prologue.append(f"constexpr static {ty} {var}[{len(value)}] = {{{value_args}}};")
         return var
 
-    def _declare_node(self, class_name: str, args: str, input_type: str, output_type: str) -> str:
+    def _declare_node(self, class_name: str, constructor_args: str, run_args_list: list, input_type: str, output_type: str) -> str:
         var = self._new_var()
-        node = Node(class_name, var, args, input_type, output_type)
+        str_run_args_list = [[str(a) for a in run_args] for run_args in run_args_list]
+        node = Node(class_name, var, constructor_args, str_run_args_list, input_type, output_type)
         self.program.append(node)
         return var
 

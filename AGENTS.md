@@ -7,13 +7,17 @@ the computation of the current pixel depends on pixels that are far apart, allow
 
 ## Running VecRec
 
-VecRec is a Python library. You can run the example in `src/vecrec/__init__.py` via `uv run vecrec`. There are other examples under benchmarks that can be run via `uv run python benchmarks/...`, although some have not been implemented.
+VecRec is a Python library. You can run the example in `src/vecrec/__init__.py` via `uv run vecrec`. There are other examples under benchmarks that can be run via `uv run python benchmarks/run_all.py <benchmark>`, where the list of benchmarks can be found using ``uv run python benchmarks/run_all.py --list`, although some have not been implemented.
 
+## Software engineering practices
+
+As this project is in a very early stage, it has a lot of TODOs. When making changes, do not change any of the existing TODOs or try to improve them.
+Only work on what's instructed. Try to avoid repetitive code by finding common abstractions (helper methods etc) when it makes sense, as it is very easy to write spaghetti code in Python.
 
 ## Internals
 
 To generate efficient C++ code, VecRec uses the C++ template library under `src/vecrec/templates/common.h`.
-Code generation is handled by `src/vecrec/codegen.py`, which translates the internal expression representation into C++ code.
+Code generation is handled by `src/vecrec/codegen/codegen.py`, which translates the internal expression representation into C++ code.
 
 `src/vecrec/transform.py` contains various transformations that can be applied to signal expressions.
 These transformations are delicate and changes to it require careful consideration in order to maintain correctness.
