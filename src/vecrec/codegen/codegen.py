@@ -94,7 +94,8 @@ class CodeGen:
     vec_types: Set[str]
     # Map RVar2D names to their context variables and n_rows
     var2d_context: Dict[str, Tuple[str, int]]
-    reg_counter: int
+    # Map vector types to their current register count, used for generating new registers
+    reg_counter: Dict[str, int]
     var_counter: int
 
     # The list of AST declaration
@@ -105,7 +106,7 @@ class CodeGen:
 
     def __init__(self, ele_per_iter: int = 16):
         self.ele_per_iter = ele_per_iter
-        self.reg_counter = 0
+        self.reg_counter = {}
         self.var_counter = 0
         self.vec_types = set()
         self.mapping = {}
@@ -114,7 +115,7 @@ class CodeGen:
         self.var2d_context = {}
 
     def clear(self):
-        self.reg_counter = 0
+        self.reg_counter = {}
         self.var_counter = 0
         self.vec_types = set()
         self.mapping = {}
@@ -131,7 +132,6 @@ class CodeGen:
         args_2d = [f"const {elt_type.to_str()} *{var}, int {var}_stride" for var, elt_type in sorted(vars2d.items())]
         all_args = args_1d + args_2d + ["int row_size"]
         args = ", ".join(all_args)
-        total_regs = self.reg_counter
         new_line = "\n            "
         assert expr.lanes is not None
         result_vec_type = self.get_vec_type(expr.element_type, expr.lanes)
@@ -154,17 +154,17 @@ class CodeGen:
             // node declarations
             {new_line.join(map(lambda x: f"{x.class_name} {x.var_name};", self.program))}
             // register declaration
-            {new_line.join(map(lambda vt: f"Reg<{vt}, {total_regs}> reg_{vt};", self.vec_types))}
-            {name}({args}) : 
+            {new_line.join(map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types))}
+            inline __attribute__((always_inline)) {name}({args}) : 
               {", ".join(map(lambda x: f"{x.var_name}({x.constructor_args})", self.program))}
               {{}}
             
-            void run({result_vec_type} *out) {{
+            inline __attribute__((always_inline)) void run({result_vec_type} *out) {{
                 {new_line.join(map(generate_run_calls, self.program))}
                 {new_line.join(map(lambda i: f"memcpy(out + {i}, reg_{result_vec_type}.data + {result[0][i]}, sizeof({result_vec_type}));", range(len(result[0]))))}
             }}
 
-            void reset_and_next_row() {{
+            inline __attribute__((always_inline)) void reset_and_next_row() {{
                 {new_line.join([f"{x.var_name}{connector}reset_and_next_row();" for x in self.program if (connector := "->" if x.is_pointer else ".")])}
             }}
         }};
@@ -197,7 +197,7 @@ class CodeGen:
         if isinstance(expr, SignalExpr):
             match expr:
                 case Num(value):
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     code = self._declare_node(
                         f"Signal1DConstant<{vec_type}>",
                         expr.element_type.val_to_str(value, ty),
@@ -206,7 +206,7 @@ class CodeGen:
                         vec_type,
                     )
                 case Impulse(value):
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     value_str = expr.element_type.val_to_str(value, ty)
                     zero_str = expr.element_type.val_to_str(ty.zero(), ty)
                     code = self._declare_node(
@@ -217,7 +217,7 @@ class CodeGen:
                         vec_type,
                     )
                 case Var(name):
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     code = self._declare_node(
                         f"Signal1D<{vec_type}>", f"{name}", [[r] for r in regs], vec_type, vec_type
                     )
@@ -225,7 +225,7 @@ class CodeGen:
                 case SignalExprBinOp(a, b):
                     a_regs = self.generate_signal(a)[0]
                     b_regs = self.generate_signal(b)[0]
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     constructor = type(expr).__name__ + self.get_sem_suffix(ty)
                     code = self._declare_node(
                         f"{constructor}<{vec_type}>",
@@ -236,7 +236,7 @@ class CodeGen:
                     )
                 case SNeg(a):
                     a_regs = self.generate_signal(a)[0]
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     code = self._declare_node(
                         f"SNeg<{vec_type}>",
                         "",
@@ -250,7 +250,7 @@ class CodeGen:
                     idx_var = self._declare_array("int", idxs)
                     a_regs = self.generate_signal(a)[0]
                     f_regs = self.generate_signal(f)[0]
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     constructor = "SConvolve" + self.get_sem_suffix(ty)
                     code = self._declare_node(
                         f"{constructor}<{vec_type}, {taps}, {idx_var}>",
@@ -266,7 +266,7 @@ class CodeGen:
                     idx_var = self._declare_array("int", idxs)
                     a_regs = self.generate_signal(a)[0]
                     g_regs = self.generate_signal(g)[0]
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     constructor = "SRecurse" + self.get_sem_suffix(ty)
                     code = self._declare_node(
                         f"{constructor}<{vec_type}, {taps}, {idx_var}>",
@@ -277,7 +277,7 @@ class CodeGen:
                     )
 
                 case Ith(g, ith):
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     g_regs = self.generate_signal(g)[0]
                     n_rows = self._signal2d_n_rows(g)
                     code = self._declare_node(
@@ -302,7 +302,7 @@ class CodeGen:
                 value_var = self._declare_array(
                     element_type.to_str(), [f"{expr.element_type.val_to_str(v, expr.ty)}" for v in coeffs]
                 )
-                regs = self._new_registers(n_slices, taps)
+                regs = self._new_registers(vec_type, n_slices, taps)
                 code = self._declare_node(
                     f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>",
                     "",
@@ -312,7 +312,7 @@ class CodeGen:
                 )
             elif isinstance(expr, TVKernel):
                 taps, indices, coeffs = expr.to_sparse_repr()
-                regs = self._new_registers(n_slices, taps)
+                regs = self._new_registers(vec_type, n_slices, taps)
                 index_var = self._declare_array("int", indices)
                 run_args_list = []
                 for i in range(n_slices):
@@ -332,7 +332,7 @@ class CodeGen:
             match expr:
                 case Repeater(g, n_rows, prev_rows_var):
                     assert n_rows is not None
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
                     repeater_context = self._declare_repeater_context(vec_type, n_rows)
 
                     self.var2d_context[prev_rows_var.name] = (repeater_context, n_rows - 1)
@@ -348,7 +348,7 @@ class CodeGen:
                     )
 
                 case RVar2D(name):
-                    regs = self._new_registers(n_slices)
+                    regs = self._new_registers(vec_type, n_slices)
 
                     repeater_context, n_rows = self.var2d_context[name]
                     code = self._declare_node(
@@ -361,7 +361,7 @@ class CodeGen:
 
                 case Var2D(name, n_rows):
                     assert n_rows is not None
-                    regs = self._new_registers(n_slices, n_rows)
+                    regs = self._new_registers(vec_type, n_slices, n_rows)
                     code = self._declare_node(
                         f"InputSignal2D<{vec_type}, {n_rows}>",
                         f"{name}, {name}_stride, {ty.zero()}",
@@ -393,7 +393,7 @@ class CodeGen:
         vec_type = self.get_vec_type(node.element_type, lanes)
         child_vec_type = self.get_vec_type(a.element_type, child_lanes)
         a_regs = self.generate_signal(a)[0]
-        regs = self._new_registers(n_slices, reg_size)
+        regs = self._new_registers(vec_type, n_slices, reg_size)
 
         assert lanes != child_lanes, "ConvertLanes should change the number of lanes"
         if lanes > child_lanes:
@@ -461,13 +461,13 @@ class CodeGen:
             case ElementType.I64:
                 return f"int64_vec{lanes}"
 
-    def _new_register(self, n: int = 1) -> int:
-        curr = self.reg_counter
-        self.reg_counter += n
+    def _new_register(self, vec_type: str, n: int = 1) -> int:
+        curr = self.reg_counter.get(vec_type, 0)
+        self.reg_counter[vec_type] = curr + n
         return curr
 
-    def _new_registers(self, n_slices: int, n: int = 1) -> List[int]:
-        return [self._new_register(n) for _ in range(n_slices)]
+    def _new_registers(self, vec_type: str, n_slices: int, n: int = 1) -> List[int]:
+        return [self._new_register(vec_type, n) for _ in range(n_slices)]
 
     def _new_var(self) -> str:
         k = self.var_counter
