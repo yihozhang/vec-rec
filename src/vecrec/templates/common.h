@@ -369,8 +369,8 @@ struct TimeInvariantKernel {
 
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
-#pragma unroll
-        for (int i = 0; i < taps; i++) {
+        _Pragma("unroll") for (int i = 0; i < taps; i++) {
+            asm volatile("" :::);
             reg[base + i] = vals[i];
         }
     }
@@ -388,6 +388,7 @@ struct TimeVaryingKernel {
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base, const int args[taps]) {
         _Pragma("unroll") for (int i = 0; i < taps; i++) {
+            asm volatile("" :::);
             reg[base + i] = reg[args[i]];
         }
     }
@@ -468,15 +469,37 @@ struct Signal1D {
 // Context struct to share state between Repeater and Signal2D
 template <typename vec_type, int n_rows>
 struct RepeaterContext {
+    using elt_type = typename ElementType<vec_type>::type;
+    constexpr static int lanes = vec_lanes_of(vec_type{});
     int width;
-    vec_type *buffer;
+    elt_type *buffer;
     int current_row;
     int current_col;
 
     RepeaterContext() = delete;
-    RepeaterContext(int row_size) : width(row_size), current_row(0), current_col(-1) {
-        buffer = new vec_type[n_rows * width];
-        memset(buffer, 0, sizeof(vec_type) * n_rows * width);
+    RepeaterContext(int row_size) : width(row_size), current_row(0), current_col(-lanes) {
+        buffer = new (std::align_val_t(32)) elt_type[n_rows * width];
+        memset(buffer, 0, sizeof(elt_type) * n_rows * width);
+    }
+
+    RepeaterContext(const RepeaterContext &) = delete;
+    RepeaterContext &operator=(const RepeaterContext &) = delete;
+
+    RepeaterContext(RepeaterContext &&other) noexcept
+        : width(other.width), buffer(other.buffer), current_row(other.current_row), current_col(other.current_col) {
+        other.buffer = nullptr;
+    }
+
+    RepeaterContext &operator=(RepeaterContext &&other) noexcept {
+        if (this != &other) {
+            delete[] buffer;
+            width = other.width;
+            current_row = other.current_row;
+            current_col = other.current_col;
+            buffer = other.buffer;
+            other.buffer = nullptr;
+        }
+        return *this;
     }
 
     ~RepeaterContext() {
@@ -486,28 +509,33 @@ struct RepeaterContext {
     // Get the value at the given row offset and current column
     vec_type get(int row_offset) {
         int row_idx = (current_row - row_offset + n_rows) % n_rows;
-        return buffer[row_idx * width + current_col];
+        vec_type result;
+        memcpy(&result, &buffer[row_idx * width + current_col], sizeof(vec_type));
+        return result;
     }
 
     // Store a value in the current row and column
     void set(vec_type value) {
-        buffer[current_row * width + current_col] = value;
+        memcpy(&buffer[current_row * width + current_col], &value, sizeof(vec_type));
     }
 
     void advance_col() {
-        current_col++;
+        current_col += lanes;
         if (current_col >= width) {
             current_col = 0;
         }
     }
 
-    void next_row() {
-        current_row = (current_row + 1) % n_rows;
-        current_col = -1;
+    template <typename Reg_t>
+    inline __attribute__((always_inline)) void run(Reg_t &_reg) {
+        advance_col();
     }
 
     // just to make codegen happy
-    void reset_and_next_row() {}
+    void reset_and_next_row() {
+        current_row = (current_row + 1) % n_rows;
+        current_col = -lanes; // will be advanced to 0 at the start of the next row
+    }
 };
 
 template <typename vec_type, int n_rows>
@@ -523,8 +551,8 @@ struct Signal2D {
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
         // Read from previous rows at the current position
-#pragma unroll
-        for (int i = 0; i < n_rows; i++) {
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
+            asm volatile("" :::);
             reg[base + i] = context->get(i + 1);
         }
     }
@@ -555,20 +583,19 @@ struct InputSignal2D {
           stride(stride),
           current_row(0),
           zero_row(new elt_type[stride]) {
-        for (int i = 0; i < stride; i++) {
+        _Pragma("unroll") for (int i = 0; i < stride; i++) {
             zero_row[i] = zero;
         }
         // d[0] = row 0 (current); d[1..n_rows-1] = zero (no previous rows yet)
         row_ptrs[0] = data - lanes;
-        for (int i = 1; i < n_rows; i++) {
+        _Pragma("unroll") for (int i = 1; i < n_rows; i++) {
             row_ptrs[i] = zero_row - lanes;
         }
     }
 
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
-#pragma unroll
-        for (int i = 0; i < n_rows; i++) {
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             row_ptrs[i] += lanes;
             memcpy(&reg[base + i], row_ptrs[i], sizeof(vec_type));
         }
@@ -577,7 +604,7 @@ struct InputSignal2D {
     void reset_and_next_row() {
         current_row++;
         // d[i] = row (current_row - i), zero-padded for rows before 0
-        for (int i = 0; i < n_rows; i++) {
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             int src_row = current_row - i;
             row_ptrs[i] = ((src_row >= 0) ? data + (size_t)src_row * stride : zero_row) - lanes;
         }
@@ -601,9 +628,6 @@ struct Repeater {
 
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int inner) {
-        // Advance column position
-        context->advance_col();
-
         // Compute the current row output using the inner signal
         // (which may read from the buffered previous rows via Signal2D)
         vec_type curr_output = reg[inner];
@@ -613,14 +637,12 @@ struct Repeater {
 
         // Return n_rows vectors: current row at out[0], previous rows at out[1..n-1]
         // This makes Repeater stream as a 2D signal
-        for (int i = 0; i < n_rows; i++) {
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             reg[base + i] = context->get(i);
         }
     }
 
     void reset_and_next_row() {
-        // Move to the next row
-        context->next_row();
     }
 };
 
@@ -634,8 +656,9 @@ struct Repeater {
         vec_type prev_input[buffer_size];                                                              \
         vec_type curr_output;                                                                          \
         SConvolve##suffix() {                                                                          \
-            for (int i = 0; i < buffer_size; i++)                                                      \
+            _Pragma("unroll") for (int i = 0; i < buffer_size; i++) {                                  \
                 prev_input[i] = (zero_init);                                                           \
+            }                                                                                          \
         }                                                                                              \
         template <typename Reg_t>                                                                      \
         inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int kernel, int signal) { \
@@ -662,8 +685,9 @@ struct Repeater {
         }                                                                                              \
                                                                                                        \
         void reset_and_next_row() {                                                                    \
-            for (int i = 0; i < buffer_size; i++)                                                      \
+            _Pragma("unroll") for (int i = 0; i < buffer_size; i++) {                                  \
                 prev_input[i] = (zero_init);                                                           \
+            }                                                                                          \
         }                                                                                              \
     };                                                                                                 \
     // template <typename vec_type>                                                                           \
@@ -685,8 +709,9 @@ SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b
             (idxs[taps - 1] + vec_lanes - 1) / vec_lanes + 1;                                          \
         vec_type prev_output[buffer_size];                                                             \
         SRecurse##suffix() {                                                                           \
-            for (int i = 0; i < buffer_size; i++)                                                      \
+            _Pragma("unroll") for (int i = 0; i < buffer_size; i++) {                                  \
                 prev_output[i] = (zero_init);                                                          \
+            }                                                                                          \
         }                                                                                              \
         vec_type curr_output;                                                                          \
         template <typename Reg_t>                                                                      \
@@ -714,14 +739,11 @@ SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b
         }                                                                                              \
                                                                                                        \
         void reset_and_next_row() {                                                                    \
-            for (int i = 0; i < buffer_size; i++)                                                      \
+            _Pragma("unroll") for (int i = 0; i < buffer_size; i++) {                                  \
                 prev_output[i] = (zero_init);                                                          \
+            }                                                                                          \
         }                                                                                              \
-    };                                                                                                 \
-    // template <typename vec_type>                                                     \
-    // auto make_s_recurse##suffix(int kernel, int signal) {                            \
-    //     return SRecurse##suffix<vec_type>(kernel, signal);                           \
-    // }
+    };
 
 SRecurseOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 // SRecurseOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
@@ -765,6 +787,7 @@ struct ConvertN2One {
         // inner_base is the first of `factor` contiguous narrow-lane registers to merge
         vec_type_in out[factor];
         _Pragma("unroll") for (int i = 0; i < factor; i++) {
+            asm volatile("" :::);
             out[i] = reg_in[inner_base + i];
         }
         memcpy(&reg_out[base], out, sizeof(vec_type_out));

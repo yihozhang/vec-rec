@@ -63,6 +63,7 @@ class Node:
     run_args_list: List[List[str]]
     input_type: str
     output_type: str
+    is_pointer: bool
 
     def __init__(
         self,
@@ -72,6 +73,7 @@ class Node:
         run_args_list: List[List[str]],
         input_type: str,
         output_type: str,
+        is_pointer: bool = False,
     ):
         self.class_name = class_name
         self.var_name = var_name
@@ -79,6 +81,7 @@ class Node:
         self.run_args_list = run_args_list
         self.input_type = input_type
         self.output_type = output_type
+        self.is_pointer = is_pointer
 
 
 class CodeGen:
@@ -138,7 +141,10 @@ class CodeGen:
                 f"reg_{x.output_type}" if x.output_type == x.input_type else f"reg_{x.input_type}, reg_{x.output_type}"
             )
             return new_line.join(
-                f"{x.var_name}.run({reg_prefix}, {', '.join(run_args)});" for run_args in x.run_args_list
+                f"{x.var_name}{connector}run({reg_prefix}{sep} {', '.join(run_args)});"
+                for run_args in x.run_args_list
+                if (sep := ", " if len(run_args) > 0 else " ")  # " " because "" is falsy
+                if (connector := "->" if x.is_pointer else ".")
             )
 
         text = f"""
@@ -159,7 +165,7 @@ class CodeGen:
             }}
 
             void reset_and_next_row() {{
-                {new_line.join(map(lambda x: f"{x.var_name}.reset_and_next_row();", self.program))}
+                {new_line.join([f"{x.var_name}{connector}reset_and_next_row();" for x in self.program if (connector := "->" if x.is_pointer else ".")])}
             }}
         }};
 
@@ -186,6 +192,7 @@ class CodeGen:
 
         n_slices = self.ele_per_iter // expr.lanes
         taps: int | None = None
+        n_rows: int | None
 
         if isinstance(expr, SignalExpr):
             match expr:
@@ -334,7 +341,7 @@ class CodeGen:
 
                     code = self._declare_node(
                         f"Repeater<{vec_type}, {n_rows}>",
-                        "&" + repeater_context,
+                        repeater_context,
                         [[regs[i], g_regs[i]] for i in range(n_slices)],
                         vec_type,
                         vec_type,
@@ -346,7 +353,7 @@ class CodeGen:
                     repeater_context, n_rows = self.var2d_context[name]
                     code = self._declare_node(
                         f"Signal2D<{vec_type}, {n_rows}>",
-                        "&" + repeater_context,
+                        repeater_context,
                         [[r] for r in regs],
                         vec_type,
                         vec_type,
@@ -474,17 +481,28 @@ class CodeGen:
         return var
 
     def _declare_repeater_context(self, vec_type: str, n_rows: int) -> str:
-        return self._declare_node(f"RepeaterContext<{vec_type}, {n_rows}>", "row_size", [], "", "")
-        # var = self._new_var()
-        # self.prologue.append(f"RepeaterContext<{vec_type}, {n_rows}> {var}(row_size);")
-        # return var
+        # The input and output type of RepeaterContext are bogus, they are here to generate a parameter for `.run()` calls.
+        return self._declare_node(
+            f"RepeaterContext<{vec_type}, {n_rows}>*",
+            f"new RepeaterContext<{vec_type}, {n_rows}>(row_size)",
+            [[]],
+            vec_type,
+            vec_type,
+            True,
+        )
 
     def _declare_node(
-        self, class_name: str, constructor_args: str, run_args_list: list, input_type: str, output_type: str
+        self,
+        class_name: str,
+        constructor_args: str,
+        run_args_list: list,
+        input_type: str,
+        output_type: str,
+        is_pointer: bool = False,
     ) -> str:
         var = self._new_var()
         str_run_args_list = [[str(a) for a in run_args] for run_args in run_args_list]
-        node = Node(class_name, var, constructor_args, str_run_args_list, input_type, output_type)
+        node = Node(class_name, var, constructor_args, str_run_args_list, input_type, output_type, is_pointer)
         self.program.append(node)
         return var
 
