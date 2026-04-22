@@ -62,7 +62,7 @@ class ContinuedFractionBenchmark(Benchmark):
 
     def _python_reference(self, inputs: dict[str, np.ndarray], n: int) -> np.ndarray:
         # Not used directly — verify_schedule is overridden below.
-        raise NotImplementedError("ContinuedFractionBenchmark uses a custom verify_schedule")
+        raise AssertionError("ContinuedFractionBenchmark uses a custom verify_schedule")
 
     def verify_schedule(self, expr: SignalExpr | SignalExpr2D) -> tuple[bool, str]:
         """

@@ -394,7 +394,7 @@ class PushDownConvertLanesImpl(Transform):
         return results
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
-        raise NotImplementedError("2D kernel should have been eliminated")
+        raise AssertionError("2D kernel should have been eliminated")
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         # TODO: KConvertLanes2D has not been implemented.

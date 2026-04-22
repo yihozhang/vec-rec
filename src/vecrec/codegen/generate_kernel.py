@@ -184,7 +184,7 @@ def _generate_benchmark_code(
         benchmark_text += f"    // Benchmark {name}\n"
         benchmark_text += "    {\n"
 
-        benchmark_text += f"        auto kernel = make_{name}({var_args});\n"
+        benchmark_text += f"        auto kernel = {name}({var_args});\n"
         benchmark_text += "        \n"
         benchmark_text += "        // Warmup\n"
         benchmark_text += "        for (int i = 0; i < warmup; i++) {\n"
@@ -195,13 +195,13 @@ def _generate_benchmark_code(
         benchmark_text += "        }\n\n"
 
         benchmark_text += "        // Reset kernel state\n"
-        benchmark_text += f"        kernel = make_{name}({var_args});\n\n"
+        benchmark_text += f"        kernel = {name}({var_args});\n\n"
 
         benchmark_text += "        // Timed run\n"
         benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
         benchmark_text += "            // Recreate kernel for each iteration\n"
-        benchmark_text += f"            kernel = make_{name}({var_args});\n"
+        benchmark_text += f"            kernel = {name}({var_args});\n"
         benchmark_text += "            int pos = 0;\n"
         benchmark_text += "            while (pos < N) {\n"
         # TODO: may need to be other length for short types like boolean and uint8.
@@ -568,7 +568,7 @@ def _generate_kernel_runner_code(
     var_args = ", ".join(var_args_1d + var_args_2d + ["row_size"])
     output_cpp_type = output_type.to_str()
 
-    text += f"    auto kernel = make_{kernel_name}({var_args});\n"
+    text += f"    auto kernel = {kernel_name}({var_args});\n"
     text += f"    std::vector<{output_cpp_type}> output(N);\n\n"
 
     text += "    auto start = std::chrono::high_resolution_clock::now();\n"

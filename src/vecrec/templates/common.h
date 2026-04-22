@@ -505,6 +505,9 @@ struct RepeaterContext {
         current_row = (current_row + 1) % n_rows;
         current_col = -1;
     }
+
+    // just to make codegen happy
+    void reset_and_next_row() {}
 };
 
 template <typename vec_type, int n_rows>
@@ -621,48 +624,48 @@ struct Repeater {
     }
 };
 
-#define SConvolveOp(suffix, zero_init, mul_op, add_op)                                                     \
-    template <typename vec_type, int taps, const int idxs[taps]>                                           \
-    struct SConvolve##suffix {                                                                             \
-        using elt_type = typename ElementType<vec_type>::type;                                             \
-        constexpr static int vec_lanes = vec_lanes_of(vec_type{});                                         \
-        constexpr static int buffer_size =                                                                 \
-            (idxs[taps - 1] + vec_lanes - 1) / vec_lanes + 1;                                              \
-        vec_type prev_input[buffer_size];                                                                  \
-        vec_type curr_output;                                                                              \
-        SConvolve##suffix() {                                                                              \
-            for (int i = 0; i < buffer_size; i++)                                                          \
-                prev_input[i] = (zero_init);                                                               \
-        }                                                                                                  \
-        template <typename Reg_t>                                                                          \
-        inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int kernel, int signal) {     \
-            curr_output = (zero_init);                                                                     \
-            _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {                                  \
-                asm volatile("" :::);                                                                      \
-                prev_input[i] = prev_input[i + 1];                                                         \
-            }                                                                                              \
-            prev_input[buffer_size - 1] = reg[signal];                                                     \
-            _Pragma("unroll") for (int i = 0; i < taps; i++) {                                             \
-                int idx = (buffer_size - 1) * vec_lanes - idxs[i];                                         \
-                vec_type contrib;                                                                          \
-                if (idx % vec_lanes == 0) {                                                                \
-                    contrib = mul_op(prev_input[idx / vec_lanes], reg[kernel + i]);                        \
-                } else {                                                                                   \
-                    vec_type va = prev_input[idx / vec_lanes];                                             \
-                    vec_type vb = prev_input[idx / vec_lanes + 1];                                         \
-                    contrib = mul_op(                                                                      \
-                        extract_slice(va, vb, idx % vec_lanes), reg[kernel + i]);                          \
-                }                                                                                          \
-                curr_output = add_op(curr_output, contrib);                                                \
-            }                                                                                              \
-            reg[base] = curr_output;                                                                       \
-        }                                                                                                  \
-                                                                                                           \
-        void reset_and_next_row() {                                                                        \
-            for (int i = 0; i < buffer_size; i++)                                                          \
-                prev_input[i] = (zero_init);                                                               \
-        }                                                                                                  \
-    };                                                                                                     \
+#define SConvolveOp(suffix, zero_init, mul_op, add_op)                                                 \
+    template <typename vec_type, int taps, const int idxs[taps]>                                       \
+    struct SConvolve##suffix {                                                                         \
+        using elt_type = typename ElementType<vec_type>::type;                                         \
+        constexpr static int vec_lanes = vec_lanes_of(vec_type{});                                     \
+        constexpr static int buffer_size =                                                             \
+            (idxs[taps - 1] + vec_lanes - 1) / vec_lanes + 1;                                          \
+        vec_type prev_input[buffer_size];                                                              \
+        vec_type curr_output;                                                                          \
+        SConvolve##suffix() {                                                                          \
+            for (int i = 0; i < buffer_size; i++)                                                      \
+                prev_input[i] = (zero_init);                                                           \
+        }                                                                                              \
+        template <typename Reg_t>                                                                      \
+        inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int kernel, int signal) { \
+            curr_output = (zero_init);                                                                 \
+            _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {                              \
+                asm volatile("" :::);                                                                  \
+                prev_input[i] = prev_input[i + 1];                                                     \
+            }                                                                                          \
+            prev_input[buffer_size - 1] = reg[signal];                                                 \
+            _Pragma("unroll") for (int i = 0; i < taps; i++) {                                         \
+                int idx = (buffer_size - 1) * vec_lanes - idxs[i];                                     \
+                vec_type contrib;                                                                      \
+                if (idx % vec_lanes == 0) {                                                            \
+                    contrib = mul_op(prev_input[idx / vec_lanes], reg[kernel + i]);                    \
+                } else {                                                                               \
+                    vec_type va = prev_input[idx / vec_lanes];                                         \
+                    vec_type vb = prev_input[idx / vec_lanes + 1];                                     \
+                    contrib = mul_op(                                                                  \
+                        extract_slice(va, vb, idx % vec_lanes), reg[kernel + i]);                      \
+                }                                                                                      \
+                curr_output = add_op(curr_output, contrib);                                            \
+            }                                                                                          \
+            reg[base] = curr_output;                                                                   \
+        }                                                                                              \
+                                                                                                       \
+        void reset_and_next_row() {                                                                    \
+            for (int i = 0; i < buffer_size; i++)                                                      \
+                prev_input[i] = (zero_init);                                                           \
+        }                                                                                              \
+    };                                                                                                 \
     // template <typename vec_type>                                                                           \
     // auto make_s_convolve##suffix(int base, int kernel, int signal) {                                       \
     //     return SConvolve##suffix<vec_type>(base, kernel, signal);                                          \
@@ -673,48 +676,48 @@ SConvolveOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { re
 SConvolveOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
 SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
-#define SRecurseOp(suffix, zero_init, mul_op, add_op)                                                     \
-    template <typename vec_type, int taps, const int idxs[taps]>                                          \
-    struct SRecurse##suffix {                                                                             \
-        using elt_type = typename ElementType<vec_type>::type;                                            \
-        constexpr static int vec_lanes = vec_lanes_of(vec_type{});                                        \
-        constexpr static int buffer_size =                                                                \
-            (idxs[taps - 1] + vec_lanes - 1) / vec_lanes + 1;                                             \
-        vec_type prev_output[buffer_size];                                                                \
-        SRecurse##suffix() {                                                                              \
-            for (int i = 0; i < buffer_size; i++)                                                         \
-                prev_output[i] = (zero_init);                                                             \
-        }                                                                                                 \
-        vec_type curr_output;                                                                             \
-        template <typename Reg_t>                                                                         \
-        inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int kernel, int signal) {    \
-            curr_output = reg[signal];                                                                    \
-            _Pragma("unroll") for (int i = 0; i < taps; i++) {                                            \
-                int idx = (buffer_size - 1) * vec_lanes - idxs[i];                                        \
-                vec_type contrib;                                                                         \
-                if (idx % vec_lanes == 0) {                                                               \
-                    contrib = mul_op(prev_output[idx / vec_lanes], reg[kernel + i]);                      \
-                } else {                                                                                  \
-                    auto va = prev_output[idx / vec_lanes];                                               \
-                    auto vb = prev_output[idx / vec_lanes + 1];                                           \
-                    contrib = mul_op(                                                                     \
-                        extract_slice(va, vb, idx % vec_lanes), reg[kernel + i]);                         \
-                }                                                                                         \
-                curr_output = add_op(curr_output, contrib);                                               \
-            }                                                                                             \
-            _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {                                 \
-                asm volatile("" :::);                                                                     \
-                prev_output[i] = prev_output[i + 1];                                                      \
-            }                                                                                             \
-            prev_output[buffer_size - 1] = curr_output;                                                   \
-            reg[base] = curr_output;                                                                      \
-        }                                                                                                 \
-                                                                                                          \
-        void reset_and_next_row() {                                                                       \
-            for (int i = 0; i < buffer_size; i++)                                                         \
-                prev_output[i] = (zero_init);                                                             \
-        }                                                                                                 \
-    };                                                                                                    \
+#define SRecurseOp(suffix, zero_init, mul_op, add_op)                                                  \
+    template <typename vec_type, int taps, const int idxs[taps]>                                       \
+    struct SRecurse##suffix {                                                                          \
+        using elt_type = typename ElementType<vec_type>::type;                                         \
+        constexpr static int vec_lanes = vec_lanes_of(vec_type{});                                     \
+        constexpr static int buffer_size =                                                             \
+            (idxs[taps - 1] + vec_lanes - 1) / vec_lanes + 1;                                          \
+        vec_type prev_output[buffer_size];                                                             \
+        SRecurse##suffix() {                                                                           \
+            for (int i = 0; i < buffer_size; i++)                                                      \
+                prev_output[i] = (zero_init);                                                          \
+        }                                                                                              \
+        vec_type curr_output;                                                                          \
+        template <typename Reg_t>                                                                      \
+        inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int kernel, int signal) { \
+            curr_output = reg[signal];                                                                 \
+            _Pragma("unroll") for (int i = 0; i < taps; i++) {                                         \
+                int idx = (buffer_size - 1) * vec_lanes - idxs[i];                                     \
+                vec_type contrib;                                                                      \
+                if (idx % vec_lanes == 0) {                                                            \
+                    contrib = mul_op(prev_output[idx / vec_lanes], reg[kernel + i]);                   \
+                } else {                                                                               \
+                    auto va = prev_output[idx / vec_lanes];                                            \
+                    auto vb = prev_output[idx / vec_lanes + 1];                                        \
+                    contrib = mul_op(                                                                  \
+                        extract_slice(va, vb, idx % vec_lanes), reg[kernel + i]);                      \
+                }                                                                                      \
+                curr_output = add_op(curr_output, contrib);                                            \
+            }                                                                                          \
+            _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {                              \
+                asm volatile("" :::);                                                                  \
+                prev_output[i] = prev_output[i + 1];                                                   \
+            }                                                                                          \
+            prev_output[buffer_size - 1] = curr_output;                                                \
+            reg[base] = curr_output;                                                                   \
+        }                                                                                              \
+                                                                                                       \
+        void reset_and_next_row() {                                                                    \
+            for (int i = 0; i < buffer_size; i++)                                                      \
+                prev_output[i] = (zero_init);                                                          \
+        }                                                                                              \
+    };                                                                                                 \
     // template <typename vec_type>                                                     \
     // auto make_s_recurse##suffix(int kernel, int signal) {                            \
     //     return SRecurse##suffix<vec_type>(kernel, signal);                           \
@@ -808,21 +811,19 @@ struct ConvertOne2N {
     }
 };
 
-#define BinOp(name, operator)                                                   \
-    template <typename vec_type>                                                \
-    struct name {                                                               \
-        name() = default;                                                       \
-                                                                                \
-        template <typename Reg_t>                                               \
+#define BinOp(name, operator)                                                                  \
+    template <typename vec_type>                                                               \
+    struct name {                                                                              \
+        name() = default;                                                                      \
+                                                                                               \
+        template <typename Reg_t>                                                              \
         inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int s1, int s2) { \
-            reg[base] = operator(reg[s1], reg[s2]);                             \
-        }                                                                       \
-                                                                                \
-        void reset_and_next_row() {                                             \
-        }                                                                       \
-    };                                                                          \
-    template <typename vec_type>                                                \
-    auto make_##name(int s1, int s2) { return name<vec_type>(); }
+            reg[base] = operator(reg[s1], reg[s2]);                                            \
+        }                                                                                      \
+                                                                                               \
+        void reset_and_next_row() {                                                            \
+        }                                                                                      \
+    };
 
 BinOp(SAdd, [](auto left, auto right) { return left + right; });
 BinOp(SSub, [](auto left, auto right) { return left - right; });

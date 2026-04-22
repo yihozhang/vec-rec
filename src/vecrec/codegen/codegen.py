@@ -27,13 +27,15 @@ class Code:
         self.lanes = lanes
         self.taps = taps
 
+
 class KernelProgram:
     text: str
     element_per_iter: int
-    
+
     def __init__(self, text: str, element_per_iter: int):
         self.text = text
         self.element_per_iter = element_per_iter
+
 
 class TopoSort(Transform):
     nodes: List[RecLang]
@@ -62,7 +64,15 @@ class Node:
     input_type: str
     output_type: str
 
-    def __init__(self, class_name: str, var_name: str, constructor_args: str, run_args_list: List[List[str]], input_type: str, output_type: str):
+    def __init__(
+        self,
+        class_name: str,
+        var_name: str,
+        constructor_args: str,
+        run_args_list: List[List[str]],
+        input_type: str,
+        output_type: str,
+    ):
         self.class_name = class_name
         self.var_name = var_name
         self.constructor_args = constructor_args
@@ -124,11 +134,13 @@ class CodeGen:
         result_vec_type = self.get_vec_type(expr.element_type, expr.lanes)
 
         def generate_run_calls(x: Node) -> str:
-            reg_prefix = f"reg_{x.output_type}" if x.output_type == x.input_type else f"reg_{x.input_type}, reg_{x.output_type}"
-            return new_line.join(
-                f"{x.var_name}.run({reg_prefix}, {', '.join(run_args)});"
-                for run_args in x.run_args_list
+            reg_prefix = (
+                f"reg_{x.output_type}" if x.output_type == x.input_type else f"reg_{x.input_type}, reg_{x.output_type}"
             )
+            return new_line.join(
+                f"{x.var_name}.run({reg_prefix}, {', '.join(run_args)});" for run_args in x.run_args_list
+            )
+
         text = f"""
         struct {name} {{
             // static array declarations
@@ -147,16 +159,17 @@ class CodeGen:
             }}
 
             void reset_and_next_row() {{
-            {new_line.join(map(lambda x: f"{x.var_name}.reset_and_next_row();", self.program))}
+                {new_line.join(map(lambda x: f"{x.var_name}.reset_and_next_row();", self.program))}
             }}
         }};
 
         using {name}_vector_type = {result_vec_type};
-
-        auto make_{name}({args}) {{
-            return {name}({", ".join(list(vars.keys()) + list(vars2d.keys()) + ["row_size"])});
-        }}
         """
+
+        # auto make_{name}({args}) {{
+        #     return {name}({", ".join(list(vars.keys()) + list(vars2d.keys()) + ["row_size"])});
+        # }}
+        # """
         return KernelProgram(text, self.ele_per_iter)
 
     def generate_signal(self, expr: SignalExpr | SignalExpr2D | KernelExpr) -> Tuple[List[int], Code]:
@@ -181,18 +194,26 @@ class CodeGen:
                     code = self._declare_node(
                         f"Signal1DConstant<{vec_type}>",
                         expr.element_type.val_to_str(value, ty),
-                        [[r] for r in regs], vec_type, vec_type,
+                        [[r] for r in regs],
+                        vec_type,
+                        vec_type,
                     )
                 case Impulse(value):
                     regs = self._new_registers(n_slices)
                     value_str = expr.element_type.val_to_str(value, ty)
                     zero_str = expr.element_type.val_to_str(ty.zero(), ty)
                     code = self._declare_node(
-                        f"Signal1DImpulse<{vec_type}>", f"{value_str}, {zero_str}", [[r] for r in regs], vec_type, vec_type
+                        f"Signal1DImpulse<{vec_type}>",
+                        f"{value_str}, {zero_str}",
+                        [[r] for r in regs],
+                        vec_type,
+                        vec_type,
                     )
                 case Var(name):
                     regs = self._new_registers(n_slices)
-                    code = self._declare_node(f"Signal1D<{vec_type}>", f"{name}", [[r] for r in regs], vec_type, vec_type)
+                    code = self._declare_node(
+                        f"Signal1D<{vec_type}>", f"{name}", [[r] for r in regs], vec_type, vec_type
+                    )
 
                 case SignalExprBinOp(a, b):
                     a_regs = self.generate_signal(a)[0]
@@ -200,17 +221,21 @@ class CodeGen:
                     regs = self._new_registers(n_slices)
                     constructor = type(expr).__name__ + self.get_sem_suffix(ty)
                     code = self._declare_node(
-                        f"{constructor}<{vec_type}>", "",
+                        f"{constructor}<{vec_type}>",
+                        "",
                         [[regs[i], a_regs[i], b_regs[i]] for i in range(n_slices)],
-                        vec_type, vec_type,
+                        vec_type,
+                        vec_type,
                     )
                 case SNeg(a):
                     a_regs = self.generate_signal(a)[0]
                     regs = self._new_registers(n_slices)
                     code = self._declare_node(
-                        f"SNeg<{vec_type}>", "",
+                        f"SNeg<{vec_type}>",
+                        "",
                         [[regs[i], a_regs[i]] for i in range(n_slices)],
-                        vec_type, vec_type,
+                        vec_type,
+                        vec_type,
                     )
 
                 case Convolve(a, f):
@@ -221,9 +246,11 @@ class CodeGen:
                     regs = self._new_registers(n_slices)
                     constructor = "SConvolve" + self.get_sem_suffix(ty)
                     code = self._declare_node(
-                        f"{constructor}<{vec_type}, {taps}, {idx_var}>", "",
+                        f"{constructor}<{vec_type}, {taps}, {idx_var}>",
+                        "",
                         [[regs[i], a_regs[i], f_regs[i]] for i in range(n_slices)],
-                        vec_type, vec_type,
+                        vec_type,
+                        vec_type,
                     )
                 case Recurse(a, g):
                     time_delay, a = a.time_delay(expr.lanes)
@@ -235,20 +262,31 @@ class CodeGen:
                     regs = self._new_registers(n_slices)
                     constructor = "SRecurse" + self.get_sem_suffix(ty)
                     code = self._declare_node(
-                        f"{constructor}<{vec_type}, {taps}, {idx_var}>", "",
+                        f"{constructor}<{vec_type}, {taps}, {idx_var}>",
+                        "",
                         [[regs[i], a_regs[i], g_regs[i]] for i in range(n_slices)],
-                        vec_type, vec_type,
+                        vec_type,
+                        vec_type,
                     )
 
-                case Ith(_signal2d, _ith_row):
-                    raise NotImplementedError("Ith not yet implemented in CodeGen")
+                case Ith(g, ith):
+                    regs = self._new_registers(n_slices)
+                    g_regs = self.generate_signal(g)[0]
+                    n_rows = self._signal2d_n_rows(g)
+                    code = self._declare_node(
+                        f"IthRow<{vec_type}, {n_rows}, {ith}>",
+                        "",
+                        [[regs[i], g_regs[i]] for i in range(n_slices)],
+                        vec_type,
+                        vec_type,
+                    )
 
                 case ConvertLanes(a):
                     regs, code = self.enforce_lanes(expr, n_slices)
 
                 case _:
-                    raise NotImplementedError(f"CodeGen: unhandled SignalExpr {type(expr)}")
-    
+                    raise AssertionError(f"CodeGen: unhandled SignalExpr {type(expr)}")
+
         elif isinstance(expr, KernelExpr):
             coeffs: List[float] | List[SignalExpr]
             if isinstance(expr, TIKernel):
@@ -260,7 +298,10 @@ class CodeGen:
                 regs = self._new_registers(n_slices, taps)
                 code = self._declare_node(
                     f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>",
-                    "", [[r] for r in regs], vec_type, vec_type,
+                    "",
+                    [[r] for r in regs],
+                    vec_type,
+                    vec_type,
                 )
             elif isinstance(expr, TVKernel):
                 taps, indices, coeffs = expr.to_sparse_repr()
@@ -280,30 +321,60 @@ class CodeGen:
                 assert taps is not None, "KConvertLanes should have taps information from its child kernel"
                 regs, code = self.enforce_lanes(expr, n_slices, taps)
 
-        if isinstance(expr, SignalExpr2D):
+        elif isinstance(expr, SignalExpr2D):
             match expr:
-                case Repeater(a, n_rows, _prev_rows_var):
-                    raise NotImplementedError("Repeater not yet implemented in CodeGen")
-                
+                case Repeater(g, n_rows, prev_rows_var):
+                    assert n_rows is not None
+                    regs = self._new_registers(n_slices)
+                    repeater_context = self._declare_repeater_context(vec_type, n_rows)
+
+                    self.var2d_context[prev_rows_var.name] = (repeater_context, n_rows - 1)
+                    g_regs = self.generate_signal(g)[0]
+                    del self.var2d_context[prev_rows_var.name]
+
+                    code = self._declare_node(
+                        f"Repeater<{vec_type}, {n_rows}>",
+                        "&" + repeater_context,
+                        [[regs[i], g_regs[i]] for i in range(n_slices)],
+                        vec_type,
+                        vec_type,
+                    )
+
                 case RVar2D(name):
-                    raise NotImplementedError("RVar2D not yet implemented in CodeGen")
+                    regs = self._new_registers(n_slices)
+
+                    repeater_context, n_rows = self.var2d_context[name]
+                    code = self._declare_node(
+                        f"Signal2D<{vec_type}, {n_rows}>",
+                        "&" + repeater_context,
+                        [[r] for r in regs],
+                        vec_type,
+                        vec_type,
+                    )
+
                 case Var2D(name, n_rows):
                     assert n_rows is not None
                     regs = self._new_registers(n_slices, n_rows)
                     code = self._declare_node(
-                        f"InputSignal2D<{vec_type}, {n_rows}>", f"{name}, {name}_stride, {ty.zero()}", [[r] for r in regs], vec_type, vec_type
+                        f"InputSignal2D<{vec_type}, {n_rows}>",
+                        f"{name}, {name}_stride, {ty.zero()}",
+                        [[r] for r in regs],
+                        vec_type,
+                        vec_type,
                     )
 
                 case _:
-                    raise NotImplementedError(f"CodeGen: unhandled SignalExpr2D {type(expr)}")
+                    raise AssertionError(f"CodeGen: unhandled SignalExpr2D {type(expr)}")
         else:
-            raise NotImplementedError(f"CodeGen: unhandled expr type {type(expr)}")
+            raise AssertionError(f"CodeGen: unhandled expr type {type(expr)}")
 
         assert expr not in self.mapping
         self.mapping[expr] = (regs, Code(code, ty, element_type, expr.lanes, taps))
         return self.mapping[expr]
 
-    def enforce_lanes(self, node: ConvertLanes | KConvertLanes, n_slices: int, kernel_taps: int | None = None) -> Tuple[List[int], str]:
+    def enforce_lanes(
+        self, node: ConvertLanes | KConvertLanes, n_slices: int, kernel_taps: int | None = None
+    ) -> Tuple[List[int], str]:
         prefix = "K" if isinstance(node, KConvertLanes) else ""
         taps_suffix = f", {kernel_taps}" if kernel_taps is not None else ""
         reg_size = kernel_taps if kernel_taps is not None else 1
@@ -322,9 +393,11 @@ class CodeGen:
             factor = lanes // child_lanes
             assert lanes % child_lanes == 0
             code = self._declare_node(
-                f"{prefix}ConvertN2One<{child_vec_type}, {vec_type}{taps_suffix}>", "",
+                f"{prefix}ConvertN2One<{child_vec_type}, {vec_type}{taps_suffix}>",
+                "",
                 [[regs[i], a_regs[i * factor]] for i in range(n_slices)],
-                child_vec_type, vec_type,
+                child_vec_type,
+                vec_type,
             )
         else:
             factor = child_lanes // lanes
@@ -332,9 +405,11 @@ class CodeGen:
             code = ""
             for off in range(factor):
                 code = self._declare_node(
-                    f"{prefix}ConvertOne2N<{child_vec_type}, {vec_type}{taps_suffix}, {off}>", "",
+                    f"{prefix}ConvertOne2N<{child_vec_type}, {vec_type}{taps_suffix}, {off}>",
+                    "",
                     [[regs[i], a_regs[i // factor]] for i in range(n_slices) if i % factor == off],
-                    child_vec_type, vec_type,
+                    child_vec_type,
+                    vec_type,
                 )
         return regs, code
 
@@ -398,7 +473,15 @@ class CodeGen:
         self.prologue.append(f"constexpr static {ty} {var}[{len(value)}] = {{{value_args}}};")
         return var
 
-    def _declare_node(self, class_name: str, constructor_args: str, run_args_list: list, input_type: str, output_type: str) -> str:
+    def _declare_repeater_context(self, vec_type: str, n_rows: int) -> str:
+        return self._declare_node(f"RepeaterContext<{vec_type}, {n_rows}>", "row_size", [], "", "")
+        # var = self._new_var()
+        # self.prologue.append(f"RepeaterContext<{vec_type}, {n_rows}> {var}(row_size);")
+        # return var
+
+    def _declare_node(
+        self, class_name: str, constructor_args: str, run_args_list: list, input_type: str, output_type: str
+    ) -> str:
         var = self._new_var()
         str_run_args_list = [[str(a) for a in run_args] for run_args in run_args_list]
         node = Node(class_name, var, constructor_args, str_run_args_list, input_type, output_type)
@@ -416,6 +499,22 @@ class CodeGen:
                 return "TropMax"
             case Type.TropMin:
                 return "TropMin"
+
+    def _signal2d_n_rows(self, signal2d: SignalExpr2D) -> int:
+        # TODO: var2d_context
+        if isinstance(signal2d, RVar2D):
+            if signal2d.name not in self.var2d_context:
+                raise ValueError(f"RVar2D '{signal2d.name}' used outside of Repeater context")
+            return self.var2d_context[signal2d.name][1]
+
+        if isinstance(signal2d, (Repeater, Var2D)):
+            assert signal2d.n_rows is not None, (
+                f"{type(signal2d).__name__} has n_rows=None at codegen time. "
+                "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
+            )
+            return signal2d.n_rows
+
+        raise ValueError(f"Ith expects RVar2D, Repeater, or Var2D as signal2d, got {type(signal2d)}")
 
 
 class CodeGen2:
@@ -835,7 +934,7 @@ class CodeGen2:
                 code_a = self.generate_kernel(a)
                 code = self.enforce_lanes(code_a, expr.lanes)
             case KAdd(_, _) | KSub(_, _) | KNeg(_) | KConvolve(_, _):
-                raise NotImplementedError("These apps should have been eliminated by constant folding")
+                raise AssertionError("These apps should have been eliminated by constant folding")
             case _:
                 assert False
 
