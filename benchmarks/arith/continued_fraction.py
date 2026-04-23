@@ -62,7 +62,7 @@ class ContinuedFractionBenchmark(Benchmark):
 
     def _python_reference(self, inputs: dict[str, np.ndarray], n: int) -> np.ndarray:
         # Not used directly — verify_schedule is overridden below.
-        raise NotImplementedError("ContinuedFractionBenchmark uses a custom verify_schedule")
+        raise AssertionError("ContinuedFractionBenchmark uses a custom verify_schedule")
 
     def verify_schedule(self, expr: SignalExpr | SignalExpr2D) -> tuple[bool, str]:
         """
@@ -71,7 +71,7 @@ class ContinuedFractionBenchmark(Benchmark):
         as in the original continued-fraction.py.
         """
         try:
-            codegen = CodeGen(cache_cse=True)
+            codegen = CodeGen()
             runner = generate_kernel_executable(codegen, expr)
 
             rng = np.random.default_rng(42)
@@ -111,7 +111,7 @@ def main() -> None:
     lanes = 512
     program = ContinuedFractionBenchmark().original_expr()
     results = get_candidate_schedules(program, lanes)
-    codegen = CodeGen(True)
+    codegen = CodeGen()
     generate_and_run_benchmark(codegen, results[1:], True)
 
     for result in results:

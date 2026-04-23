@@ -165,6 +165,8 @@ __all__ = [
     "FuseRecurse",
     "Dilate",
     "DilateTrop",
+    "DilateLTVArith",
+    "DilateLTVTrop",
     "Delay",
     "ComposeRecurse",
     "Factorize",

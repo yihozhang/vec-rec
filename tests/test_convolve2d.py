@@ -47,9 +47,9 @@ def test_convolve2d_ti_kernel() -> None:
 
     # Verify the code contains expected components
     assert "RepeaterContext" in code.text
-    assert "make_signal2d" in code.text
-    assert "make_ith_row" in code.text
-    assert "make_s_convolve" in code.text
+    assert "Signal2D" in code.text
+    assert "IthRow" in code.text
+    assert "SConvolve" in code.text
     assert "SAdd" in code.text  # Multiple rows should be added together
 
     print("✓ Convolve2D with TI kernel generated successfully")
@@ -91,10 +91,10 @@ def test_convolve2d_tv_kernel() -> None:
 
     # Verify the code contains expected components
     assert "RepeaterContext" in code.text
-    assert "make_signal2d" in code.text
-    assert "make_ith_row" in code.text
-    assert "make_s_convolve" in code.text
-    assert "make_time_varying_kernel" in code.text
+    assert "Signal2D" in code.text
+    assert "IthRow" in code.text
+    assert "SConvolve" in code.text
+    assert "TimeVaryingKernel" in code.text
 
     print("✓ Convolve2D with TV kernel generated successfully")
 
@@ -132,8 +132,8 @@ def test_convolve2d_single_row() -> None:
     print()
 
     # Should not need SAdd for single row
-    assert "make_ith_row" in code.text
-    assert "make_s_convolve" in code.text
+    assert "IthRow" in code.text
+    assert "SConvolve" in code.text
 
     print("✓ Convolve2D with single-row kernel generated successfully")
 

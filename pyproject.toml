@@ -33,4 +33,4 @@ disallow_any_unimported = true
 disallow_incomplete_defs = true
 
 [tool.ruff.lint]
-ignore = ["F405", "F403", "E741"]
+ignore = ["F405", "F403", "E741", "F541"]

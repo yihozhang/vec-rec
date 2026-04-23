@@ -1,8 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import reduce
-from typing import List
+from typing import List, Tuple
 
+from vecrec.expr.base import SignalExpr
 from vecrec.expr.kernel import TIKernel
 from vecrec.util import ElementType
 from .base import *
@@ -31,6 +32,9 @@ class KernelExprBinOp(KernelExpr):
         b_delay, _ = self.b.time_delay(max_delay)
         delay = min(a_delay, b_delay)
         return delay, KConvolve(TIKernel.z(self.ty, self.element_type, -delay), self).with_lanes(self.lanes)
+
+    def to_sparse_repr(self):
+        raise AssertionError("to_sparse_repr is not implemented for KernelExprBinOp. This should never happen")
 
     @classmethod
     def of(cls, exprs: List[KernelExpr]) -> KernelExpr:
@@ -71,6 +75,9 @@ class KNeg(KernelExpr):
         delay, e = self.a.time_delay(max_delay)
         return delay, KNeg(e).with_lanes(self.lanes)
 
+    def to_sparse_repr(self) -> Tuple[int, List[int], List[float] | List[SignalExpr]]:
+        raise AssertionError("to_sparse_repr is not implemented for KNeg. This should never happen")
+
 
 @dataclass(unsafe_hash=True)
 class KConvertLanes(KernelExpr):
@@ -87,6 +94,9 @@ class KConvertLanes(KernelExpr):
         delay, e = self.a.time_delay(max_delay)
         assert self.lanes is not None
         return delay, KConvertLanes(e).with_lanes(self.lanes)
+
+    def to_sparse_repr(self) -> Tuple[int, List[int], List[float] | List[SignalExpr]]:
+        return self.a.to_sparse_repr()
 
     def __repr__(self) -> str:
         return f"ConvertLanes({self.lanes}, {self.a})"

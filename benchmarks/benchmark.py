@@ -100,7 +100,7 @@ class Benchmark(ABC):
         Returns (ok, error_message).
         """
         try:
-            codegen = CodeGen(cache_cse=True)
+            codegen = CodeGen()
             runner = generate_kernel_executable(codegen, expr, row_size=256)
 
             n_1d = runner.row_size  # 1024 by default
@@ -140,7 +140,7 @@ class Benchmark(ABC):
 
     def run(self) -> BenchmarkResult:
         """Run the full benchmark: timing, validation, and schedule verification."""
-        codegen = CodeGen(cache_cse=True)
+        codegen = CodeGen()
         schedules = self.build_schedules()
         original = self.original_expr()
 
@@ -150,9 +150,11 @@ class Benchmark(ABC):
 
         # Check validation: half of the schedules are accurate enough
         validation_raw: dict[str, Any] = output.get("validation", {})
-        validation_ok = len(
-            [v is True or (isinstance(v, int) and v >= 256) for v in validation_raw.values()]
-        ) > 0.5 * len(validation_raw)
+        validation_ok = (
+            sum([v is True or (isinstance(v, int) and v >= 256) for v in validation_raw.values()])
+        ) > 0.5 * (
+            len(validation_raw)
+        )  # exclude "k0" reference
 
         # Find best (fastest) schedule: highest throughput
         timing_keys = [k for k in output if k != "validation"]

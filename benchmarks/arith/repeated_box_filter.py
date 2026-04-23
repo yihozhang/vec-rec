@@ -126,7 +126,7 @@ def main() -> None:
 
         results = get_candidate_schedules(expr, 256)
 
-        benchmark_result = generate_and_run_benchmark(CodeGen(cache_cse=True), results, True)
+        benchmark_result = generate_and_run_benchmark(CodeGen(), results, True)
         print(benchmark_result)
 
 

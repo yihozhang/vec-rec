@@ -472,7 +472,7 @@ class TVKernel2D(KernelExpr2D):
         if isinstance(other, TIKernel2D):
             return self * other.promote()
         elif isinstance(other, TVKernel2D):
-            raise NotImplementedError(
+            raise AssertionError(
                 "TVKernel2D * TVKernel2D requires row delays on SignalExpr, which are not yet supported"
             )
         else:

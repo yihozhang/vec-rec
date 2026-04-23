@@ -165,6 +165,9 @@ class Type(Enum):
 class RecLang:
     lanes: Optional[int] = None
 
+    ty: Type
+    element_type: ElementType
+
     def __init__(self, lanes: Optional[int] = None) -> None:
         self.lanes = lanes
 
@@ -242,6 +245,9 @@ class KernelExpr(RecLang):
     def time_delay(self, max_delay: int) -> Tuple[int, KernelExpr]:
         """Return the time delay of the kernel and the kernel without the delay."""
         ...
+
+    @abstractmethod
+    def to_sparse_repr(self) -> Tuple[int, List[int], List[float] | List[SignalExpr]]: ...
 
     def with_lanes(self, lanes: Optional[int]) -> KernelExpr:
         return super().with_lanes(lanes)  # type: ignore

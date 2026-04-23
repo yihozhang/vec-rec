@@ -4,3 +4,6 @@ check:
 
 test:
 	uv run pytest -n auto -v tests
+
+fix:
+	uvx ruff check src tests benchmarks --fix
