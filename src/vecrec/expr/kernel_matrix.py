@@ -4,7 +4,6 @@ from typing import List, Optional, Sequence, Tuple
 
 from vecrec.expr.kernel import TIKernel
 from vecrec.util import ElementType
-from vecrec.util import ElementType
 
 from .base import KernelExpr, KernelMatrixExpr, Type
 
