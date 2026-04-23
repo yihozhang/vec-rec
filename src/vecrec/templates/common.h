@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -344,19 +345,13 @@ EXTRACT_SUB_VECTOR4(int64_vec4)
 template <typename vec_type, int N>
 struct Reg {
     vec_type data[N];
+    Reg() {
+        _Pragma("unroll") for (int i = 0; i < N; i++) {
+            data[i] = vec_type{}; // zero-initialize
+        }
+    }
     inline __attribute__((always_inline)) vec_type &operator[](int i) { return data[i]; }
     inline __attribute__((always_inline)) const vec_type &operator[](int i) const { return data[i]; }
-};
-
-// ZeroKernel: a kernel with no taps (contributes nothing to the output).
-// Used when a position in a KernelMatrix has no feedback.
-template <typename vec_type>
-struct ZeroKernel {
-    constexpr static int taps = 0;
-    constexpr static const int *idxs = nullptr;
-    ZeroKernel() = delete;
-    void run(vec_type * /*out*/) {}
-    void reset_and_next_row() {}
 };
 
 template <int _taps, typename vec_type, const int indices[_taps], const typename ElementType<vec_type>::type vals[_taps]>
@@ -750,6 +745,130 @@ SRecurseOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { ret
 SRecurseOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
 SRecurseOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
+// SRecurseV: vectorised n-component IIR recurrence.
+//
+// Template parameters:
+//   vec_type             – SIMD vector element type
+//   n_vec                – number of signal components
+//   n_pairs              – number of nonzero (dst_i, src_j) kernel pairs
+//   pair_i_arr[n_pairs]  – destination component index for each pair
+//   pair_j_arr[n_pairs]  – source component index for each pair
+//   pair_taps_arr[n_pairs] – tap count for each pair
+//   pair_offsets_arr[n_pairs] – offset of each pair's tap indices in flat_idxs_arr
+//   n_flat               – total taps across all pairs
+//   flat_idxs_arr[n_flat] – all tap indices concatenated in pair order
+//   comp_buf_sizes_arr[n_vec]   – history buffer size (in vec_type slots) per component
+//   comp_buf_offsets_arr[n_vec] – start offset of each component's buffer in prev_output
+//   n_total_buf          – total size of prev_output  (= sum of comp_buf_sizes)
+//
+// run(reg, out_base, kernel_bases[n_pairs], in_base):
+//   – reads n_vec inputs from reg[in_base .. in_base+n_vec-1]
+//   – reads kernel values from reg[kernel_bases[p] + k] for pair p, tap k
+//   – accumulates cross-component IIR contributions from own prev_output buffers
+//   – writes n_vec outputs to reg[out_base .. out_base+n_vec-1]
+//   – updates prev_output history buffers
+//
+// The buffer index formula (same as SRecurse) is:
+//   buf_idx = (comp_buf_sizes[j] - 1) * vec_lanes - idx_k
+// which is guaranteed >= 0 for any idx_k present in the stripped kernel for component j.
+#define SRecurseVOp(suffix, zero_init, mul_op, add_op)                                                   \
+template <typename vec_type,                                                                              \
+          int n_vec,                                                                                       \
+          int n_pairs,                                                                                     \
+          const int pair_i_arr[n_pairs],                                                                   \
+          const int pair_j_arr[n_pairs],                                                                   \
+          const int pair_taps_arr[n_pairs],                                                                \
+          const int pair_offsets_arr[n_pairs],                                                             \
+          int n_flat,                                                                                      \
+          const int flat_idxs_arr[n_flat],                                                                 \
+          const int comp_buf_sizes_arr[n_vec],                                                             \
+          const int comp_buf_offsets_arr[n_vec],                                                           \
+          int n_total_buf>                                                                                 \
+struct SRecurseV##suffix {                                                                                \
+    using elt_type = typename ElementType<vec_type>::type;                                                \
+    constexpr static int vec_lanes = vec_lanes_of(vec_type{});                                            \
+    vec_type prev_output[n_total_buf];                                                                    \
+                                                                                                          \
+    SRecurseV##suffix() {                                                                                 \
+        _Pragma("unroll") for (int i = 0; i < n_total_buf; i++) {                                        \
+            prev_output[i] = (zero_init);                                                                 \
+        }                                                                                                 \
+    }                                                                                                     \
+                                                                                                          \
+    template <typename Reg_t>                                                                             \
+    inline __attribute__((always_inline)) void run(                                                       \
+            Reg_t &reg, int out_base, const int kernel_bases[n_pairs], int in_base) {                    \
+        vec_type f[n_vec];                                                                                \
+        _Pragma("unroll") for (int i = 0; i < n_vec; i++) f[i] = reg[in_base + i];                      \
+                                                                                                          \
+        for_<n_pairs>([&](auto p_num) {                                                                   \
+            constexpr int p = p_num.value;                                                                \
+            constexpr int ci = pair_i_arr[p];                                                             \
+            constexpr int cj = pair_j_arr[p];                                                             \
+            constexpr int taps_p = pair_taps_arr[p];                                                      \
+            constexpr int buf_size_j = comp_buf_sizes_arr[cj];                                            \
+            constexpr int buf_off_j = comp_buf_offsets_arr[cj];                                           \
+            for_<taps_p>([&](auto k_num) {                                                                \
+                constexpr int k = k_num.value;                                                            \
+                constexpr int idx_k = flat_idxs_arr[pair_offsets_arr[p] + k];                            \
+                constexpr int buf_idx = (buf_size_j - 1) * vec_lanes - idx_k;                            \
+                vec_type hist;                                                                             \
+                if constexpr (buf_idx % vec_lanes == 0) {                                                 \
+                    hist = prev_output[buf_off_j + buf_idx / vec_lanes];                                  \
+                } else {                                                                                   \
+                    hist = extract_slice(prev_output[buf_off_j + buf_idx / vec_lanes],                    \
+                                        prev_output[buf_off_j + buf_idx / vec_lanes + 1],                 \
+                                        buf_idx % vec_lanes);                                             \
+                }                                                                                         \
+                f[ci] = add_op(f[ci], mul_op(hist, reg[kernel_bases[p] + k]));                           \
+            });                                                                                            \
+        });                                                                                                \
+                                                                                                          \
+        for_<n_vec>([&](auto j_num) {                                                                     \
+            constexpr int j = j_num.value;                                                                \
+            constexpr int buf_size = comp_buf_sizes_arr[j];                                               \
+            constexpr int buf_off = comp_buf_offsets_arr[j];                                              \
+            for_<buf_size - 1>([&](auto kk_num) {                                                         \
+                constexpr int kk = kk_num.value;                                                          \
+                prev_output[buf_off + kk] = prev_output[buf_off + kk + 1];                               \
+            });                                                                                            \
+            prev_output[buf_off + buf_size - 1] = f[j];                                                  \
+            reg[out_base + j] = f[j];                                                                     \
+        });                                                                                                \
+    }                                                                                                     \
+                                                                                                          \
+    void reset_and_next_row() {                                                                           \
+        _Pragma("unroll") for (int i = 0; i < n_total_buf; i++) {                                        \
+            prev_output[i] = (zero_init);                                                                 \
+        }                                                                                                 \
+    }                                                                                                     \
+};
+
+
+        // for (int i = 0; i < n_vec; i++) { for (int j = 0; j < comp_buf_sizes_arr[i]; j++) { fprintf(stderr, "%f ", prev_output[comp_buf_offsets_arr[i] + j]); }}                                                                                                  \
+        // printf("\n");                                                                                         \
+
+SRecurseVOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
+SRecurseVOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
+SRecurseVOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+
+// Tuple<vec_type, n>: copy n independently-allocated signals into n consecutive registers.
+// After run(), component i is at reg[base + i].
+// srcs[i] is the source register index for component i.
+template <typename vec_type, int n>
+struct Tuple {
+    Tuple() = default;
+
+    template <typename Reg_t>
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, const int srcs[n]) {
+        _Pragma("unroll") for (int i = 0; i < n; i++) {
+            reg[base + i] = reg[srcs[i]];
+        }
+    }
+
+    void reset_and_next_row() {}
+};
+
 template <typename vec_type_in, typename vec_type_out, int taps>
 struct KConvertN2One {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
@@ -916,183 +1035,21 @@ struct IthRow {
     }
 };
 
-// template <typename vec_type, int n_rows>
-// auto make_repeater(RepeaterContext<vec_type, n_rows> *ctx, int inner) {
-//     return Repeater<vec_type, n_rows, Inner>(ctx, inner);
-// }
-
-// template <typename vec_type, int n_rows>
-// auto make_signal2d(RepeaterContext<vec_type, n_rows + 1> *ctx) {
-//     return Signal2D<vec_type, n_rows>(ctx);
-// }
-
-// template <typename vec_type, int n_rows, int row_index>
-// auto make_ith_row(int signal2d) {
-//     return IthRow<vec_type, n_rows, row_index>(signal2d);
-// }
-
-// template <int _taps, typename vec_type, const int indices[_taps]>
-// auto make_time_varying_kernel(int args[_taps]) {
-//     return TimeVaryingKernel<_taps, vec_type, indices>(args);
-// }
-/*
 // ---------------------------------------------------------------------------
-// Helpers for SRecurseV2
+// VectorAt: extract component `index` from an n-vector signal at sv_base.
+// Reads reg[sv_base + index] and writes to reg[base].
 // ---------------------------------------------------------------------------
 
-// SLatched: a signal whose value is set externally each step.
-template <typename vec_type>
-struct SLatched {
-    int base;
-    // TODO: algebraic zero?
-    vec_type value{0};
-    SLatched(int base) : base(base), value(0) {}
-    void run(Reg_t &reg) { reg[base] = value; }
-    void reset_and_next_row() { value = 0; }
-};
+template <typename vec_type, int n, int index>
+struct VectorAt {
+    VectorAt() {
+        static_assert(index >= 0 && index < n, "VectorAt: index out of range");
+    }
 
-// MaybeSConvolve<vec_type, K>: SConvolve<K, SLatched> when K has taps > 0,
-// else a no-op that always returns 0.  Used for cross terms in SRecurseV2.
-template <typename vec_type, bool Active = (K::taps > 0)>
-struct MaybeSConvolve {
-    SConvolve<vec_type, K, SLatched<vec_type>> impl;
-    explicit MaybeSConvolve(K *k) : impl(k, SLatched<vec_type>()) {}
-    void set_input(vec_type v) { impl.signal->value = v; }
-    void run(Reg_t &reg) { impl.run(out); }
-    void peek(Reg_t &reg) { impl.peek(out); }
-    void reset_and_next_row() { impl.reset_and_next_row(); }
-};
-template <typename vec_type, typename K>
-struct MaybeSConvolve<vec_type, K, false> {
-    explicit MaybeSConvolve(K *) {}
-    void set_input(vec_type) {}
-    void run(Reg_t &reg) { *out = 0; }
-    void peek(Reg_t &reg) { *out = 0; }
+    template <typename Reg_t>
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int sv_base) {
+        reg[base] = reg[sv_base + index];
+    }
+
     void reset_and_next_row() {}
 };
-
-// MaybeSRecurse<vec_type, K>: SRecurse<K, SLatched> when K has taps > 0,
-// else a pass-through (no feedback).  Used for diagonal terms in SRecurseV2.
-template <typename vec_type, bool Active = (K::taps > 0)>
-struct MaybeSRecurse {
-    SRecurse<vec_type, K, SLatched<vec_type>> impl;
-    explicit MaybeSRecurse(K *k) : impl(k, SLatched<vec_type>()) {}
-    void set_input(vec_type v) { impl.signal->value = v; }
-    void run(Reg_t &reg) { impl.run(out); }
-    void peek(Reg_t &reg) { impl.peek(out); }
-    void reset_and_next_row() { impl.reset_and_next_row(); }
-};
-template <typename vec_type, typename K>
-struct MaybeSRecurse<vec_type, K, false> {
-    SLatched<vec_type> latched;
-    explicit MaybeSRecurse(K *) {}
-    void set_input(vec_type v) { latched->value = v; }
-    void run(Reg_t &reg) { latched.run(out); }
-    void peek(Reg_t &reg) { latched.peek(out); }
-    void reset_and_next_row() { latched.reset_and_next_row(); }
-};
-
-// ---------------------------------------------------------------------------
-// Mutually-recursive (vector) recurrence: SRecurseV2
-//
-// Computes F = A*F + G where F,G are 2-vectors and A is a 2x2 kernel matrix:
-//   F[0] = A[0][0]*F[0] + A[0][1]*F[1] + G[0]
-//   F[1] = A[1][0]*F[0] + A[1][1]*F[1] + G[1]
-//
-// Implemented using MaybeSRecurse for diagonal terms (K00, K11) and
-// MaybeSConvolve for cross terms (K01, K10).
-// ---------------------------------------------------------------------------
-template <typename vec_type,
-          typename K00, typename K01,
-          typename K10, typename K11,
-          typename S0, typename S1>
-struct SRecurseV2 {
-    MaybeSConvolve<vec_type, K01> c01; // K01 * history(F[1])
-    MaybeSConvolve<vec_type, K10> c10; // K10 * history(F[0])
-    MaybeSRecurse<vec_type, K00> r0;   // K00 * F[0] + eff_g0
-    MaybeSRecurse<vec_type, K11> r1;   // K11 * F[1] + eff_g1
-    S0 *s0;
-    S1 *s1;
-    vec_type last_out0{0}, last_out1{0};
-
-    SRecurseV2(K00 *k00, K01 *k01, K10 *k10, K11 *k11, S0 *s0, S1 *s1)
-        : c01(k01), c10(k10), r0(k00), r1(k11), s0(s0), s1(s1) {}
-
-    template <typename Reg_t>
-    inline __attribute__((always_inline)) void run(Reg_t &reg) {
-        // Inject previous outputs into cross-term sliding windows
-        c01.set_input(last_out1);
-        c10.set_input(last_out0);
-
-        // Compute cross-term contributions from previous step's outputs
-        vec_type cross0, cross1;
-        c01.run(&cross0);
-        c10.run(&cross1);
-
-        // Read actual inputs and form effective inputs (G + cross)
-        vec_type g0, g1;
-        s0->run(&g0);
-        s1->run(&g1);
-        r0.set_input(g0 + cross0);
-        r1.set_input(g1 + cross1);
-
-        // Compute diagonal recurrences
-        r0.run(&out[0]);
-        r1.run(&out[1]);
-
-        // Remember outputs for next step's cross terms
-        last_out0 = out[0];
-        last_out1 = out[1];
-    }
-
-    inline __attribute__((always_inline)) void peek(Reg_t &reg) {
-        out[0] = last_out0;
-        out[1] = last_out1;
-    }
-
-    void reset_and_next_row() {
-        last_out0 = 0;
-        last_out1 = 0;
-        c01.reset_and_next_row();
-        c10.reset_and_next_row();
-        r0.reset_and_next_row();
-        r1.reset_and_next_row();
-        s0->reset_and_next_row();
-        s1->reset_and_next_row();
-    }
-};
-
-template <typename vec_type,
-          typename K00, typename K01, typename K10, typename K11,
-          typename S0, typename S1>
-auto make_s_recurse_v2(K00 *k00, K01 *k01, K10 *k10, K11 *k11, S0 *s0, S1 *s1) {
-    return SRecurseV2<vec_type, K00, K01, K10, K11, S0, S1>(k00, k01, k10, k11, s0, s1);
-}
-
-// ---------------------------------------------------------------------------
-// VectorAtN: extract component `index` from an n-vector signal.
-// ---------------------------------------------------------------------------
-
-template <typename vec_type, int n, int index, typename SVType>
-struct VectorAtN {
-    SVType *signal_vec;
-    vec_type all[n];
-
-    VectorAtN(SVType *sv) : signal_vec(sv) {
-        static_assert(index >= 0 && index < n, "VectorAtN: index out of range");
-    }
-
-    template <typename Reg_t>
-    inline __attribute__((always_inline)) void run(Reg_t &reg) {
-        signal_vec->run(all);
-        *out = all[index];
-    }
-
-    void reset_and_next_row() { signal_vec->reset_and_next_row(); }
-};
-
-template <int n, int index, typename vec_type, typename SVType>
-auto make_vector_at(SVType *sv) {
-    return VectorAtN<vec_type, n, index, SVType>(sv);
-}
-*/

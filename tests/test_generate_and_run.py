@@ -145,7 +145,7 @@ def test_generate_kernel_executable_continued_fraction() -> None:
     results = get_candidate_schedules(program, 512)
     assert len(results) > 0
 
-    codegen = CodeGen(True)
+    codegen = CodeGen()
     runner = generate_kernel_executable(codegen, results[0])
 
     n = 64

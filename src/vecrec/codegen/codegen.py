@@ -1,6 +1,6 @@
-from typing import List, Optional, Dict, Set, Tuple, Union, cast
+from typing import List, Optional, Dict, Set, Tuple, cast
 from vecrec.expr import *
-from vecrec.expr.base import SignalExpr2D, SignalVectorExpr
+from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr
 from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Ith
 from vecrec.expr.kernel import TIKernel, TVKernel
@@ -157,6 +157,7 @@ class CodeGen:
             {new_line.join(map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types))}
             inline __attribute__((always_inline)) {name}({args}) : 
               {", ".join(map(lambda x: f"{x.var_name}({x.constructor_args})", self.program))}
+              {"".join(map(lambda x: f", reg_{x}()", self.vec_types))}
               {{}}
             
             inline __attribute__((always_inline)) void run({result_vec_type} *out) {{
@@ -178,9 +179,19 @@ class CodeGen:
         # """
         return KernelProgram(text, self.ele_per_iter)
 
-    def generate_signal(self, expr: SignalExpr | SignalExpr2D | KernelExpr) -> Tuple[List[int], Code]:
+    def generate_signal(
+        self, expr: SignalExpr | SignalExpr2D | KernelExpr | SignalVectorExpr | KernelMatrixExpr
+    ) -> Tuple[List[int], Code]:
         if expr in self.mapping:
             return self.mapping[expr]
+
+        # KernelMatrixExpr has no own registers; just recursively generate each entry.
+        if isinstance(expr, KernelMatrixExpr):
+            for k in expr.children():
+                self.generate_signal(cast(KernelExpr, k))
+            placeholder: Tuple[List[int], Code] = ([], Code("", expr.ty, expr.element_type, expr.lanes))
+            self.mapping[expr] = placeholder
+            return placeholder
 
         assert expr.lanes is not None
         assert self.ele_per_iter % expr.lanes == 0
@@ -276,6 +287,9 @@ class CodeGen:
                         vec_type,
                     )
 
+                case ConvertLanes(a):
+                    regs, code = self.enforce_lanes(expr, n_slices)
+
                 case Ith(g, ith):
                     regs = self._new_registers(vec_type, n_slices)
                     g_regs = self.generate_signal(g)[0]
@@ -288,8 +302,16 @@ class CodeGen:
                         vec_type,
                     )
 
-                case ConvertLanes(a):
-                    regs, code = self.enforce_lanes(expr, n_slices)
+                case VectorAt(g, i):
+                    regs = self._new_registers(vec_type, n_slices)
+                    g_regs = self.generate_signal(g)[0]
+                    code = self._declare_node(
+                        f"VectorAt<{vec_type}, {g.n}, {i}>",
+                        "",
+                        [[regs[i], g_regs[i]] for i in range(n_slices)],
+                        vec_type,
+                        vec_type,
+                    )
 
                 case _:
                     raise AssertionError(f"CodeGen: unhandled SignalExpr {type(expr)}")
@@ -362,9 +384,10 @@ class CodeGen:
                 case Var2D(name, n_rows):
                     assert n_rows is not None
                     regs = self._new_registers(vec_type, n_slices, n_rows)
+                    zero_str = expr.element_type.val_to_str(ty.zero(), ty)
                     code = self._declare_node(
                         f"InputSignal2D<{vec_type}, {n_rows}>",
-                        f"{name}, {name}_stride, {ty.zero()}",
+                        f"{name}, {name}_stride, {zero_str}",
                         [[r] for r in regs],
                         vec_type,
                         vec_type,
@@ -372,12 +395,205 @@ class CodeGen:
 
                 case _:
                     raise AssertionError(f"CodeGen: unhandled SignalExpr2D {type(expr)}")
+        elif isinstance(expr, SignalVectorExpr):
+            match expr:
+                case SignalVector(data):
+                    n_vec = len(data)
+                    s_regs = [self.generate_signal(s)[0] for s in data]
+                    regs = self._new_registers(vec_type, n_slices, n_vec)
+                    run_args_list = []
+                    for s in range(n_slices):
+                        src_var = self._declare_array("int", [s_regs[j][s] for j in range(n_vec)])
+                        run_args_list.append([regs[s], src_var])
+                    code = self._declare_node(
+                        f"Tuple<{vec_type}, {n_vec}>",
+                        "",
+                        run_args_list,
+                        vec_type,
+                        vec_type,
+                    )
+
+                case ConvolveV(a_mat, b_in):
+                    n_vec = a_mat.n
+                    sem_suffix = self.get_sem_suffix(ty)
+                    # Generate all kernel entries via the KernelMatrixExpr handler.
+                    assert isinstance(a_mat, KernelMatrix)
+                    self.generate_signal(a_mat)
+                    # Generate input signal vector; component j is at g_regs[s]+j for slice s.
+                    g_regs = self.generate_signal(b_in)[0]
+
+                    # For each output row i, accumulate SConvolve(A[i][j], g[j]) over j.
+                    out_regs_per_component: List[List[int]] = []
+                    for i in range(n_vec):
+                        partial_terms: List[List[int]] = []
+                        for j in range(n_vec):
+                            k = a_mat.data[i][j]
+                            k_taps, k_idxs, _ = k.to_sparse_repr()
+                            if k_taps == 0:
+                                continue
+                            k_regs = self.mapping[k][0]
+                            idx_var = self._declare_array("int", k_idxs)
+                            conv_regs = self._new_registers(vec_type, n_slices)
+                            self._declare_node(
+                                f"SConvolve{sem_suffix}<{vec_type}, {k_taps}, {idx_var}>",
+                                "",
+                                [[conv_regs[s], k_regs[s], g_regs[s] + j] for s in range(n_slices)],
+                                vec_type,
+                                vec_type,
+                            )
+                            partial_terms.append(conv_regs)
+                        out_regs_per_component.append(
+                            self._sum_registers(vec_type, n_slices, ty, element_type, partial_terms)
+                        )
+
+                    regs = self._new_registers(vec_type, n_slices, n_vec)
+                    run_args_list = []
+                    for s in range(n_slices):
+                        src_var = self._declare_array("int", [out_regs_per_component[i][s] for i in range(n_vec)])
+                        run_args_list.append([regs[s], src_var])
+                    code = self._declare_node(
+                        f"Tuple<{vec_type}, {n_vec}>",
+                        "",
+                        run_args_list,
+                        vec_type,
+                        vec_type,
+                    )
+
+                case RecurseV(a_mat, g_in):
+                    n_vec = a_mat.n
+                    assert expr.lanes is not None
+                    sem_suffix = self.get_sem_suffix(ty)
+                    assert isinstance(a_mat, KernelMatrix)
+
+                    # Generate input signal vector; component j is at g_regs[s]+j for slice s.
+                    g_regs = self.generate_signal(g_in)[0]
+
+                    # Strip one vector-width delay from every kernel and generate.
+                    stripped_kernels: List[List[KernelExpr]] = []
+                    for i in range(n_vec):
+                        stripped_row: List[KernelExpr] = []
+                        for j in range(n_vec):
+                            k = a_mat.data[i][j]
+                            k_delay, sk = k.time_delay(expr.lanes)
+                            assert k_delay == expr.lanes, (
+                                f"RecurseV kernel A[{i}][{j}] has time delay {k_delay}, "
+                                f"expected {expr.lanes} (one full vector width)"
+                            )
+                            self.generate_signal(sk)
+                            stripped_row.append(sk)
+                        stripped_kernels.append(stripped_row)
+
+                    # Collect nonzero (i, j) pairs in row-major order.
+                    pairs: List[Tuple[int, int, KernelExpr, int, List[int]]] = []
+                    for i in range(n_vec):
+                        for j in range(n_vec):
+                            sk = stripped_kernels[i][j]
+                            k_taps, k_idxs, _ = sk.to_sparse_repr()
+                            if k_taps > 0:
+                                pairs.append((i, j, sk, k_taps, list(k_idxs)))
+
+                    n_pairs = len(pairs)
+                    n_pairs = max(n_pairs, 1)  # C++ arrays must have size >= 1
+
+                    # Compute flat tap-index list and per-pair offsets.
+                    pair_offsets: List[int] = []
+                    flat_idxs_list: List[int] = []
+                    off = 0
+                    for (_, _, _, k_taps, k_idxs) in pairs:
+                        pair_offsets.append(off)
+                        flat_idxs_list.extend(k_idxs)
+                        off += k_taps
+                    n_flat = off
+                    n_flat = max(n_flat, 1)
+
+                    # Per-component history buffer sizes (minimum 1).
+                    comp_buf_sizes: List[int] = [1] * n_vec
+                    for (_, j, _, k_taps, k_idxs) in pairs:
+                        max_idx = k_idxs[-1]
+                        buf_size = (max_idx + expr.lanes - 1) // expr.lanes + 1
+                        comp_buf_sizes[j] = max(comp_buf_sizes[j], buf_size)
+
+                    # Prefix-sum to get per-component buffer offsets.
+                    comp_buf_offsets_list: List[int] = []
+                    total_buf = 0
+                    for bs in comp_buf_sizes:
+                        comp_buf_offsets_list.append(total_buf)
+                        total_buf += bs
+
+                    # Declare static arrays for template parameters.
+                    pad = [0]
+                    v_pair_i = self._declare_array("int", [p[0] for p in pairs] if n_pairs > 0 else pad)
+                    v_pair_j = self._declare_array("int", [p[1] for p in pairs] if n_pairs > 0 else pad)
+                    v_pair_taps = self._declare_array("int", [p[3] for p in pairs] if n_pairs > 0 else pad)
+                    v_pair_offsets = self._declare_array("int", pair_offsets if n_pairs > 0 else pad)
+                    v_flat_idxs = self._declare_array("int", flat_idxs_list if n_flat > 0 else pad)
+                    v_comp_buf_sizes = self._declare_array("int", comp_buf_sizes)
+                    v_comp_buf_offsets = self._declare_array("int", comp_buf_offsets_list)
+
+                    # Template uses actual counts for for_<> iteration; array sizes in prologue
+                    # are padded to >= 1 so C++ array declarations are valid.
+                    template_type = (
+                        f"SRecurseV{sem_suffix}<{vec_type}, {n_vec}, "
+                        f"{n_pairs}, {v_pair_i}, {v_pair_j}, {v_pair_taps}, {v_pair_offsets}, "
+                        f"{n_flat}, {v_flat_idxs}, "
+                        f"{v_comp_buf_sizes}, {v_comp_buf_offsets}, {total_buf}>"
+                    )
+
+                    regs = self._new_registers(vec_type, n_slices, n_vec)
+                    run_args_list = []
+                    for s in range(n_slices):
+                        kernel_bases = [self.mapping[p[2]][0][s] for p in pairs]
+                        v_kb = self._declare_array("int", kernel_bases if n_pairs > 0 else pad)
+                        run_args_list.append([regs[s], v_kb, g_regs[s]])
+
+                    code = self._declare_node(
+                        template_type, "", run_args_list, vec_type, vec_type
+                    )
+
+                case _:
+                    assert False, f"Unsupported SignalVectorExpr: {type(expr)}"
         else:
             raise AssertionError(f"CodeGen: unhandled expr type {type(expr)}")
 
         assert expr not in self.mapping
         self.mapping[expr] = (regs, Code(code, ty, element_type, expr.lanes, taps))
         return self.mapping[expr]
+
+    def _sum_registers(
+        self,
+        vec_type: str,
+        n_slices: int,
+        ty: Type,
+        element_type: ElementType,
+        addends: List[List[int]],
+    ) -> List[int]:
+        """Sum a list of per-slice register lists using SAdd nodes. Returns result registers.
+        If addends is empty, returns a Signal1DConstant(zero) register."""
+        sem_suffix = self.get_sem_suffix(ty)
+        accumulated: List[int] | None = None
+        for addend in addends:
+            if accumulated is None:
+                accumulated = addend
+            else:
+                new_regs = self._new_registers(vec_type, n_slices)
+                self._declare_node(
+                    f"SAdd{sem_suffix}<{vec_type}>",
+                    "",
+                    [[new_regs[s], accumulated[s], addend[s]] for s in range(n_slices)],
+                    vec_type,
+                    vec_type,
+                )
+                accumulated = new_regs
+        if accumulated is None:
+            accumulated = self._new_registers(vec_type, n_slices)
+            self._declare_node(
+                f"Signal1DConstant<{vec_type}>",
+                element_type.val_to_str(ty.zero(), ty),
+                [[r] for r in accumulated],
+                vec_type,
+                vec_type,
+            )
+        return accumulated
 
     def enforce_lanes(
         self, node: ConvertLanes | KConvertLanes, n_slices: int, kernel_taps: int | None = None
@@ -533,556 +749,3 @@ class CodeGen:
             return signal2d.n_rows
 
         raise ValueError(f"Ith expects RVar2D, Repeater, or Var2D as signal2d, got {type(signal2d)}")
-
-
-class CodeGen2:
-    # Hardware-dependent maximum
-    counter: int
-    prologue: list[str]
-    # Maps RVar2D names to their context variable names (str) and n_rows (int)
-    var2d_context: Dict[str, Union[str, int]]
-    # Maps expressions (by structural equality) to Code object for caching identical AST structures
-    expr_cache: Optional[Dict]
-    # Maps multi-use signal exprs to (ptr_var_name, primary_Code); populated on first visit
-    cse_ptr_vars: Dict
-    # Reference counts per non-trivial signal expression (structural equality)
-    ref_counts: Dict
-
-    def __init__(self, cache_cse: bool = True):
-        self.counter = 0
-        self.prologue = []
-        self.var2d_context = {}
-        self.expr_cache = {} if cache_cse else None
-        self.cse_ptr_vars = {}
-        self.ref_counts = {}
-
-    def get_new_var(self) -> str:
-        self.counter += 1
-        return f"v{self.counter}"
-
-    def get_vec_type(self, element_type: ElementType, lanes: int) -> str:
-        """
-        Get the C++ type of the given element type and lanes.
-        Use maximum number of lanes if not provided.
-        """
-        match element_type:
-            case ElementType.Float:
-                return f"float_vec{lanes}"
-            case ElementType.I32:
-                return f"int32_vec{lanes}"
-            case ElementType.I64:
-                return f"int64_vec{lanes}"
-
-    def clear(self):
-        self.counter = 0
-        self.prologue = []
-        self.var2d_context = {}
-        self.expr_cache = {} if self.expr_cache is not None else None
-
-    def get_sem_suffix(self, ty: Type) -> str:
-        match ty:
-            case Type.Arith:
-                return ""
-            case Type.TropMax:
-                return "TropMax"
-            case Type.TropMin:
-                return "TropMin"
-
-    def _is_trivial_expr(self, expr: SignalExpr | SignalExpr2D | KernelExpr) -> bool:
-        """Check if an expression is trivial and should be inlined rather than cached."""
-        return isinstance(expr, (Num, Impulse, Var, TIKernel, RVar2D, Var2D))
-
-    def _signal2d_n_rows(self, signal2d: SignalExpr2D) -> int:
-        if isinstance(signal2d, RVar2D):
-            if signal2d.name not in self.var2d_context:
-                raise ValueError(f"RVar2D '{signal2d.name}' used outside of Repeater context")
-            return cast(int, self.var2d_context[f"{signal2d.name}_n_rows"])
-
-        if isinstance(signal2d, (Repeater, Var2D)):
-            assert signal2d.n_rows is not None, (
-                f"{type(signal2d).__name__} has n_rows=None at codegen time. "
-                "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
-            )
-            return signal2d.n_rows
-
-        raise ValueError(f"Ith expects RVar2D, Repeater, or Var2D as signal2d, got {type(signal2d)}")
-
-    def collect_input_variables(
-        self,
-        expr: RecLang,
-        vars_1d: Optional[Dict[str, ElementType]] = None,
-        vars_2d: Optional[Dict[str, ElementType]] = None,
-    ) -> Tuple[Dict[str, ElementType], Dict[str, ElementType]]:
-        if vars_1d is None:
-            vars_1d = {}
-        if vars_2d is None:
-            vars_2d = {}
-
-        match expr:
-            case Var(name):
-                if name in vars_1d and vars_1d[name] != expr.element_type:
-                    raise ValueError(
-                        f"Variable {name} has inconsistent element types: {vars_1d[name]} vs {expr.element_type}"
-                    )
-                vars_1d[name] = expr.element_type
-            case Var2D(name, _):
-                if name in vars_2d and vars_2d[name] != expr.element_type:
-                    raise ValueError(f"Var2D '{name}' has inconsistent element_type")
-                vars_2d[name] = expr.element_type
-            case _:
-                for child in expr.children():
-                    self.collect_input_variables(child, vars_1d, vars_2d)
-
-        return vars_1d, vars_2d
-
-    def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> Code:
-        self.clear()
-        code = self.generate_signal(expr)
-        vars, vars2d = self.collect_input_variables(expr)
-        args_1d = [f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items())]
-        args_2d = [f"const {elt_type.to_str()} *{var}, int {var}_stride" for var, elt_type in sorted(vars2d.items())]
-        all_args = args_1d + args_2d + ["int row_size"]
-        args = ", ".join(all_args)
-        text = "\n".join(
-            [
-                f"auto make_{name}({args}) {{",
-                *map(lambda x: "    " + x, self.prologue),
-                f"    return {code.text};",
-                "}",
-                f"using {name}_vector_type = {self.get_vec_type(code.element_type, code.lanes)};",
-            ]
-        )
-        return Code(
-            text,
-            code.ty,
-            code.element_type,
-            code.lanes,
-        )
-
-    def generate_signal(self, expr: SignalExpr | SignalExpr2D) -> Code:
-        # Check cache first (using structural equality)
-        if self.expr_cache is not None and expr in self.expr_cache:
-            return self.expr_cache[expr]
-
-        assert expr.lanes is not None
-
-        # Generate code for each case
-        match expr:
-            case Num(value):
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                value_str = expr.element_type.val_to_str(value, expr.ty)
-                code = Code(
-                    f"Signal1DConstant<{vec_type}>({value_str})",
-                    expr.ty,
-                    expr.element_type,
-                    expr.lanes,
-                )
-            case Impulse(value):
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                value_str = expr.element_type.val_to_str(value, expr.ty)
-                zero_str = expr.element_type.val_to_str(expr.ty.zero(), expr.ty)
-                code = Code(
-                    f"Signal1DImpulse<{vec_type}>({value_str}, {zero_str})",
-                    expr.ty,
-                    expr.element_type,
-                    expr.lanes,
-                )
-            case SignalExprBinOp(a, b):
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                code_a = self.generate_signal(a)
-                code_b = self.generate_signal(b)
-
-                assert code_a.element_type == code_b.element_type
-                assert code_a.ty == code_b.ty
-                element_type = code_a.element_type
-                ty = code_a.ty
-
-                constructor = "make_" + type(expr).__name__
-                suffix = self.get_sem_suffix(ty)
-                program = f"{constructor}{suffix}<{vec_type}>({code_a.text}, {code_b.text})"
-                code = Code(program, ty, element_type, expr.lanes)
-            case SNeg(a):
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                code_a = self.generate_signal(a)
-                assert code_a.element_type == expr.element_type
-                assert code_a.ty == expr.ty
-                code = Code(
-                    f"make_SNeg<{vec_type}>({code_a.text})",
-                    expr.ty,
-                    expr.element_type,
-                    expr.lanes,
-                )
-
-            case Var():
-                assert expr.lanes is not None
-                code = Code(
-                    f"Signal1D<{self.get_vec_type(expr.element_type, expr.lanes)}>({expr.name})",
-                    expr.ty,
-                    expr.element_type,
-                    expr.lanes,
-                )
-            case Var2D():
-                assert expr.lanes is not None
-                assert expr.n_rows is not None, (
-                    f"Var2D('{expr.name}') has n_rows=None at codegen time. "
-                    "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
-                )
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                code = Code(
-                    f"make_input_signal2d<{vec_type}, {expr.n_rows}>({expr.name}, {expr.name}_stride, {expr.ty.zero()})",
-                    expr.ty,
-                    expr.element_type,
-                    expr.lanes,
-                )
-            case RVar2D(name):
-                # RVar2D should only appear within a Repeater context
-                if name not in self.var2d_context:
-                    raise ValueError(f"RVar2D '{name}' used outside of Repeater context")
-
-                context_var = self.var2d_context[name]
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                n_rows = cast(int, self.var2d_context[f"{name}_n_rows"])
-
-                code = Code(
-                    f"make_signal2d<{vec_type}, {n_rows}>({context_var})",
-                    expr.ty,
-                    expr.element_type,
-                    expr.lanes,
-                )
-            case Repeater(a, n_rows, prev_rows_var):
-                assert n_rows is not None, (
-                    f"Repeater with prev_rows_var '{prev_rows_var.name}' has n_rows=None at codegen time. "
-                    "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
-                )
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-
-                # Create a context variable
-                context_var = self.get_new_var()
-                self.prologue.append(
-                    f"RepeaterContext<{vec_type}, {n_rows}>* {context_var} = RepeaterContext<{vec_type}, {n_rows}>(row_size);"
-                )
-
-                # Add the RVar2D to our context so inner signal can reference it
-                old_context = self.var2d_context.copy()
-                self.var2d_context[prev_rows_var.name] = f"{context_var}"
-                # n_rows includes the current row, so prev_rows has n_rows - 1 rows
-                self.var2d_context[f"{prev_rows_var.name}_n_rows"] = n_rows - 1
-
-                # Generate code for the inner signal (which may reference prev_rows_var)
-                code_a = self.generate_signal(a)
-
-                # Restore context
-                self.var2d_context = old_context
-
-                # Generate the Repeater construction
-                program = f"make_repeater<{vec_type}, {n_rows}>({context_var}, {code_a.text})"
-                code = Code(program, expr.ty, expr.element_type, expr.lanes)
-            case Convolve(a, f):
-                code_a = self.generate_kernel(a)
-                code_f = self.generate_signal(f)
-
-                assert code_a.element_type == code_f.element_type
-                assert code_a.ty == code_f.ty
-                element_type = code_a.element_type
-                ty = code_a.ty
-
-                vec_type = self.get_vec_type(element_type, expr.lanes)
-                suffix = self.get_sem_suffix(ty)
-                program = f"make_s_convolve{suffix}<{vec_type}>({code_a.text}, {code_f.text})"
-                code = Code(program, ty, element_type, expr.lanes)
-            case Recurse(a, g):
-                time_delay, a = a.time_delay(expr.lanes)
-                assert time_delay == a.lanes
-                code_a = self.generate_kernel(a)
-                code_g = self.generate_signal(g)
-
-                assert code_a.element_type == code_g.element_type
-                assert code_a.ty == code_g.ty
-                element_type = code_a.element_type
-                ty = code_a.ty
-
-                vec_type = self.get_vec_type(element_type, expr.lanes)
-
-                suffix = self.get_sem_suffix(ty)
-                program = f"make_s_recurse{suffix}<{vec_type}>({code_a.text}, {code_g.text})"
-                code = Code(program, ty, element_type, a.lanes)
-            case Ith(signal2d, i):
-                # Ith extracts the ith row from a 2D signal
-                # Generate: make_ith_row<vec_type, n_rows, i>(signal2d_code)
-                element_type = expr.element_type
-                ty = expr.ty
-
-                # Generate code for the 2D signal (typically RVar2D -> Signal2D)
-                code_signal2d = self.generate_signal(signal2d)
-
-                # IthRow's vec_type must match the Signal2D's vec_type (code_signal2d.lanes),
-                # not necessarily Ith's target lanes. After PushDownConvertLanes, Ith.lanes
-                # may be narrowed while signal2d.lanes stays at max_lanes, so we generate
-                # IthRow using signal2d_lanes and wrap with a lane converter if needed.
-                signal2d_lanes = code_signal2d.lanes
-                ith_vec_type = self.get_vec_type(element_type, signal2d_lanes)
-
-                n_rows = self._signal2d_n_rows(signal2d)
-
-                # Generate make_ith_row call using signal2d_lanes to keep C++ types consistent
-                program = f"make_ith_row<{ith_vec_type}, {n_rows}, {i}>({code_signal2d.text})"
-                code = Code(program, ty, element_type, signal2d_lanes)
-
-                # Wrap with ConvertOne2N (downscale) or ConvertN2One (upscale) if needed
-                if signal2d_lanes != expr.lanes:
-                    code = self.enforce_lanes(code, expr.lanes)
-            case ConvertLanes(a):
-                code_a = self.generate_signal(a)
-                code = self.enforce_lanes(code_a, expr.lanes)
-            case VectorAt(a, i):
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-                if isinstance(a, ConvolveV):
-                    # FIR: out[i] = sum_j K[i][j] * g[j]
-                    # Decompose into SConvolve + SAdd — no shared state between rows.
-                    assert isinstance(a.a, KernelMatrix) and isinstance(a.b, SignalVector)
-                    terms = []
-                    for j in range(a.n):
-                        k = a.a.data[i][j]
-                        assert isinstance(k, TIKernel)
-                        if len(k.data) == 0:
-                            continue  # zero kernel: no contribution
-                        code_k = self.generate_kernel(k)
-                        code_s = self.generate_signal(a.b.data[j])
-                        terms.append(f"make_s_convolve<{vec_type}>({code_k.text}, {code_s.text})")
-                    if not terms:
-                        program = f"Signal1DConstant<{vec_type}>(0)"
-                    elif len(terms) == 1:
-                        program = terms[0]
-                    else:
-                        program = f"make_s_add<{vec_type}>({terms[0]}, {terms[1]})"
-                else:
-                    # IIR (RecurseV): generate the shared vector object, then extract component i
-                    code_vec = self.generate_signal_vector(a)
-                    n = a.n
-                    program = f"make_vector_at<{n}, {i}, {vec_type}>({code_vec.text})"
-                code = Code(program, expr.ty, expr.element_type, expr.lanes)
-            case _:
-                assert False, f"CodeGen: unhandled case for expr {expr} of type {type(expr)}"
-
-        # Cache and return at the end
-        if not self._is_trivial_expr(expr):
-            var = self.get_new_var()
-            self.prologue.append(f"auto {var} = {code.text};")
-            code = Code(var, code.ty, code.element_type, code.lanes, code.taps)
-
-            assert self.expr_cache is not None
-            secondary_code = Code(
-                f"make_Secondary<{self.get_vec_type(code.element_type, code.lanes)}>({var})",
-                code.ty,
-                code.element_type,
-                code.lanes,
-                code.taps,
-            )
-            self.expr_cache[expr] = secondary_code
-
-        return code
-
-    def generate_kernel(self, expr: KernelExpr) -> Code:
-        # Check cache first (using structural equality)
-        if self.expr_cache is not None and expr in self.expr_cache:
-            return self.expr_cache[expr]
-
-        assert expr.lanes is not None
-
-        # Generate code for each case
-        match expr:
-            case TIKernel(_):
-                vec_type = self.get_vec_type(expr.element_type, expr.lanes)
-
-                taps, indices, values = expr.to_sparse_repr()
-
-                if taps == 0:
-                    code = Code(
-                        f"ZeroKernel<{vec_type}>()",
-                        expr.ty,
-                        expr.element_type,
-                        expr.lanes,
-                        taps=0,
-                    )
-                else:
-                    index_args = ", ".join(map(str, indices))
-                    value_args = ", ".join(map(lambda v: f"{expr.element_type.val_to_str(v, expr.ty)}", values))
-
-                    index_var = self.get_new_var()
-                    value_var = self.get_new_var()
-
-                    self.prologue.append(
-                        f"constexpr static int {index_var}[{taps}] = {{{index_args}}};",
-                    )
-                    self.prologue.append(
-                        f"constexpr static {expr.element_type.to_str()} {value_var}[{taps}] = {{{value_args}}};",
-                    )
-
-                    code = Code(
-                        f"TimeInvariantKernel<{taps}, {vec_type}, {index_var}, {value_var}>()",
-                        expr.ty,
-                        expr.element_type,
-                        expr.lanes,
-                        taps=taps,
-                    )
-            case TVKernel(_):
-                taps, indices, signals = expr.to_sparse_repr()
-                signal_codes = [self.generate_signal(signal) for signal in signals]
-                element_type = signal_codes[0].element_type
-                ty = signal_codes[0].ty
-                vec_type = self.get_vec_type(element_type, expr.lanes)
-                taps = len(signal_codes)
-
-                arguments = ", ".join(c.text for c in signal_codes)
-
-                index_args = ", ".join(map(str, indices))
-                index_var = self.get_new_var()
-                self.prologue.append(
-                    f"constexpr static int {index_var}[{taps}] = {{{index_args}}};",
-                )
-
-                code = Code(
-                    f"make_time_varying_kernel<{taps}, {vec_type}, {index_var}>({arguments})",
-                    ty,
-                    element_type,
-                    expr.lanes,
-                    taps=taps,
-                )
-            case KConvertLanes(a):
-                code_a = self.generate_kernel(a)
-                code = self.enforce_lanes(code_a, expr.lanes)
-            case KAdd(_, _) | KSub(_, _) | KNeg(_) | KConvolve(_, _):
-                raise AssertionError("These apps should have been eliminated by constant folding")
-            case _:
-                assert False
-
-        # Cache and return at the end
-        if not self._is_trivial_expr(expr):
-            var = self.get_new_var()
-            self.prologue.append(f"auto {var} = {code.text};")
-            code = Code(var, code.ty, code.element_type, code.lanes, code.taps)
-
-            assert self.expr_cache is not None
-            secondary_code = Code(
-                f"make_Secondary<{self.get_vec_type(code.element_type, code.lanes)}>({var})",
-                code.ty,
-                code.element_type,
-                code.lanes,
-                code.taps,
-            )
-            self.expr_cache[expr] = secondary_code
-        return code
-
-    def generate_signal_vector(self, expr: SignalVectorExpr) -> Code:
-        """Generate code for a SignalVectorExpr.
-
-        Returns a Code whose C++ object has a run(vec_type* out) that fills
-        out[0..n-1].  The Code is cached in the prologue.
-        """
-        if self.expr_cache is not None and expr in self.expr_cache:
-            return self.expr_cache[expr]
-
-        assert expr.lanes is not None
-
-        match expr:
-            case SignalVector(_data):
-                # Individual signals: code is just comma-separated, not a single object.
-                # We don't have a C++ struct for this directly; it's consumed by RecurseV/ConvolveV.
-                raise NotImplementedError(
-                    "SignalVector has no standalone C++ object; it must appear as the input to RecurseV or ConvolveV"
-                )
-
-            case RecurseV(a, g):
-                assert isinstance(a, KernelMatrix), f"RecurseV kernel must be KernelMatrix, got {type(a)}"
-                assert isinstance(g, SignalVector), f"RecurseV input must be SignalVector, got {type(g)}"
-                n = a.n
-                assert n == 2, f"RecurseV currently only supports n=2, got n={n}"
-                lanes = expr.lanes
-                vec_type = self.get_vec_type(expr.element_type, lanes)
-
-                # Strip time delay from each kernel and assert delay == lanes
-                stripped: List[List[TIKernel]] = []
-                for i in range(n):
-                    row: List[TIKernel] = []
-                    for j in range(n):
-                        k = a.data[i][j]
-                        assert isinstance(k, TIKernel), f"RecurseV kernels must be TIKernel, got {type(k)}"
-                        if len(k.data) == 0:
-                            # Zero kernel – no feedback on this path
-                            row.append(TIKernel([], k.ty, k.element_type).with_lanes(lanes))  # type: ignore[arg-type]
-                        else:
-                            delay, stripped_k = k.time_delay(lanes)
-                            assert delay == lanes, (
-                                f"RecurseV kernel A[{i}][{j}] has time delay {delay}, expected {lanes}. "
-                                "Each kernel must have a causal delay equal to the number of lanes."
-                            )
-                            row.append(cast(TIKernel, stripped_k))
-                    stripped.append(row)
-
-                # Generate C++ code for each kernel
-                kernel_codes: List[List[Code]] = [
-                    [self.generate_kernel(stripped[i][j]) for j in range(n)] for i in range(n)
-                ]
-
-                # Generate C++ code for each input signal
-                signal_codes = [self.generate_signal(g.data[i]) for i in range(n)]
-
-                # Build factory call for n=2
-                k00, k01, k10, k11 = (
-                    kernel_codes[0][0].text,
-                    kernel_codes[0][1].text,
-                    kernel_codes[1][0].text,
-                    kernel_codes[1][1].text,
-                )
-                s0, s1 = signal_codes[0].text, signal_codes[1].text
-
-                program = f"make_s_recurse_v2<{vec_type}>({k00}, {k01}, {k10}, {k11}, {s0}, {s1})"
-                code = Code(program, expr.ty, expr.element_type, lanes)
-
-            case _:
-                assert False, f"Unsupported SignalVectorExpr: {type(expr)}"
-
-        # Cache the vector signal in the prologue
-        var = self.get_new_var()
-        self.prologue.append(f"auto {var} = {code.text};")
-        code = Code(var, code.ty, code.element_type, code.lanes)
-        if self.expr_cache is not None:
-            self.expr_cache[expr] = code
-        return code
-
-    def enforce_lanes(self, code: Code, lanes: int) -> Code:
-        """
-        Return the code adapted to produce a vector of maximum lanes possible.
-        This is a no-op if the code is already producing maximum lanes
-        """
-        if code.lanes == lanes:
-            return code
-
-        vec_type_in = self.get_vec_type(code.element_type, code.lanes)
-        vec_type_out = self.get_vec_type(code.element_type, lanes)
-
-        function_name = {
-            (True, True): "make_convert_n2one",
-            (True, False): "make_convert_one2n",
-            (False, True): "make_k_convert_n2one",
-            (False, False): "make_k_convert_one2n",
-        }[(code.taps is None, code.lanes < lanes)]
-
-        if code.lanes < lanes:
-            # upscale lanes
-            return Code(
-                f"{function_name}<{vec_type_in}, {vec_type_out}>({code.text})",
-                code.ty,
-                code.element_type,
-                lanes,
-                taps=code.taps,
-            )
-        else:  # code.lanes > lanes
-            # downscale lanes
-            return Code(
-                f"{function_name}<{vec_type_in}, {vec_type_out}>({code.text})",
-                code.ty,
-                code.element_type,
-                lanes,
-                taps=code.taps,
-            )

@@ -111,7 +111,7 @@ def main() -> None:
     lanes = 512
     program = ContinuedFractionBenchmark().original_expr()
     results = get_candidate_schedules(program, lanes)
-    codegen = CodeGen(True)
+    codegen = CodeGen()
     generate_and_run_benchmark(codegen, results[1:], True)
 
     for result in results:

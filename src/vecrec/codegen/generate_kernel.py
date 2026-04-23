@@ -455,6 +455,8 @@ class KernelExecutable:
                 raise RuntimeError(f"Kernel execution failed with code {result.returncode}: {result.stderr}")
 
             try:
+                print(result.stdout)
+                print(result.stderr)
                 metadata = json.loads(result.stdout.strip())
             except json.JSONDecodeError as exc:
                 raise RuntimeError(f"Failed to parse runner output as JSON: {result.stdout}") from exc
