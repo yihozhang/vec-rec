@@ -33,10 +33,6 @@ class SmithWatermanBenchmark(Benchmark):
         return "Smith-Waterman local alignment in TropMax (max-plus) semiring"
 
     @property
-    def max_bits(self) -> int:
-        return 256
-
-    @property
     def verify_n_rows_2d(self) -> int:
         return 8
 

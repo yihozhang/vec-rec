@@ -27,10 +27,10 @@ def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
 
                 # SaturatePreorder(DilateTVWithSingleOddOrder()),
                 # SaturatePreorder(ConstantFold),
-                SaturatePreorder(DilateLTVTrop(256)),
+                SaturatePreorder(DilateLTVTrop(max_bits)),
                 SaturatePreorder(ConstantFold),
                 
-                SaturatePreorder(DilateLTVArith(512)),
+                SaturatePreorder(DilateLTVArith(max_bits)),
                 SaturatePreorder(ConstantFold),
                 
                 Preorder(Try(Eliminate2DKernels())),

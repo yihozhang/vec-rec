@@ -578,6 +578,7 @@ class DilateLTVTrop(Transform):
                 et = kernel.element_type
                 results = []
                 for K in _ltv_target_K(self.max_bits, et):
+                    print(K)
 
                     a_sig: SignalExpr = data[1]
                     b_sig: SignalExpr = data[2]
