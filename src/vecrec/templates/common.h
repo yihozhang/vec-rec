@@ -152,6 +152,15 @@ inline std::string string_of(float_vec8 x) {
            std::to_string(x[5]) + ", " + std::to_string(x[6]) + ", " + std::to_string(x[7]) + ", " + std::to_string(x[8]);
 }
 
+inline std::string string_of(int64_vec4 x) {
+    return std::to_string(x[0]) + ", " + std::to_string(x[1]) + ", " + std::to_string(x[2]) + ", " + std::to_string(x[3]);
+}
+
+inline std::string string_of(int64_vec8 x) {
+    return std::to_string(x[0]) + ", " + std::to_string(x[1]) + ", " + std::to_string(x[2]) + ", " + std::to_string(x[3]) + ", " +
+           std::to_string(x[5]) + ", " + std::to_string(x[6]) + ", " + std::to_string(x[7]) + ", " + std::to_string(x[8]);
+}
+
 #define EXTRACT_SLICE_1(type)                               \
     inline type extract_slice(type a, type b, int offset) { \
         switch (offset) {                                   \
@@ -465,23 +474,23 @@ struct Signal1D {
 template <typename vec_type, int n_rows>
 struct RepeaterContext {
     using elt_type = typename ElementType<vec_type>::type;
-    constexpr static int lanes = vec_lanes_of(vec_type{});
     int width;
     elt_type *buffer;
     int current_row;
-    int current_col;
 
     RepeaterContext() = delete;
-    RepeaterContext(int row_size) : width(row_size), current_row(0), current_col(-lanes) {
+    RepeaterContext(int row_size, elt_type zero_value) : width(row_size), current_row(0) {
         buffer = new (std::align_val_t(32)) elt_type[n_rows * width];
-        memset(buffer, 0, sizeof(elt_type) * n_rows * width);
+        for (int i = 0; i < n_rows * width; i++) {
+            buffer[i] = zero_value;
+        }
     }
 
     RepeaterContext(const RepeaterContext &) = delete;
     RepeaterContext &operator=(const RepeaterContext &) = delete;
 
     RepeaterContext(RepeaterContext &&other) noexcept
-        : width(other.width), buffer(other.buffer), current_row(other.current_row), current_col(other.current_col) {
+        : width(other.width), buffer(other.buffer), current_row(other.current_row) {
         other.buffer = nullptr;
     }
 
@@ -490,7 +499,6 @@ struct RepeaterContext {
             delete[] buffer;
             width = other.width;
             current_row = other.current_row;
-            current_col = other.current_col;
             buffer = other.buffer;
             other.buffer = nullptr;
         }
@@ -501,58 +509,52 @@ struct RepeaterContext {
         delete[] buffer;
     }
 
-    // Get the value at the given row offset and current column
-    vec_type get(int row_offset) {
+    // Get the value at the given row offset and explicit column
+    vec_type get(int row_offset, int col) {
         int row_idx = (current_row - row_offset + n_rows) % n_rows;
         vec_type result;
-        memcpy(&result, &buffer[row_idx * width + current_col], sizeof(vec_type));
+        memcpy(&result, &buffer[row_idx * width + col], sizeof(vec_type));
         return result;
     }
 
-    // Store a value in the current row and column
-    void set(vec_type value) {
-        memcpy(&buffer[current_row * width + current_col], &value, sizeof(vec_type));
-    }
-
-    void advance_col() {
-        current_col += lanes;
-        if (current_col >= width) {
-            current_col = 0;
-        }
+    // Store a value in the current row at an explicit column
+    void set(vec_type value, int col) {
+        memcpy(&buffer[current_row * width + col], &value, sizeof(vec_type));
     }
 
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &_reg) {
-        advance_col();
+        // no-op: column tracking is now done per-call in Signal2D and Repeater
     }
 
-    // just to make codegen happy
     void reset_and_next_row() {
         current_row = (current_row + 1) % n_rows;
-        current_col = -lanes; // will be advanced to 0 at the start of the next row
     }
 };
 
 template <typename vec_type, int n_rows>
 struct Signal2D {
     using elt_type = typename ElementType<vec_type>::type;
+    constexpr static int lanes = vec_lanes_of(vec_type{});
 
     RepeaterContext<vec_type, n_rows + 1> *context;
+    int my_col;
 
     Signal2D() = delete;
-    Signal2D(RepeaterContext<vec_type, n_rows + 1> *ctx) : context(ctx) {
-    }
+    Signal2D(RepeaterContext<vec_type, n_rows + 1> *ctx) : context(ctx), my_col(-lanes) {}
 
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
-        // Read from previous rows at the current position
+        my_col += lanes;
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             asm volatile("" :::);
-            reg[base + i] = context->get(i + 1);
+            reg[base + i] = context->get(i + 1, my_col);
         }
     }
 
-    void reset_and_next_row() {}
+    void reset_and_next_row() {
+        my_col = -lanes;
+    }
 };
 
 // InputSignal2D: reads from a user-provided 2D array with causal (look-behind) semantics.
@@ -617,27 +619,23 @@ struct Repeater {
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
 
     RepeaterContext<vec_type, n_rows> *context;
+    int my_col;
 
     Repeater() = delete;
-    Repeater(RepeaterContext<vec_type, n_rows> *ctx) : context(ctx) {}
+    Repeater(RepeaterContext<vec_type, n_rows> *ctx) : context(ctx), my_col(-vec_lanes) {}
 
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int inner) {
-        // Compute the current row output using the inner signal
-        // (which may read from the buffered previous rows via Signal2D)
+        my_col += vec_lanes;
         vec_type curr_output = reg[inner];
-
-        // Store the current output in the buffer
-        context->set(curr_output);
-
-        // Return n_rows vectors: current row at out[0], previous rows at out[1..n-1]
-        // This makes Repeater stream as a 2D signal
+        context->set(curr_output, my_col);
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
-            reg[base + i] = context->get(i);
+            reg[base + i] = context->get(i, my_col);
         }
     }
 
     void reset_and_next_row() {
+        my_col = -vec_lanes;
     }
 };
 

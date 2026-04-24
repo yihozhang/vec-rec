@@ -36,9 +36,9 @@ class ElementType(Enum):
             if self == ElementType.Float:
                 return "-INFINITY" if val < 0 else "INFINITY"
             elif self == ElementType.I32:
-                return "INT32_MIN" if val < 0 else "INT32_MAX"
+                return "(INT32_MIN/8)" if val < 0 else "(INT32_MAX/8)"
             elif self == ElementType.I64:
-                return "INT64_MIN" if val < 0 else "INT64_MAX"
+                return "(INT64_MIN/8)" if val < 0 else "(INT64_MAX/8)"
 
         # Regular value handling
         match self:

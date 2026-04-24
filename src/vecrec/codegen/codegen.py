@@ -355,7 +355,8 @@ class CodeGen:
                 case Repeater(g, n_rows, prev_rows_var):
                     assert n_rows is not None
                     regs = self._new_registers(vec_type, n_slices)
-                    repeater_context = self._declare_repeater_context(vec_type, n_rows)
+                    zero_str = expr.element_type.val_to_str(ty.zero(), ty)
+                    repeater_context = self._declare_repeater_context(vec_type, zero_str, n_rows)
 
                     self.var2d_context[prev_rows_var.name] = (repeater_context, n_rows - 1)
                     g_regs = self.generate_signal(g)[0]
@@ -728,11 +729,11 @@ class CodeGen:
         self.prologue.append(f"constexpr static {ty} {var}[{len(value)}] = {{{value_args}}};")
         return var
 
-    def _declare_repeater_context(self, vec_type: str, n_rows: int) -> str:
+    def _declare_repeater_context(self, vec_type: str, zero_str: str, n_rows: int) -> str:
         # The input and output type of RepeaterContext are bogus, they are here to generate a parameter for `.run()` calls.
         return self._declare_node(
             f"RepeaterContext<{vec_type}, {n_rows}>*",
-            f"new RepeaterContext<{vec_type}, {n_rows}>(row_size)",
+            f"new RepeaterContext<{vec_type}, {n_rows}>(row_size, {zero_str})",
             [[]],
             vec_type,
             vec_type,

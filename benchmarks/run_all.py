@@ -35,6 +35,7 @@ from arith.box_filter_summed_area_table import BoxFilterSATBenchmark
 from arith.repeated_box_filter import RepeatedBoxFilterBenchmark
 from trop.second_order_ti_trop import SecondOrderTITropBenchmark
 from trop.second_order_tv_trop import SecondOrderTVTropBenchmark
+from trop.needleman_wunsch import NeedlemanWunschBenchmark
 from trop.distance_transform import DistanceTransformBenchmark
 
 
@@ -57,6 +58,7 @@ REGISTRY.extend(
         SecondOrderTITropBenchmark(),
         SecondOrderTVTropBenchmark(),
         DistanceTransformBenchmark(),
+        NeedlemanWunschBenchmark(),
     ]
 )
 
