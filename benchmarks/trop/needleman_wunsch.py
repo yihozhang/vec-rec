@@ -46,7 +46,7 @@ class NeedlemanWunschBenchmark(Benchmark):
             gap = Num(GAP)
             kernel: KernelExpr2D = TVKernel2D([
                 [neginf, gap],     # row 0: M(i, j-1) + g
-                [Num(GAP), s.at(0)],    # row 1: M(i-1, j) + g  and  M(i-1, j-1) + s(i,j)
+                [gap, s.at(0)],    # row 1: M(i-1, j) + g  and  M(i-1, j-1) + s(i,j)
             ])
             return Recurse2D(kernel, Impulse(0)).at(0)
 
