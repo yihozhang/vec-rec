@@ -236,6 +236,9 @@ def pp(expr: RecLang) -> str:
     Two subexpressions are considered "shared" when they are structurally equal
     (same AST shape), regardless of whether they are the same Python object.
     This catches duplicated subtrees built separately during transforms.
+
+    To keep output compact, a structural class is only kept as a `let` binding
+    if its bound name appears more than once in the rendered output.
     """
     # --- Pass 1: count references to each node by identity ---
     # This detects both DAG sharing (same object, multiple parents) and lets us
@@ -292,6 +295,45 @@ def pp(expr: RecLang) -> str:
             name_map[repr_id] = f"t{counter[0]}"
             counter[0] += 1
             binding_order.append(repr_id)
+
+    def _compute_name_uses(bound_repr_ids: set[int]) -> dict[int, int]:
+        """Count occurrences of bound names in the rendered output.
+
+        Traversal mirrors formatting: once a bound child is reached we count one
+        variable occurrence and do not descend into that child.
+        """
+        uses = {repr_id: 0 for repr_id in bound_repr_ids}
+
+        def _visit(e: RecLang, *, root: bool = False) -> None:
+            rid = repr_of[id(e)]
+            if rid in bound_repr_ids and not root:
+                uses[rid] += 1
+                return
+            for child in _all_children(e):
+                _visit(child)
+
+        _visit(expr, root=True)
+        for repr_id in bound_repr_ids:
+            _visit(id_to_node[repr_id], root=True)
+        return uses
+
+    # Prune bindings that are referenced only once in the rendered program.
+    # Recompute to a fixed point because removing one binding can change usage
+    # counts for others.
+    active_repr_ids = set(name_map)
+    while active_repr_ids:
+        uses = _compute_name_uses(active_repr_ids)
+        drop = {repr_id for repr_id in active_repr_ids if uses[repr_id] <= 1}
+        if not drop:
+            break
+        active_repr_ids -= drop
+
+    name_map = {
+        repr_id: name
+        for repr_id, name in name_map.items()
+        if repr_id in active_repr_ids
+    }
+    binding_order = [repr_id for repr_id in binding_order if repr_id in active_repr_ids]
 
     # bound: all node ids whose structural class has a let-binding name.
     # Used by _fmt_one to assign _PREC_ATOM to such children.
