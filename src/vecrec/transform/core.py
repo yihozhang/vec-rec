@@ -129,7 +129,6 @@ class Dilate(Transform):
         match expr:
             case RecurseV(KernelMatrix(a), g) if all(isinstance(k, TIKernel) for row in a for k in row):
                 result = self.op_mutual(a)  # type: ignore[arg-type]
-                print("result:", result)
                 if not result:
                     return []
                 f, i = result
@@ -325,8 +324,6 @@ class DilateTVWithSingleOddOrder(Transform):
                             ),
                         ]
                         expr = Recurse(KAdd.of(new_denom), Convolve(KAdd.of(new_numer), g))
-                        # print(pp(expr))
-                        print(pp(C))
                         return [expr]
                     elif len(inzs) == 0:
                         # TODO: dilate with stride greater than two
@@ -578,8 +575,6 @@ class DilateLTVTrop(Transform):
                 et = kernel.element_type
                 results = []
                 for K in _ltv_target_K(self.max_bits, et):
-                    print(K)
-
                     a_sig: SignalExpr = data[1]
                     b_sig: SignalExpr = data[2]
 
