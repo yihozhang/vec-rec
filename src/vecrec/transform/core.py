@@ -1,6 +1,6 @@
 from __future__ import annotations
 from functools import reduce
-from typing import List, Sequence, Tuple
+from typing import Generator, List, Sequence, Tuple
 import typing
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
@@ -486,13 +486,13 @@ def _build_ltv_tower(
     return d[K], d[K - 1], f[K]
 
 
-def _ltv_target_K(max_bits: int, et: ElementType) -> int:
+def _ltv_target_K(max_bits: int, et: ElementType) -> Generator[int, None, None]:
     """Return the largest power of 2 lanes that fit in max_bits for element type et."""
     max_lanes = max_bits // et.bit_width()
     K = 1
     while K * 2 <= max_lanes:
         K *= 2
-    return K
+        yield K
 
 
 @ArithTransform
@@ -526,19 +526,19 @@ class DilateLTVArith(Transform):
 
                 ty = kernel.ty
                 et = kernel.element_type
-                K = _ltv_target_K(self.max_bits, et)
-                if K < 2:
-                    return []
+                results = []
+                for K in _ltv_target_K(self.max_bits, et):
 
-                a_sig: SignalExpr = data[1]
-                b_sig: SignalExpr = data[2]
+                    a_sig: SignalExpr = data[1]
+                    b_sig: SignalExpr = data[2]
 
-                d_K, d_Km1, f_K = _build_ltv_tower(a_sig, b_sig, g, ty, et, K, tropical=False)
+                    d_K, d_Km1, f_K = _build_ltv_tower(a_sig, b_sig, g, ty, et, K, tropical=False)
 
-                zero = Num(ty.zero(), ty, et)
-                coeff_Kp1 = _ltv_mul(d_Km1, _ltv_delay(b_sig, K - 1, ty, et), ty, et)
-                stitching_data: List[SignalExpr] = [zero] * K + [d_K, coeff_Kp1]
-                return [Recurse(TVKernel(stitching_data, ty, et), f_K)]
+                    zero = Num(ty.zero(), ty, et)
+                    coeff_Kp1 = _ltv_mul(d_Km1, _ltv_delay(b_sig, K - 1, ty, et), ty, et)
+                    stitching_data: List[SignalExpr] = [zero] * K + [d_K, coeff_Kp1]
+                    results.append(Recurse(TVKernel(stitching_data, ty, et), f_K))
+                return results
 
             case _:
                 return []
@@ -576,19 +576,20 @@ class DilateLTVTrop(Transform):
 
                 ty = kernel.ty
                 et = kernel.element_type
-                K = _ltv_target_K(self.max_bits, et)
-                if K < 2:
-                    return []
+                results = []
+                for K in _ltv_target_K(self.max_bits, et):
 
-                a_sig: SignalExpr = data[1]
-                b_sig: SignalExpr = data[2]
+                    a_sig: SignalExpr = data[1]
+                    b_sig: SignalExpr = data[2]
 
-                d_K, d_Km1, f_K = _build_ltv_tower(a_sig, b_sig, g, ty, et, K, tropical=True)
+                    d_K, d_Km1, f_K = _build_ltv_tower(a_sig, b_sig, g, ty, et, K, tropical=True)
 
-                zero = Num(ty.zero(), ty, et)
-                coeff_Kp1 = _ltv_mul(d_Km1, _ltv_delay(b_sig, K - 1, ty, et), ty, et)
-                stitching_data: List[SignalExpr] = [zero] * K + [d_K, coeff_Kp1]
-                return [Recurse(TVKernel(stitching_data, ty, et), f_K)]
+                    zero = Num(ty.zero(), ty, et)
+                    coeff_Kp1 = _ltv_mul(d_Km1, _ltv_delay(b_sig, K - 1, ty, et), ty, et)
+                    stitching_data: List[SignalExpr] = [zero] * K + [d_K, coeff_Kp1]
+                    results.append(Recurse(TVKernel(stitching_data, ty, et), f_K))
+
+                return results
 
             case _:
                 return []

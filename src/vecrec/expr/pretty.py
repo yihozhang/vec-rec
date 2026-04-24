@@ -1,7 +1,7 @@
 """Pretty printer for the VecRec IR."""
 
 from __future__ import annotations
-from typing import Sequence
+from typing import Callable, Sequence
 
 from vecrec.expr.base import (
     RecLang,
@@ -93,13 +93,31 @@ def _fmt_kernel_row(row: list[float]) -> str:
     return ", ".join(_fmt_num(v) for v in row)
 
 
-def pps(exprs: Sequence[RecLang]) -> list[str]:
-    """Pretty-print a list of IR expressions."""
-    return [pp(expr) for expr in exprs]
+def _all_children(expr: RecLang) -> list[RecLang]:
+    """Return all sub-expressions, including those stored in list fields (e.g. TVKernel2D)."""
+    match expr:
+        case TVKernel2D():
+            return [v for row in expr.data for v in row]
+        case _:
+            return expr.children()  # type: ignore[return-value]
 
 
-def pp(expr: RecLang) -> str:
-    """Pretty-print an IR expression."""
+def _fmt_one(
+    expr: RecLang,
+    fmt: Callable[[RecLang], str],
+    bound: set[int],
+) -> str:
+    """Format one level of an expression.
+
+    `fmt` is called for each child; `bound` holds the ids of nodes that have
+    been assigned a let-binding name (so their effective precedence is _PREC_ATOM).
+    """
+    def cp(e: RecLang) -> int:
+        return _PREC_ATOM if id(e) in bound else _prec(e)
+
+    def w(e: RecLang, outer: int, *, right: bool = False) -> str:
+        return _wrap(fmt(e), cp(e), outer, right=right)
+
     match expr:
         # --- Leaves ---
         case Num(value=v):
@@ -125,7 +143,7 @@ def pp(expr: RecLang) -> str:
             return f"[{_fmt_kernel_row(expr.data)}]"
 
         case TVKernel():
-            vals = ", ".join(pp(v) for v in expr.data)
+            vals = ", ".join(fmt(v) for v in expr.data)
             return f"[{vals}]"
 
         case TIKernel2D():
@@ -133,81 +151,163 @@ def pp(expr: RecLang) -> str:
             return f"[{rows}]"
 
         case TVKernel2D():
-            rows = "; ".join(", ".join(pp(v) for v in row) for row in expr.data)
+            rows = "; ".join(", ".join(fmt(v) for v in row) for row in expr.data)
             return f"[{rows}]"
 
         # --- Signal binary ops ---
         case SAdd(a, b):
             p = _PREC_ADD
-            return f"{_wrap(pp(a), _prec(a), p)} + {_wrap(pp(b), _prec(b), p)}"
+            return f"{w(a, p)} + {w(b, p)}"
 
         case SSub(a, b):
             p = _PREC_ADD
-            return (
-                f"{_wrap(pp(a), _prec(a), p)} - {_wrap(pp(b), _prec(b), p, right=True)}"
-            )
+            return f"{w(a, p)} - {w(b, p, right=True)}"
 
         case PointwiseMul(a, b):
             p = _PREC_MUL
-            return f"{_wrap(pp(a), _prec(a), p)} · {_wrap(pp(b), _prec(b), p)}"
+            return f"{w(a, p)} · {w(b, p)}"
 
         case PointwiseDiv(a, b):
             p = _PREC_MUL
-            return (
-                f"{_wrap(pp(a), _prec(a), p)} / {_wrap(pp(b), _prec(b), p, right=True)}"
-            )
+            return f"{w(a, p)} / {w(b, p, right=True)}"
 
         case SNeg(a):
-            return f"-{_wrap(pp(a), _prec(a), _PREC_UNARY)}"
+            return f"-{w(a, _PREC_UNARY)}"
 
         # --- Convolutions ---
         case Convolve(a, b):
             p = _PREC_MUL
-            return f"{_wrap(pp(a), _prec(a), p)} × {_wrap(pp(b), _prec(b), p)}"
+            return f"{w(a, p)} × {w(b, p)}"
 
         case Convolve2D(a, b):
             p = _PREC_MUL
-            return f"{_wrap(pp(a), _prec(a), p)} × {_wrap(pp(b), _prec(b), p)}"
+            return f"{w(a, p)} × {w(b, p)}"
 
         # --- Recurrences ---
         case Recurse(a, g):
-            return f"rec({pp(a)}, {pp(g)})"
+            return f"rec({fmt(a)}, {fmt(g)})"
 
         case Recurse2D(a, g):
-            return f"rec\u2082({pp(a)}, {pp(g)})"
+            return f"rec₂({fmt(a)}, {fmt(g)})"
 
         # --- Kernel ops ---
         case KAdd(a, b):
             p = _PREC_ADD
-            return f"{_wrap(pp(a), _prec(a), p)} + {_wrap(pp(b), _prec(b), p)}"
+            return f"{w(a, p)} + {w(b, p)}"
 
         case KSub(a, b):
             p = _PREC_ADD
-            return (
-                f"{_wrap(pp(a), _prec(a), p)} - {_wrap(pp(b), _prec(b), p, right=True)}"
-            )
+            return f"{w(a, p)} - {w(b, p, right=True)}"
 
         case KConvolve(a, b):
             p = _PREC_MUL
-            return f"{_wrap(pp(a), _prec(a), p)} × {_wrap(pp(b), _prec(b), p)}"
+            return f"{w(a, p)} × {w(b, p)}"
 
         case KNeg(a):
-            return f"-{_wrap(pp(a), _prec(a), _PREC_UNARY)}"
+            return f"-{w(a, _PREC_UNARY)}"
 
         # --- Indexing ---
         case Ith(a, i):
-            return f"{_wrap(pp(a), _prec(a), _PREC_INDEX)}[{i}]"
+            return f"{w(a, _PREC_INDEX)}[{i}]"
 
         # --- Repeater (μ-binder) ---
         case Repeater():
             name = expr.prev_rows_var.name.lstrip("$")
-            return f"\u03bc{name}. {pp(expr.a)}"
+            return f"μ{name}. {fmt(expr.a)}"
 
         # --- Lane conversions (transparent) ---
         case ConvertLanes(a):
-            return pp(a)
+            return fmt(a)
 
         case KConvertLanes(a):
-            return pp(a)
+            return fmt(a)
 
     return repr(expr)
+
+
+def pps(exprs: Sequence[RecLang]) -> list[str]:
+    """Pretty-print a list of IR expressions."""
+    return [pp(expr) for expr in exprs]
+
+
+def pp(expr: RecLang) -> str:
+    """Pretty-print an IR expression, using let-bindings for shared subexpressions.
+
+    Two subexpressions are considered "shared" when they are structurally equal
+    (same AST shape), regardless of whether they are the same Python object.
+    This catches duplicated subtrees built separately during transforms.
+    """
+    # --- Pass 1: count references to each node by identity ---
+    # This detects both DAG sharing (same object, multiple parents) and lets us
+    # know the total weight of each structural equivalence class later.
+    id_to_node: dict[int, RecLang] = {}
+    ref_count: dict[int, int] = {}
+
+    def _count(e: RecLang) -> None:
+        eid = id(e)
+        ref_count[eid] = ref_count.get(eid, 0) + 1
+        if ref_count[eid] == 1:
+            id_to_node[eid] = e
+            for c in _all_children(e):
+                _count(c)
+
+    _count(expr)
+
+    # --- Pass 2: group nodes by structural equality (post-order) ---
+    # repr_of maps every node id to the id of the first structurally-equal node
+    # encountered (its "representative").  struct_groups maps each representative
+    # to the list of all ids in its class.  Insertion order of struct_groups is
+    # post-order, so children always appear before their parents.
+    repr_of: dict[int, int] = {}
+    struct_groups: dict[int, list[int]] = {}
+    seen: set[int] = set()
+
+    def _group(e: RecLang) -> None:
+        eid = id(e)
+        if eid in seen:
+            return
+        seen.add(eid)
+        for c in _all_children(e):
+            _group(c)
+        for repr_id in struct_groups:
+            if id_to_node[repr_id] == e:
+                struct_groups[repr_id].append(eid)
+                repr_of[eid] = repr_id
+                return
+        struct_groups[eid] = [eid]
+        repr_of[eid] = eid
+
+    _group(expr)
+
+    # --- Assign let-binding names to shared non-trivial structural classes ---
+    # A class is "shared" when the sum of its members' ref-counts exceeds 1,
+    # covering both duplicate objects (len > 1) and DAG-shared single objects.
+    name_map: dict[int, str] = {}   # repr_id -> name
+    binding_order: list[int] = []   # repr_ids in definition (post-)order
+    counter = [0]
+
+    for repr_id, members in struct_groups.items():
+        total_refs = sum(ref_count[eid] for eid in members)
+        if total_refs > 1 and not id_to_node[repr_id].is_leaf():
+            name_map[repr_id] = f"t{counter[0]}"
+            counter[0] += 1
+            binding_order.append(repr_id)
+
+    # bound: all node ids whose structural class has a let-binding name.
+    # Used by _fmt_one to assign _PREC_ATOM to such children.
+    bound = {eid for repr_id in name_map for eid in struct_groups[repr_id]}
+
+    def fmt(e: RecLang) -> str:
+        rid = repr_of[id(e)]
+        if rid in name_map:
+            return name_map[rid]
+        return _fmt_one(e, fmt, bound)
+
+    if not name_map:
+        return _fmt_one(expr, fmt, bound)
+
+    lines = [
+        f"let {name_map[repr_id]} = {_fmt_one(id_to_node[repr_id], fmt, bound)}"
+        for repr_id in binding_order
+    ]
+    return "\n".join(lines) + "\nin " + _fmt_one(expr, fmt, bound)
