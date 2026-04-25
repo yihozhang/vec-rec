@@ -39,6 +39,7 @@ def generate_benchmark(
     warmup_iterations: int = 10,
     benchmark_iterations: int = 100,
     row_size: int = 1024,
+    ele_per_iter_list: Optional[List[int]] = None,
 ) -> None:
     """
     Generate a C++ benchmarking program for the given kernels.
@@ -67,6 +68,10 @@ def generate_benchmark(
         all_vars2d.update(vars2d_dict)
 
     # Generate the benchmark program
+    if ele_per_iter_list is None:
+        assert all(expr.lanes is not None for expr in exprs), "If ele_per_iter_list is not provided, all expressions must have a defined lane count"
+        ele_per_iter_list = [max(16, expr.lanes) for expr in exprs] # type: ignore
+
     benchmark_code = _generate_benchmark_code(
         all_vars,
         all_vars2d,
@@ -79,6 +84,7 @@ def generate_benchmark(
         warmup_iterations,
         benchmark_iterations,
         row_size,
+        ele_per_iter_list,
     )
 
     with open(output_path, "w") as f:
@@ -96,7 +102,8 @@ def _generate_benchmark_code(
     input_size: int,
     warmup_iterations: int,
     benchmark_iterations: int,
-    row_size: int = 1024,
+    row_size: int,
+    ele_per_iter_list: List[int],
 ) -> str:
     """Generate the complete C++ benchmark code."""
 
@@ -137,11 +144,14 @@ def _generate_benchmark_code(
     # Determine which distributions are needed
     all_elt_types = list(all_vars.values()) + list(all_vars2d.values())
     needs_float = any(elt_type == ElementType.Float for elt_type in all_elt_types)
+    needs_int8 = any(elt_type == ElementType.I8 for elt_type in all_elt_types)
     needs_int32 = any(elt_type == ElementType.I32 for elt_type in all_elt_types)
     needs_int64 = any(elt_type == ElementType.I64 for elt_type in all_elt_types)
 
     if needs_float:
         benchmark_text += "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
+    if needs_int8:
+        benchmark_text += "    std::uniform_int_distribution<int32_t> int8_dis(-1, 1);\n"
     if needs_int32:
         benchmark_text += "    std::uniform_int_distribution<int32_t> int32_dis(-1000, 1000);\n"
     if needs_int64:
@@ -150,16 +160,16 @@ def _generate_benchmark_code(
 
     for var, elt_type in sorted(all_vars.items()) + sorted(all_vars2d.items()):
         cpp_type = elt_type.to_str()
-        if elt_type == ElementType.Float:
-            dist = "float_dis"
-        elif elt_type == ElementType.I32:
-            dist = "int32_dis"
-        else:  # I64 or U64
-            dist = "int64_dis"
-
         benchmark_text += f"    std::vector<{cpp_type}> {var}(N);\n"
         benchmark_text += "    for (int i = 0; i < N; i++) {\n"
-        benchmark_text += f"        {var}[i] = {dist}(gen);\n"
+        if elt_type == ElementType.Float:
+            benchmark_text += f"        {var}[i] = float_dis(gen);\n"
+        elif elt_type == ElementType.I8:
+            benchmark_text += f"        {var}[i] = static_cast<int8_t>(int8_dis(gen));\n"
+        elif elt_type == ElementType.I32:
+            benchmark_text += f"        {var}[i] = int32_dis(gen);\n"
+        else:  # I64
+            benchmark_text += f"        {var}[i] = int64_dis(gen);\n"
         benchmark_text += "    }\n\n"
 
     # Allocate 2D input arrays. The benchmark row width matches RepeaterContext::width (1024).
@@ -181,6 +191,7 @@ def _generate_benchmark_code(
     benchmark_text += '    std::cout << "{\\n";'
 
     for i, name in enumerate(kernel_names):
+        epi = ele_per_iter_list[i]
         benchmark_text += f"    // Benchmark {name}\n"
         benchmark_text += "    {\n"
 
@@ -188,10 +199,8 @@ def _generate_benchmark_code(
         benchmark_text += "        {\n"
         benchmark_text += f"            auto kernel = {name}({var_args});\n"
         benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
-        # benchmark_text += f"                {name}_vector_type out;\n"
-        benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type; {name}_vector_type out[16/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
+        benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type; {name}_vector_type out[{epi}/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
         benchmark_text += "                kernel.run(out);\n"
-        # benchmark_text += f"                kernel.run(({name}_vector_type*)out);\n"
         benchmark_text += "            }\n"
         benchmark_text += "        }\n\n"
 
@@ -201,13 +210,10 @@ def _generate_benchmark_code(
         benchmark_text += f"            auto kernel = {name}({var_args});\n"
         benchmark_text += "            int pos = 0;\n"
         benchmark_text += "            while (pos < N) {\n"
-        # TODO: may need to be other length for short types like boolean and uint8.
-        benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type;\n{name}_vector_type out[16/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
+        benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type;\n{name}_vector_type out[{epi}/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
         benchmark_text += "                kernel.run(out);\n"
-        # benchmark_text += f"                kernel.run(({name}_vector_type*)&output_{name}[pos]);\n"
         benchmark_text += f"                memcpy(&output_{name}[pos], out, sizeof(out));\n"
-        # benchmark_text += "                pos += vec_lanes_of(out);\n"
-        benchmark_text += f"                pos += 16;\n"
+        benchmark_text += f"                pos += {epi};\n"
 
         benchmark_text += "                if (pos % row_size == 0) {\n"
         benchmark_text += "                    kernel.reset_and_next_row();\n"
@@ -257,6 +263,16 @@ int arrays_equal(const std::vector<float>& a, const std::vector<float>& b, float
     if (a.size() != b.size()) return -1;
     for (size_t i = 0; i < a.size(); i++) {{
         if (std::abs(a[i] - b[i]) > tolerance) {{
+            return i;
+        }}
+    }}
+    return a.size();
+}}
+
+int arrays_equal(const std::vector<int8_t>& a, const std::vector<int8_t>& b) {{
+    if (a.size() != b.size()) return -1;
+    for (size_t i = 0; i < a.size(); i++) {{
+        if (a[i] != b[i]) {{
             return i;
         }}
     }}
@@ -325,6 +341,8 @@ def _numpy_dtype_for_element_type(element_type: ElementType) -> np.dtype:
             return np.dtype(np.int32)
         case ElementType.I64:
             return np.dtype(np.int64)
+        case ElementType.I8:
+            return np.dtype(np.int8)
 
 
 class KernelExecutable:
@@ -480,6 +498,7 @@ def _generate_kernel_runner_code(
     output_type: ElementType,
     kernel_name: str,
     header_path: str,
+    ele_per_iter: int,
 ) -> str:
     var_items = sorted(all_vars.items())
     var2d_items = sorted(all_vars2d.items())
@@ -573,14 +592,12 @@ def _generate_kernel_runner_code(
     text += "    auto start = std::chrono::high_resolution_clock::now();\n"
     text += "    int pos = 0;\n"
     text += "    while (pos < N) {\n"
-    text += f"        using elt_type = typename ElementType<{kernel_name}_vector_type>::type; {kernel_name}_vector_type out[16/(sizeof({kernel_name}_vector_type)/sizeof(elt_type))];\n"
-    # text += "        kernel.run(&out);\n"
+    text += f"        using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
+    text += f"        {kernel_name}_vector_type out[{ele_per_iter}/(sizeof({kernel_name}_vector_type)/sizeof(elt_type))];\n"
     text += "        kernel.run(out);\n"
-    # text += "        const int lanes = vec_lanes_of(out);\n"
-    text += "        const int lanes = 16;\n"
-    text += "        const int copy_count = (N - pos) < lanes ? (N - pos) : lanes;\n"
+    text += f"        const int copy_count = (N - pos) < {ele_per_iter} ? (N - pos) : {ele_per_iter};\n"
     text += f"        std::memcpy(output.data() + pos, &out, sizeof({output_cpp_type}) * copy_count);\n"
-    text += "        pos += lanes;\n"
+    text += f"        pos += {ele_per_iter};\n"
     text += "        if (pos % row_size == 0) {\n"
     text += "            kernel.reset_and_next_row();\n"
     text += "        }\n"
@@ -646,6 +663,7 @@ def generate_kernel_executable(
         output_type=expr.element_type,
         kernel_name=kernel_name,
         header_path=header_path,
+        ele_per_iter=code.element_per_iter,
     )
     with open(runner_path, "w") as f:
         f.write(runner_code)
@@ -746,6 +764,7 @@ def generate_and_run_benchmark(
         warmup_iterations=warmup_iterations,
         benchmark_iterations=benchmark_iterations,
         row_size=row_size,
+        ele_per_iter_list=[code.element_per_iter for code in codes],
     )
 
     # Compile benchmark

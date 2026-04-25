@@ -34,7 +34,11 @@ from arith.continued_fraction import ContinuedFractionBenchmark
 from arith.box_filter_summed_area_table import BoxFilterSATBenchmark
 from arith.repeated_box_filter import RepeatedBoxFilterBenchmark
 from trop.second_order_ti_trop import SecondOrderTITropBenchmark
-from trop.second_order_tv_trop import SecondOrderTVTropBenchmark
+from trop.second_order_tv_trop import (
+    SecondOrderTVTropI8Benchmark,
+    SecondOrderTVTropI32Benchmark,
+    SecondOrderTVTropI64Benchmark,
+)
 from trop.needleman_wunsch import NeedlemanWunschBenchmark
 from trop.distance_transform import DistanceTransformBenchmark
 from trop.affine_gap import AffineGapBenchmark
@@ -57,7 +61,9 @@ REGISTRY.extend(
         *[BoxFilterSATBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
         *[RepeatedBoxFilterBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
         SecondOrderTITropBenchmark(),
-        SecondOrderTVTropBenchmark(),
+        SecondOrderTVTropI8Benchmark(),
+        SecondOrderTVTropI32Benchmark(),
+        SecondOrderTVTropI64Benchmark(),
         DistanceTransformBenchmark(),
         NeedlemanWunschBenchmark(),
         AffineGapBenchmark(),

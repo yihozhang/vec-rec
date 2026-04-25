@@ -26,6 +26,14 @@ typedef int64_t int64_vec2 __attribute__((ext_vector_type(2)));
 typedef int64_t int64_vec4 __attribute__((ext_vector_type(4)));
 typedef int64_t int64_vec8 __attribute__((ext_vector_type(8)));
 
+typedef int8_t int8_vec1;
+typedef int8_t int8_vec2  __attribute__((ext_vector_type(2)));
+typedef int8_t int8_vec4  __attribute__((ext_vector_type(4)));
+typedef int8_t int8_vec8  __attribute__((ext_vector_type(8)));
+typedef int8_t int8_vec16 __attribute__((ext_vector_type(16)));
+typedef int8_t int8_vec32 __attribute__((ext_vector_type(32)));
+typedef int8_t int8_vec64 __attribute__((ext_vector_type(64)));
+
 constexpr int vec_lanes_of(float) { return 1; }
 constexpr int vec_lanes_of(float_vec2) { return 2; }
 constexpr int vec_lanes_of(float_vec4) { return 4; }
@@ -42,6 +50,14 @@ constexpr int vec_lanes_of(int64_t) { return 1; }
 constexpr int vec_lanes_of(int64_vec2) { return 2; }
 constexpr int vec_lanes_of(int64_vec4) { return 4; }
 constexpr int vec_lanes_of(int64_vec8) { return 8; }
+
+constexpr int vec_lanes_of(int8_t)     { return 1; }
+constexpr int vec_lanes_of(int8_vec2)  { return 2; }
+constexpr int vec_lanes_of(int8_vec4)  { return 4; }
+constexpr int vec_lanes_of(int8_vec8)  { return 8; }
+constexpr int vec_lanes_of(int8_vec16) { return 16; }
+constexpr int vec_lanes_of(int8_vec32) { return 32; }
+constexpr int vec_lanes_of(int8_vec64) { return 64; }
 
 #include <cmath>
 template <typename Vec>
@@ -141,6 +157,35 @@ struct ElementType<int64_vec4> {
 template <>
 struct ElementType<int64_vec8> {
     using type = int64_t;
+};
+
+template <>
+struct ElementType<int8_t> {
+    using type = int8_t;
+};
+template <>
+struct ElementType<int8_vec2> {
+    using type = int8_t;
+};
+template <>
+struct ElementType<int8_vec4> {
+    using type = int8_t;
+};
+template <>
+struct ElementType<int8_vec8> {
+    using type = int8_t;
+};
+template <>
+struct ElementType<int8_vec16> {
+    using type = int8_t;
+};
+template <>
+struct ElementType<int8_vec32> {
+    using type = int8_t;
+};
+template <>
+struct ElementType<int8_vec64> {
+    using type = int8_t;
 };
 
 inline std::string string_of(float_vec4 x) {
@@ -288,6 +333,131 @@ EXTRACT_SLICE_2(int64_vec2)
 EXTRACT_SLICE_4(int64_vec4)
 EXTRACT_SLICE_8(int64_vec8)
 
+// int8 extract_slice instantiations reuse existing macros for sizes ≤ 16
+EXTRACT_SLICE_1(int8_vec1)
+EXTRACT_SLICE_2(int8_vec2)
+EXTRACT_SLICE_4(int8_vec4)
+EXTRACT_SLICE_8(int8_vec8)
+EXTRACT_SLICE_16(int8_vec16)
+
+// EXTRACT_SLICE_32 and EXTRACT_SLICE_64 for int8_vec32 / int8_vec64
+#define EXTRACT_SLICE_32(type_vec32)                                                                                                              \
+    inline type_vec32 extract_slice(type_vec32 a, type_vec32 b, int offset) {                                                                     \
+        switch (offset) {                                                                                                                         \
+        case 0: return a;                                                                                                                         \
+        case 1:  return __builtin_shufflevector(a, b,  1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32); \
+        case 2:  return __builtin_shufflevector(a, b,  2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33); \
+        case 3:  return __builtin_shufflevector(a, b,  3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34); \
+        case 4:  return __builtin_shufflevector(a, b,  4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35); \
+        case 5:  return __builtin_shufflevector(a, b,  5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36); \
+        case 6:  return __builtin_shufflevector(a, b,  6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37); \
+        case 7:  return __builtin_shufflevector(a, b,  7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38); \
+        case 8:  return __builtin_shufflevector(a, b,  8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39); \
+        case 9:  return __builtin_shufflevector(a, b,  9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40); \
+        case 10: return __builtin_shufflevector(a, b, 10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41); \
+        case 11: return __builtin_shufflevector(a, b, 11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42); \
+        case 12: return __builtin_shufflevector(a, b, 12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43); \
+        case 13: return __builtin_shufflevector(a, b, 13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44); \
+        case 14: return __builtin_shufflevector(a, b, 14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45); \
+        case 15: return __builtin_shufflevector(a, b, 15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46); \
+        case 16: return __builtin_shufflevector(a, b, 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47); \
+        case 17: return __builtin_shufflevector(a, b, 17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48); \
+        case 18: return __builtin_shufflevector(a, b, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49); \
+        case 19: return __builtin_shufflevector(a, b, 19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50); \
+        case 20: return __builtin_shufflevector(a, b, 20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51); \
+        case 21: return __builtin_shufflevector(a, b, 21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52); \
+        case 22: return __builtin_shufflevector(a, b, 22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53); \
+        case 23: return __builtin_shufflevector(a, b, 23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54); \
+        case 24: return __builtin_shufflevector(a, b, 24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55); \
+        case 25: return __builtin_shufflevector(a, b, 25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56); \
+        case 26: return __builtin_shufflevector(a, b, 26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57); \
+        case 27: return __builtin_shufflevector(a, b, 27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58); \
+        case 28: return __builtin_shufflevector(a, b, 28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59); \
+        case 29: return __builtin_shufflevector(a, b, 29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60); \
+        case 30: return __builtin_shufflevector(a, b, 30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61); \
+        case 31: return __builtin_shufflevector(a, b, 31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62); \
+        case 32: return b;                                                                                                                        \
+        };                                                                                                                                        \
+        assert(false);                                                                                                                            \
+        return type_vec32{};                                                                                                                      \
+    }
+
+#define EXTRACT_SLICE_64(type_vec64)                                                                                                                                                                                                  \
+    inline type_vec64 extract_slice(type_vec64 a, type_vec64 b, int offset) {                                                                                                                                                         \
+        switch (offset) {                                                                                                                                                                                                             \
+        case 0: return a;                                                                                                                                                                                                             \
+        case 1:  return __builtin_shufflevector(a, b,  1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64); \
+        case 2:  return __builtin_shufflevector(a, b,  2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65); \
+        case 3:  return __builtin_shufflevector(a, b,  3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66); \
+        case 4:  return __builtin_shufflevector(a, b,  4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67); \
+        case 5:  return __builtin_shufflevector(a, b,  5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68); \
+        case 6:  return __builtin_shufflevector(a, b,  6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69); \
+        case 7:  return __builtin_shufflevector(a, b,  7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70); \
+        case 8:  return __builtin_shufflevector(a, b,  8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71); \
+        case 9:  return __builtin_shufflevector(a, b,  9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72); \
+        case 10: return __builtin_shufflevector(a, b, 10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73); \
+        case 11: return __builtin_shufflevector(a, b, 11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74); \
+        case 12: return __builtin_shufflevector(a, b, 12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75); \
+        case 13: return __builtin_shufflevector(a, b, 13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76); \
+        case 14: return __builtin_shufflevector(a, b, 14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77); \
+        case 15: return __builtin_shufflevector(a, b, 15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78); \
+        case 16: return __builtin_shufflevector(a, b, 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79); \
+        case 17: return __builtin_shufflevector(a, b, 17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80); \
+        case 18: return __builtin_shufflevector(a, b, 18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81); \
+        case 19: return __builtin_shufflevector(a, b, 19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82); \
+        case 20: return __builtin_shufflevector(a, b, 20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83); \
+        case 21: return __builtin_shufflevector(a, b, 21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84); \
+        case 22: return __builtin_shufflevector(a, b, 22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85); \
+        case 23: return __builtin_shufflevector(a, b, 23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86); \
+        case 24: return __builtin_shufflevector(a, b, 24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87); \
+        case 25: return __builtin_shufflevector(a, b, 25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88); \
+        case 26: return __builtin_shufflevector(a, b, 26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89); \
+        case 27: return __builtin_shufflevector(a, b, 27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90); \
+        case 28: return __builtin_shufflevector(a, b, 28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91); \
+        case 29: return __builtin_shufflevector(a, b, 29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92); \
+        case 30: return __builtin_shufflevector(a, b, 30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93); \
+        case 31: return __builtin_shufflevector(a, b, 31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94); \
+        case 32: return __builtin_shufflevector(a, b, 32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95); \
+        case 33: return __builtin_shufflevector(a, b, 33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96); \
+        case 34: return __builtin_shufflevector(a, b, 34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97); \
+        case 35: return __builtin_shufflevector(a, b, 35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98); \
+        case 36: return __builtin_shufflevector(a, b, 36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99); \
+        case 37: return __builtin_shufflevector(a, b, 37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100); \
+        case 38: return __builtin_shufflevector(a, b, 38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101); \
+        case 39: return __builtin_shufflevector(a, b, 39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102); \
+        case 40: return __builtin_shufflevector(a, b, 40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103); \
+        case 41: return __builtin_shufflevector(a, b, 41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104); \
+        case 42: return __builtin_shufflevector(a, b, 42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105); \
+        case 43: return __builtin_shufflevector(a, b, 43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106); \
+        case 44: return __builtin_shufflevector(a, b, 44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107); \
+        case 45: return __builtin_shufflevector(a, b, 45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108); \
+        case 46: return __builtin_shufflevector(a, b, 46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109); \
+        case 47: return __builtin_shufflevector(a, b, 47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110); \
+        case 48: return __builtin_shufflevector(a, b, 48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111); \
+        case 49: return __builtin_shufflevector(a, b, 49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112); \
+        case 50: return __builtin_shufflevector(a, b, 50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113); \
+        case 51: return __builtin_shufflevector(a, b, 51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114); \
+        case 52: return __builtin_shufflevector(a, b, 52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115); \
+        case 53: return __builtin_shufflevector(a, b, 53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116); \
+        case 54: return __builtin_shufflevector(a, b, 54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117); \
+        case 55: return __builtin_shufflevector(a, b, 55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118); \
+        case 56: return __builtin_shufflevector(a, b, 56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119); \
+        case 57: return __builtin_shufflevector(a, b, 57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120); \
+        case 58: return __builtin_shufflevector(a, b, 58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121); \
+        case 59: return __builtin_shufflevector(a, b, 59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122); \
+        case 60: return __builtin_shufflevector(a, b, 60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123); \
+        case 61: return __builtin_shufflevector(a, b, 61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124); \
+        case 62: return __builtin_shufflevector(a, b, 62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125); \
+        case 63: return __builtin_shufflevector(a, b, 63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126); \
+        case 64: return b;                                                                                                                                                                                                            \
+        };                                                                                                                                                                                                                            \
+        assert(false);                                                                                                                                                                                                                \
+        return type_vec64{};                                                                                                                                                                                                          \
+    }
+
+EXTRACT_SLICE_32(int8_vec32)
+EXTRACT_SLICE_64(int8_vec64)
+
 // from https://stackoverflow.com/questions/37602057/why-isnt-a-for-loop-a-compile-time-expression
 template <std::size_t N>
 struct num {
@@ -350,6 +520,33 @@ EXTRACT_SUB_VECTOR8(int32_vec8)
 EXTRACT_SUB_VECTOR1(int64_t)
 EXTRACT_SUB_VECTOR2(int64_vec2)
 EXTRACT_SUB_VECTOR4(int64_vec4)
+
+#define EXTRACT_SUB_VECTOR16(type_vec16)                                                                                                                              \
+    template <typename vec_type_in, int n>                                                                                                                            \
+    struct ExtractSubVector<vec_type_in, type_vec16, n> {                                                                                                             \
+        static type_vec16 extract_sub_vector(vec_type_in a) {                                                                                                         \
+            return __builtin_shufflevector(a, a, 16*n, 16*n+1, 16*n+2, 16*n+3, 16*n+4, 16*n+5, 16*n+6, 16*n+7,                                                      \
+                                                 16*n+8, 16*n+9, 16*n+10, 16*n+11, 16*n+12, 16*n+13, 16*n+14, 16*n+15);                                              \
+        }                                                                                                                                                             \
+    };
+
+#define EXTRACT_SUB_VECTOR32(type_vec32)                                                                                                                              \
+    template <typename vec_type_in, int n>                                                                                                                            \
+    struct ExtractSubVector<vec_type_in, type_vec32, n> {                                                                                                             \
+        static type_vec32 extract_sub_vector(vec_type_in a) {                                                                                                         \
+            return __builtin_shufflevector(a, a, 32*n,    32*n+1,  32*n+2,  32*n+3,  32*n+4,  32*n+5,  32*n+6,  32*n+7,                                              \
+                                                 32*n+8,  32*n+9,  32*n+10, 32*n+11, 32*n+12, 32*n+13, 32*n+14, 32*n+15,                                             \
+                                                 32*n+16, 32*n+17, 32*n+18, 32*n+19, 32*n+20, 32*n+21, 32*n+22, 32*n+23,                                             \
+                                                 32*n+24, 32*n+25, 32*n+26, 32*n+27, 32*n+28, 32*n+29, 32*n+30, 32*n+31);                                            \
+        }                                                                                                                                                             \
+    };
+
+EXTRACT_SUB_VECTOR1(int8_t)
+EXTRACT_SUB_VECTOR2(int8_vec2)
+EXTRACT_SUB_VECTOR4(int8_vec4)
+EXTRACT_SUB_VECTOR8(int8_vec8)
+EXTRACT_SUB_VECTOR16(int8_vec16)
+EXTRACT_SUB_VECTOR32(int8_vec32)
 
 template <typename vec_type, int N>
 struct Reg {
@@ -692,6 +889,9 @@ SConvolveOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { re
 // SConvolveOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
 SConvolveOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
 SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+// Saturating variants for int8: use min/2 sentinel and saturating add to prevent overflow
+SConvolveOp(TropMinSat, std::numeric_limits<elt_type>::max() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
+SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 #define SRecurseOp(suffix, zero_init, mul_op, add_op)                                                  \
     template <typename vec_type, int taps, const int idxs[taps]>                                       \
@@ -742,6 +942,8 @@ SRecurseOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { ret
 // SRecurseOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
 SRecurseOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
 SRecurseOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseOp(TropMinSat, std::numeric_limits<elt_type>::max() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
+SRecurseOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 // SRecurseV: vectorised n-component IIR recurrence.
 //
@@ -849,6 +1051,8 @@ struct SRecurseV##suffix {                                                      
 SRecurseVOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 SRecurseVOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
 SRecurseVOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseVOp(TropMinSat, std::numeric_limits<elt_type>::max() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
+SRecurseVOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 // Tuple<vec_type, n>: copy n independently-allocated signals into n consecutive registers.
 // After run(), component i is at reg[base + i].
@@ -1022,6 +1226,11 @@ BinOp(SAddTropMax, [](auto left, auto right) { return __builtin_elementwise_max(
 BinOp(SAddTropMin, [](auto left, auto right) { return __builtin_elementwise_min(left, right); });
 BinOp(PointwiseMulTropMax, [](auto left, auto right) { return left + right; });
 BinOp(PointwiseMulTropMin, [](auto left, auto right) { return left + right; });
+// Saturating variants for int8 tropical ops
+BinOp(SAddTropMaxSat, [](auto left, auto right) { return __builtin_elementwise_max(left, right); });
+BinOp(SAddTropMinSat, [](auto left, auto right) { return __builtin_elementwise_min(left, right); });
+BinOp(PointwiseMulTropMaxSat, [](auto left, auto right) { return __builtin_elementwise_add_sat(left, right); });
+BinOp(PointwiseMulTropMinSat, [](auto left, auto right) { return __builtin_elementwise_add_sat(left, right); });
 
 template <typename vec_type>
 struct SNeg {

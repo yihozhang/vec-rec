@@ -152,9 +152,7 @@ class Benchmark(ABC):
         validation_raw: dict[str, Any] = output.get("validation", {})
         validation_ok = (
             sum([v is True or (isinstance(v, int) and v >= 256) for v in validation_raw.values()])
-        ) > 0.5 * (
-            len(validation_raw)
-        )  # exclude "k0" reference
+        ) > 0.5 * len(validation_raw)
 
         # Find best (fastest) schedule: highest throughput
         timing_keys = [k for k in output if k != "validation"]
@@ -200,3 +198,5 @@ def _sample(elt: ElementType, shape: tuple[int, ...]) -> np.ndarray:
         case ElementType.I64:
             # Non-negative for tropical operations
             return np.random.randint(0, 1000, shape, dtype=np.int64)
+        case ElementType.I8:
+            return np.random.randint(-1, 1, shape, dtype=np.int8)

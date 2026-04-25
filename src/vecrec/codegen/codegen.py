@@ -125,9 +125,26 @@ class CodeGen:
         self.var2d_context = {}
         self.rvec_comp_regs = {}
 
+    def _max_lanes_in_tree(self, expr: RecLang, visited: Optional[set] = None) -> int:
+        """Find the maximum lane width across all nodes in the expression tree."""
+        if visited is None:
+            visited = set()
+        if id(expr) in visited:
+            return 0
+        visited.add(id(expr))
+        max_l = expr.lanes or 0
+        for child in expr.children():
+            max_l = max(max_l, self._max_lanes_in_tree(child, visited))
+        return max_l
+
     def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> KernelProgram:
 
         self.clear()
+        assert expr.lanes is not None
+        # ele_per_iter must be divisible by every lane width in the tree.
+        # Sub-expressions (e.g. Var inside TVKernel) may have wider lanes than the
+        # top-level expression, so we scan the whole tree for the maximum.
+        self.ele_per_iter = max(16, self._max_lanes_in_tree(expr))
         result = self.generate_signal(expr)
         vars, vars2d = self.collect_input_variables(expr)
         args_1d = [f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items())]
@@ -239,7 +256,7 @@ class CodeGen:
                     a_regs = self.generate_signal(a)[0]
                     b_regs = self.generate_signal(b)[0]
                     regs = self._new_registers(vec_type, n_slices)
-                    constructor = type(expr).__name__ + self.get_sem_suffix(ty)
+                    constructor = type(expr).__name__ + self.get_sem_suffix(ty, element_type)
                     code = self._declare_node(
                         f"{constructor}<{vec_type}>",
                         "",
@@ -264,7 +281,7 @@ class CodeGen:
                     a_regs = self.generate_signal(a)[0]
                     f_regs = self.generate_signal(f)[0]
                     regs = self._new_registers(vec_type, n_slices)
-                    constructor = "SConvolve" + self.get_sem_suffix(ty)
+                    constructor = "SConvolve" + self.get_sem_suffix(ty, element_type)
                     code = self._declare_node(
                         f"{constructor}<{vec_type}, {taps}, {idx_var}>",
                         "",
@@ -280,7 +297,7 @@ class CodeGen:
                     a_regs = self.generate_signal(a)[0]
                     g_regs = self.generate_signal(g)[0]
                     regs = self._new_registers(vec_type, n_slices)
-                    constructor = "SRecurse" + self.get_sem_suffix(ty)
+                    constructor = "SRecurse" + self.get_sem_suffix(ty, element_type)
                     code = self._declare_node(
                         f"{constructor}<{vec_type}, {taps}, {idx_var}>",
                         "",
@@ -427,7 +444,7 @@ class CodeGen:
 
                 case ConvolveV(a_mat, b_in):
                     n_vec = a_mat.n
-                    sem_suffix = self.get_sem_suffix(ty)
+                    sem_suffix = self.get_sem_suffix(ty, element_type)
                     # Generate all kernel entries via the KernelMatrixExpr handler.
                     assert isinstance(a_mat, KernelMatrix)
                     self.generate_signal(a_mat)
@@ -474,7 +491,7 @@ class CodeGen:
                 case RecurseV(a_mat, g_in):
                     n_vec = a_mat.n
                     assert expr.lanes is not None
-                    sem_suffix = self.get_sem_suffix(ty)
+                    sem_suffix = self.get_sem_suffix(ty, element_type)
                     assert isinstance(a_mat, KernelMatrix)
 
                     # Generate input signal vector; component j is at g_regs[s]+j for slice s.
@@ -656,7 +673,7 @@ class CodeGen:
     ) -> List[int]:
         """Sum a list of per-slice register lists using SAdd nodes. Returns result registers.
         If addends is empty, returns a Signal1DConstant(zero) register."""
-        sem_suffix = self.get_sem_suffix(ty)
+        sem_suffix = self.get_sem_suffix(ty, element_type)
         accumulated: List[int] | None = None
         for addend in addends:
             if accumulated is None:
@@ -763,6 +780,8 @@ class CodeGen:
                 return f"int32_vec{lanes}"
             case ElementType.I64:
                 return f"int64_vec{lanes}"
+            case ElementType.I8:
+                return f"int8_vec{lanes}"
 
     def _new_register(self, vec_type: str, n: int = 1) -> int:
         curr = self.reg_counter.get(vec_type, 0)
@@ -812,7 +831,16 @@ class CodeGen:
     def _to_cpp_list(self, lst: list) -> str:
         return ", ".join(map(str, lst))
 
-    def get_sem_suffix(self, ty: Type) -> str:
+    def get_sem_suffix(self, ty: Type, element_type: ElementType | None = None) -> str:
+        # int8 tropical ops use saturating addition to prevent overflow
+        if element_type == ElementType.I8:
+            match ty:
+                case Type.Arith:
+                    return ""
+                case Type.TropMax:
+                    return "TropMaxSat"
+                case Type.TropMin:
+                    return "TropMinSat"
         match ty:
             case Type.Arith:
                 return ""
