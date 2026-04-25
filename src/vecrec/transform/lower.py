@@ -1,11 +1,11 @@
 from __future__ import annotations
-from typing import List, Sequence, overload
+from typing import List, Sequence, overload, cast
 import copy
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
-from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr
+from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr, SignalExpr2DVec
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D
+from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.expr.signal_vec import VectorAt, RecurseV, ConvolveV, SignalVector
 from vecrec.expr.kernel_matrix import KernelMatrix
@@ -74,10 +74,12 @@ class InferNRows(Transform):
     """
 
     def apply_generic(self, expr):
-        # Phase 1: DFS to collect all Var2D/Repeater nodes and build rvar → Repeater map.
+        # Phase 1: DFS to collect all Var2D/Repeater/RepeaterVec nodes and build rvar maps.
         all_var2d: list[Var2D] = []
         all_repeaters: list[Repeater] = []
+        all_repeatervecs: list[RepeaterVec] = []
         rvar_to_repeater: dict[str, Repeater] = {}
+        rvar_to_repeatervec: dict[str, RepeaterVec] = {}
         visited_phase1: set[int] = set()
 
         def collect_nodes(e: RecLang) -> None:
@@ -89,6 +91,10 @@ class InferNRows(Transform):
             elif isinstance(e, Repeater):
                 all_repeaters.append(e)
                 rvar_to_repeater[e.prev_rows_var.name] = e
+            elif isinstance(e, RepeaterVec):
+                all_repeatervecs.append(e)
+                for pv in e.prev_vars:
+                    rvar_to_repeatervec[pv.name] = e
             for child in e.children():
                 collect_nodes(child)
 
@@ -97,6 +103,7 @@ class InferNRows(Transform):
         # Phase 2: DFS to compute lower bounds for n_rows from Ith nodes.
         var2d_bounds: dict[str, int] = {}
         repeater_bounds: dict[Repeater, int] = {}
+        repeatervec_bounds: dict[RepeaterVec, int] = {}
         visited_phase2: set[int] = set()
 
         def collect_bounds(e: RecLang) -> None:
@@ -111,21 +118,32 @@ class InferNRows(Transform):
                     repeater_bounds[x] = max(repeater_bounds.get(x, 0), i + 1)
                 elif isinstance(x, RVar2D):
                     owner = rvar_to_repeater.get(x.name)
-                    assert owner is not None
-                    # RVar2D exposes n_rows - 1 slots; Ith(rvar, i) needs owner.n_rows >= i + 2
-                    repeater_bounds[owner] = max(repeater_bounds.get(owner, 0), i + 2)
+                    if owner is not None:
+                        # RVar2D exposes n_rows - 1 slots; Ith(rvar, i) needs owner.n_rows >= i + 2
+                        repeater_bounds[owner] = max(repeater_bounds.get(owner, 0), i + 2)
+                    else:
+                        owner_vec = rvar_to_repeatervec.get(x.name)
+                        assert owner_vec is not None, (
+                            f"RVar2D '{x.name}' not found in any Repeater or RepeaterVec"
+                        )
+                        repeatervec_bounds[owner_vec] = max(repeatervec_bounds.get(owner_vec, 0), i + 2)
+                elif isinstance(x, Signal2DAt):
+                    rv = x.a
+                    assert isinstance(rv, RepeaterVec)
+                    repeatervec_bounds[rv] = max(repeatervec_bounds.get(rv, 0), i + 1)
             for child in e.children():
                 collect_bounds(child)
 
         collect_bounds(expr)
 
         # Phase 3: Apply bounds, raise if any node remains unresolved.
-        # Pre-compute ALL bounds before any mutation to avoid hash instability:
-        # mutating Var2D.n_rows changes its hash, which cascades to parent Repeater
-        # hashes, causing repeater_bounds.get(r, 0) to miss the stored entry.
+        # Pre-compute ALL bounds before any mutation to avoid hash instability.
         final_var2d: list[tuple[Var2D, int]] = [(v, max(v.n_rows or 0, var2d_bounds.get(v.name, 0))) for v in all_var2d]
         final_repeaters: list[tuple[Repeater, int]] = [
             (r, max(r.n_rows or 0, repeater_bounds.get(r, 0))) for r in all_repeaters
+        ]
+        final_repeatervecs: list[tuple[RepeaterVec, int]] = [
+            (rv, max(rv.n_rows or 0, repeatervec_bounds.get(rv, 0))) for rv in all_repeatervecs
         ]
 
         for v, bound in final_var2d:
@@ -142,6 +160,13 @@ class InferNRows(Transform):
                 raise ValueError(
                     f"Repeater with prev_rows_var '{r.prev_rows_var.name}' has no Ith usages — "
                     "n_rows cannot be inferred. Call InferNRows after Eliminate2DKernels."
+                )
+
+        for rv, bound in final_repeatervecs:
+            rv.n_rows = bound or None
+            if not rv.n_rows:
+                raise ValueError(
+                    f"RepeaterVec has no Ith usages — n_rows cannot be inferred."
                 )
 
         return [expr]
@@ -211,12 +236,34 @@ class AnnotateLanes(Transform):
                 return [expr.with_lanes(lanes)]
             case Var2D(_name, _n_rows):
                 return [expr.with_lanes(lanes)]
+            case Signal2DAt(vec_expr, _comp_idx):
+                new_vec = self.apply_signal2dvec(vec_expr)[0]
+                new_at = copy.copy(expr)
+                new_at.a = new_vec
+                new_at.lanes = lanes
+                return [new_at]
             case Recurse2D(_a, _g):
                 raise NotImplementedError("Not implemented")
             case _:
                 raise NotImplementedError(
                     "Lane annotation for non-Repeater, non-RVar2D, non-Var2D SignalExpr2D not implemented"
                 )
+
+    def apply_signal2dvec(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]:
+        """Annotate lanes for RepeaterVec and its body."""
+        if isinstance(expr, RepeaterVec):
+            lanes = self.max_lanes(expr.element_type)
+            new_a = self.convert_lanes(self.apply_signal_vector(expr.a)[0], lanes)
+            new_prev_vars = cast(
+                "tuple[RVar2D, ...]",
+                tuple(pv.with_lanes(lanes) for pv in expr.prev_vars),
+            )
+            new_rv = copy.copy(expr)
+            new_rv.a = new_a
+            new_rv.prev_vars = new_prev_vars
+            new_rv.lanes = lanes
+            return [new_rv]
+        return [expr.with_lanes(self.max_lanes(expr.element_type))]
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         raise NotImplementedError("Lane annotation for 2D kernel expressions not implemented")
@@ -251,7 +298,7 @@ class AnnotateLanes(Transform):
             args = []
             for child in expr.children():
                 assert not isinstance(child, KernelExpr2D), "2D kernels should be eliminated before lane annotation"
-                args.append(self.convert_lanes(self.apply_generic(child)[0], lanes))
+                args.append(self.convert_lanes(self.apply_generic(child)[0], lanes))  # type: ignore[arg-type]
 
             new_expr = type(expr)(*args)  # type: ignore
             new_expr.lanes = lanes

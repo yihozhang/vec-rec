@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Sequence, overload
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
-from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr
+from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr, SignalExpr2DVec
 from vecrec.expr import pp
 
 
@@ -19,6 +19,8 @@ class Transform:
     def apply_generic(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]: ...
     @overload
     def apply_generic(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]: ...
+    @overload
+    def apply_generic(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]: ...
 
     def apply_generic(self, expr):
         if isinstance(expr, KernelExpr):
@@ -33,6 +35,8 @@ class Transform:
             return self.apply_kernel_matrix(expr)
         elif isinstance(expr, SignalVectorExpr):
             return self.apply_signal_vector(expr)
+        elif isinstance(expr, SignalExpr2DVec):
+            return self.apply_signal2dvec(expr)
         else:
             raise TypeError(f"Unknown expression type: {type(expr)}")
 
@@ -47,11 +51,14 @@ class Transform:
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         return []
-    
+
     def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
         return []
-    
+
     def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        return []
+
+    def apply_signal2dvec(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]:
         return []
 
 def ArithTransform(cls):

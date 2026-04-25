@@ -37,6 +37,7 @@ from trop.second_order_ti_trop import SecondOrderTITropBenchmark
 from trop.second_order_tv_trop import SecondOrderTVTropBenchmark
 from trop.needleman_wunsch import NeedlemanWunschBenchmark
 from trop.distance_transform import DistanceTransformBenchmark
+from trop.affine_gap import AffineGapBenchmark
 
 
 REGISTRY: list[Benchmark] = []
@@ -59,6 +60,7 @@ REGISTRY.extend(
         SecondOrderTVTropBenchmark(),
         DistanceTransformBenchmark(),
         NeedlemanWunschBenchmark(),
+        AffineGapBenchmark(),
     ]
 )
 

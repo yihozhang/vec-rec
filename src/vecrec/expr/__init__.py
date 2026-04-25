@@ -35,12 +35,17 @@ __all__ = [
     "Var",
     "Var2D",
     "RVar2D",
+    "RVec2D",
     "Type",
     "with_types",
     "ConvertLanes",
     "KConvertLanes",
     "Repeater",
     "Ith",
+    # RepeaterVec / Signal2DAt
+    "SignalExpr2DVec",
+    "Signal2DAt",
+    "RepeaterVec",
     # Vector/matrix extensions
     "KernelMatrixExpr",
     "SignalVectorExpr",

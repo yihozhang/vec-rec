@@ -52,6 +52,19 @@ class RVar2D(SignalExpr2D):
         super().__init__(resolved_ty, resolved_et)
         self.name = name
 
+class RVec2D:
+    """Container for n RVar2D objects used as the prev-state argument inside RepeaterVec bodies.
+    Not a RecLang node — just a plain Python helper."""
+
+    vars: tuple[RVar2D, ...]
+
+    def __init__(self, vars: list[RVar2D]) -> None:
+        self.vars = tuple(vars)
+
+    def at(self, i: int) -> RVar2D:
+        return self.vars[i]
+
+
 @dataclass(unsafe_hash=True)
 class Var2D(SignalExpr2D):
     """A user-provided 2D input array. Exposes n_rows consecutive rows simultaneously.

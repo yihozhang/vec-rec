@@ -20,7 +20,10 @@ from vecrec.expr.signal_ops import (
     ConvertLanes,
     Repeater,
     Ith,
+    Signal2DAt,
+    RepeaterVec,
 )
+from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
 from vecrec.expr.kernel import TIKernel, TVKernel, TIKernel2D, TVKernel2D
 from vecrec.expr.kernel_ops import KAdd, KSub, KConvolve, KNeg, KConvertLanes
 
@@ -54,9 +57,13 @@ def _prec(expr: RecLang) -> int:
             return _PREC_ADD
         case Recurse() | Recurse2D():
             return _PREC_RECURSE
-        case Repeater():
+        case Repeater() | RepeaterVec():
             return _PREC_BINDER
-        case ConvertLanes():
+        case Signal2DAt() | VectorAt():
+            return _PREC_INDEX
+        case SignalVector() | ConvolveV() | RecurseV():
+            return _PREC_ATOM
+        case ConvertLanes() | ConvertLanesV():
             return _prec(expr.a)
         case KConvertLanes():
             return _prec(expr.a)
@@ -215,8 +222,34 @@ def _fmt_one(
             name = expr.prev_rows_var.name.lstrip("$")
             return f"μ{name}. {fmt(expr.a)}"
 
+        case RepeaterVec():
+            names = ", ".join(pv.name.lstrip("$") for pv in expr.prev_vars)
+            return f"μ({names}). {fmt(expr.a)}"
+
+        # --- Signal vector indexing ---
+        case Signal2DAt(a, i):
+            return f"{w(a, _PREC_INDEX)}[{i}]"
+
+        case VectorAt(a, i):
+            return f"{w(a, _PREC_INDEX)}[{i}]"
+
+        # --- Signal vectors ---
+        case SignalVector(data):
+            parts = ", ".join(fmt(s) for s in data)
+            return f"({parts})"
+
+        case ConvolveV(a, g):
+            p = _PREC_MUL
+            return f"{w(a, p)} × {w(g, p)}"
+
+        case RecurseV(a, g):
+            return f"rec({fmt(a)}, {fmt(g)})"
+
         # --- Lane conversions (transparent) ---
         case ConvertLanes(a):
+            return fmt(a)
+
+        case ConvertLanesV(a):
             return fmt(a)
 
         case KConvertLanes(a):

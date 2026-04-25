@@ -10,9 +10,10 @@ from vecrec.expr.base import (
     KernelMatrixExpr,
     SignalExpr2D,
     SignalVectorExpr,
+    SignalExpr2DVec,
 )
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D
+from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec
 from vecrec.expr.signal_vec import VectorAt
 from . import Transform, _dedup_exprs
 from typing import Callable
@@ -57,12 +58,13 @@ class Noop(Transform):
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
+    apply_signal2dvec = apply_generic
 
 
 class Seq(Transform):
     def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
-        
+
     @typing.no_type_check
     def apply_generic(self, expr):
         results = [expr]
@@ -78,6 +80,7 @@ class Seq(Transform):
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
+    apply_signal2dvec = apply_generic
 
 class Repeat(Transform):
     def __init__(self, times: int, *transforms: Transform) -> None:
@@ -99,6 +102,7 @@ class Repeat(Transform):
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
+    apply_signal2dvec = apply_generic
 
 class RepeatUpTo(Transform):
     def __init__(self, max_times: int, *transforms: Transform) -> None:
@@ -115,13 +119,14 @@ class RepeatUpTo(Transform):
             new_results = _dedup_exprs(new_results)
             results.append(new_results)
         return _dedup_exprs([s for res in results for s in res])
-    
+
     apply_kernel = apply_generic
     apply_signal = apply_generic
     apply_signal2d = apply_generic
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
+    apply_signal2dvec = apply_generic
 
 
 class Optional(Transform):
@@ -144,6 +149,7 @@ class Optional(Transform):
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
+    apply_signal2dvec = apply_generic
 
 
 class Try(Transform):
@@ -160,6 +166,7 @@ class Try(Transform):
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
+    apply_signal2dvec = apply_generic
 
 class Any(Transform):
     def __init__(self, *transforms: Transform) -> None:
@@ -179,6 +186,7 @@ class Any(Transform):
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
+    apply_signal2dvec = apply_generic
 
 class Preorder(Transform):
     def __init__(self, transform: Transform) -> None:
@@ -282,6 +290,11 @@ class Preorder(Transform):
                         new_expr = copy.copy(expr)
                         new_expr.a = new_a
                         results.append(new_expr)
+                case Signal2DAt(vec_expr, _comp_idx):
+                    for new_vec in self.apply_signal2dvec(vec_expr):
+                        new_at: Signal2DAt = copy.copy(expr)
+                        new_at.a = new_vec
+                        results.append(new_at)
                 case Recurse2D(_, _):
                     results += cartesian(
                         type(expr),
@@ -292,6 +305,18 @@ class Preorder(Transform):
                     raise NotImplementedError(
                         "Preorder traversal of non-RVar2D, non-Var2D, non-Repeater SignalExpr2D not implemented"
                     )
+        return results
+
+    def apply_signal2dvec(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]:
+        results: List[SignalExpr2DVec] = []
+        for e in self.transform.apply_signal2dvec(expr):
+            if isinstance(e, RepeaterVec):
+                for new_a in self.apply_signal_vector(e.a):
+                    new_rv = copy.copy(e)
+                    new_rv.a = new_a
+                    results.append(new_rv)
+            else:
+                results.append(e)
         return results
 
     def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
@@ -434,6 +459,11 @@ class Postorder(Transform):
                     new_expr = copy.copy(expr)
                     new_expr.a = new_a
                     results.append(new_expr)
+            case Signal2DAt(vec_expr, _comp_idx):
+                for new_vec in self.apply_signal2dvec(vec_expr):
+                    new_at: Signal2DAt = copy.copy(expr)
+                    new_at.a = new_vec
+                    results.append(new_at)
             case Recurse2D(_, _):
                 results = cartesian(
                     type(expr),
@@ -445,6 +475,19 @@ class Postorder(Transform):
                     "Postorder traversal of non-RVar2D, non-Var2D, non-Repeater SignalExpr2D not implemented"
                 )
         return [e for result in results for e in self.transform.apply_signal2d(result)]
+
+    def apply_signal2dvec(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]:
+        results: List[SignalExpr2DVec]
+        if isinstance(expr, RepeaterVec):
+            body_results: List[SignalExpr2DVec] = []
+            for new_a in self.apply_signal_vector(expr.a):
+                new_rv = copy.copy(expr)
+                new_rv.a = new_a
+                body_results.append(new_rv)
+            results = body_results
+        else:
+            results = [expr]
+        return [e for result in results for e in self.transform.apply_signal2dvec(result)]
 
     def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelMatrixExpr]:  # type: ignore
@@ -520,6 +563,7 @@ class SaturatePreorder(Transform):
         apply_kernel2d = apply_generic
         apply_kernel_matrix = apply_generic
         apply_signal_vector = apply_generic
+        apply_signal2dvec = apply_generic
 
 
     def __init__(self, transform: Transform) -> None:
@@ -546,7 +590,7 @@ class SaturatePreorder(Transform):
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
-
+    apply_signal2dvec = apply_generic
 
 
 class SaturatePreorderUpTo(SaturatePreorder):
@@ -569,3 +613,4 @@ class SaturatePreorderUpTo(SaturatePreorder):
     apply_kernel2d = apply_generic
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
+    apply_signal2dvec = apply_generic

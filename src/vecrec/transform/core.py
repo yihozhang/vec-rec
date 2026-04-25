@@ -70,49 +70,49 @@ class Dilate(Transform):
             return f, i
         return None
 
-    def op_mutual(self, k: Tuple[Tuple[TIKernel]]) -> typing.Optional[Tuple[KernelMatrix, KernelMatrix]]:
-        assert all(k0.ty == Type.Arith for row in k for k0 in row)
-        element_type = k[0][0].element_type
-        assert all(k0.element_type == element_type for row in k for k0 in row)
-        max_stride = self.max_lanes(element_type)
-        n = len(k)  # kernel matrix is n x n
-        # taps = max(len(k[i][j]) for i in range(n) for j in range(n))
+    # def op_mutual(self, k: Tuple[Tuple[TIKernel]]) -> typing.Optional[Tuple[KernelMatrix, KernelMatrix]]:
+    #     assert all(k0.ty == Type.Arith for row in k for k0 in row)
+    #     element_type = k[0][0].element_type
+    #     assert all(k0.element_type == element_type for row in k for k0 in row)
+    #     max_stride = self.max_lanes(element_type)
+    #     n = len(k)  # kernel matrix is n x n
+    #     # taps = max(len(k[i][j]) for i in range(n) for j in range(n))
 
-        stride = 2
-        while stride <= max_stride:
-            evens = []
-            odds = []
-            odd_len = 0
-            for i in range(n):
-                even_row = []
-                odd_row = []
-                for j in range(n):
-                    taps_ij = len(k[i][j])
-                    even = [0.0] * taps_ij
-                    even[0:taps_ij:stride] = k[i][j].data[0::stride]
-                    even_row.append(TIKernel(even, Type.Arith, element_type))
+    #     stride = 2
+    #     while stride <= max_stride:
+    #         evens = []
+    #         odds = []
+    #         odd_len = 0
+    #         for i in range(n):
+    #             even_row = []
+    #             odd_row = []
+    #             for j in range(n):
+    #                 taps_ij = len(k[i][j])
+    #                 even = [0.0] * taps_ij
+    #                 even[0:taps_ij:stride] = k[i][j].data[0::stride]
+    #                 even_row.append(TIKernel(even, Type.Arith, element_type))
 
-                    odd = [a - b for a, b in zip(k[i][j].data, even)]
-                    odd_row.append(TIKernel(odd, Type.Arith, element_type))
+    #                 odd = [a - b for a, b in zip(k[i][j].data, even)]
+    #                 odd_row.append(TIKernel(odd, Type.Arith, element_type))
 
-                    odd_len = max(odd_len, len(odd))
-                evens.append(even_row)
-                odds.append(odd_row)
+    #                 odd_len = max(odd_len, len(odd))
+    #             evens.append(even_row)
+    #             odds.append(odd_row)
 
-            even_t = tuple(tuple(evens[i]) for i in range(n))
-            odd_t = tuple(tuple(odds[i]) for i in range(n))
+    #         even_t = tuple(tuple(evens[i]) for i in range(n))
+    #         odd_t = tuple(tuple(odds[i]) for i in range(n))
 
-            even_k = KernelMatrix(even_t)
-            odd_k = KernelMatrix(odd_t)
+    #         even_k = KernelMatrix(even_t)
+    #         odd_k = KernelMatrix(odd_t)
 
-            if odd_len == 0:
-                stride *= 2
-                continue
+    #         if odd_len == 0:
+    #             stride *= 2
+    #             continue
 
-            f = KernelMatrix.i(n, Type.Arith, element_type) - even_k + odd_k
-            i = -even_k @ even_k + 2 * even_k + odd_k @ odd_k
-            return f, i
-        return None
+    #         f = KernelMatrix.i(n, Type.Arith, element_type) - even_k + odd_k
+    #         i = -even_k @ even_k + 2 * even_k + odd_k @ odd_k
+    #         return f, i
+    #     return None
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
@@ -125,16 +125,16 @@ class Dilate(Transform):
             case _:
                 return []
 
-    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
-        match expr:
-            case RecurseV(KernelMatrix(a), g) if all(isinstance(k, TIKernel) for row in a for k in row):
-                result = self.op_mutual(a)  # type: ignore[arg-type]
-                if not result:
-                    return []
-                f, i = result
-                return [RecurseV(i, ConvolveV(f, g))]
-            case _:
-                return []
+    # def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+    #     match expr:
+    #         case RecurseV(KernelMatrix(a), g) if all(isinstance(k, TIKernel) for row in a for k in row):
+    #             result = self.op_mutual(a)  # type: ignore[arg-type]
+    #             if not result:
+    #                 return []
+    #             f, i = result
+    #             return [RecurseV(i, ConvolveV(f, g))]
+    #         case _:
+    #             return []
 
 
 @TropTransform

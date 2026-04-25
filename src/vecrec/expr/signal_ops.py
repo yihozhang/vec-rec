@@ -1,13 +1,13 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import reduce
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
-from vecrec.expr.signal import RVar2D
+from vecrec.expr.signal import RVar2D, RVec2D
 from vecrec.util import ElementType
 
 from .base import *
-from .base import _resolve_types
+from .base import _resolve_types, SignalExpr2DVec
 
 @dataclass(unsafe_hash=True)
 class SignalExprBinOp(SignalExpr):
@@ -184,7 +184,7 @@ class Repeater(SignalExpr2D):
         repeater.prev_rows_var = prev_rows_var
         return repeater
 
-    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr]:
+    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
         # Only expose the inner expression, not prev_rows_var
         # (it's an internal placeholder, not an external input)
         return [self.a]
@@ -199,3 +199,75 @@ class Ith(SignalExpr):
         super().__init__(a.ty, a.element_type)
         self.a = a
         self.i = i
+
+
+@dataclass(unsafe_hash=True)
+class Signal2DAt(SignalExpr2D):
+    """Extract component comp_idx from a SignalExpr2DVec as a SignalExpr2D."""
+
+    a: SignalExpr2DVec
+    comp_idx: int
+    __match_args__ = ("a", "comp_idx")
+
+    def __init__(self, a: SignalExpr2DVec, comp_idx: int) -> None:
+        super().__init__(a.ty, a.element_type)
+        self.a = a
+        self.comp_idx = comp_idx
+
+    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+        return [self.a]
+
+
+@dataclass(unsafe_hash=True)
+class RepeaterVec(SignalExpr2DVec):
+    """
+    Multi-component Repeater: caches n signals from the previous row simultaneously.
+
+    The callable receives an RVec2D whose n components (RVar2D) represent the
+    previous cached rows for each component.  The callable must return a
+    SignalVectorExpr of the same n.  Use Signal2DAt / Ith to read the cached rows.
+    """
+
+    a: SignalVectorExpr
+    n_rows: Optional[int]
+    prev_vars: Tuple[RVar2D, ...]
+    __match_args__ = ("a", "n_rows", "prev_vars")
+
+    var_count: int = 1
+
+    def __init__(
+        self,
+        n: int,
+        func: Callable[[RVec2D], SignalVectorExpr],
+        ty: Optional[Type] = None,
+        element_type: Optional[ElementType] = None,
+    ) -> None:
+        resolved_ty, resolved_et = _resolve_types(ty, element_type)
+        self.n_rows = None
+        self.prev_vars = tuple(
+            RVar2D(f"$fv{RepeaterVec.var_count}_{i}", resolved_ty, resolved_et)
+            for i in range(n)
+        )
+        RepeaterVec.var_count += 1
+        self.a = func(RVec2D(list(self.prev_vars)))
+        assert self.a.n == n, f"RepeaterVec body returned {self.a.n} components, expected {n}"
+        super().__init__(resolved_ty, resolved_et, n)
+
+    @staticmethod
+    def make(
+        a: SignalVectorExpr,
+        n: int,
+        prev_vars: Tuple[RVar2D, ...],
+        n_rows: Optional[int],
+    ) -> RepeaterVec:
+        rv: RepeaterVec = RepeaterVec.__new__(RepeaterVec)
+        super(RepeaterVec, rv).__init__(a.ty, a.element_type, n)
+        rv.a = a
+        rv.n = n
+        rv.n_rows = n_rows
+        rv.prev_vars = prev_vars
+        return rv
+
+    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+        # Only expose the body, not prev_vars (internal placeholders)
+        return [self.a]

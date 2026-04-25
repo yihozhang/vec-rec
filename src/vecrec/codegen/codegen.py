@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Set, Tuple, cast
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith
+from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.expr.kernel_matrix import KernelMatrix
 from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
@@ -113,6 +113,7 @@ class CodeGen:
         self.program = []
         self.prologue = []
         self.var2d_context = {}
+        self.rvec_comp_regs: Dict[RepeaterVec, List[List[int]]] = {}
 
     def clear(self):
         self.reg_counter = {}
@@ -122,6 +123,7 @@ class CodeGen:
         self.program = []
         self.prologue = []
         self.var2d_context = {}
+        self.rvec_comp_regs = {}
 
     def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> KernelProgram:
 
@@ -394,6 +396,15 @@ class CodeGen:
                         vec_type,
                     )
 
+                case Signal2DAt(rv_inner, comp_idx):
+                    assert isinstance(rv_inner, RepeaterVec), (
+                        f"Signal2DAt.a must be a RepeaterVec, got {type(rv_inner)}"
+                    )
+                    if rv_inner not in self.rvec_comp_regs:
+                        self._generate_repeatervec(rv_inner)
+                    regs = self.rvec_comp_regs[rv_inner][comp_idx]
+                    code = ""
+
                 case _:
                     raise AssertionError(f"CodeGen: unhandled SignalExpr2D {type(expr)}")
         elif isinstance(expr, SignalVectorExpr):
@@ -592,6 +603,49 @@ class CodeGen:
         self.mapping[expr] = (regs, Code(code, ty, element_type, expr.lanes, taps))
         return self.mapping[expr]
 
+    def _generate_repeatervec(self, rv: RepeaterVec) -> None:
+        """Generate n Repeater C++ nodes (one per component) for a RepeaterVec.
+
+        Stores per-component output registers in self.rvec_comp_regs[rv].
+        """
+        assert rv.lanes is not None
+        assert rv.n_rows is not None
+        n = rv.n
+        n_rows = rv.n_rows
+        vec_type = self.get_vec_type(rv.element_type, rv.lanes)
+        n_slices = self.ele_per_iter // rv.lanes
+        self.vec_types.add(vec_type)
+        zero_str = rv.element_type.val_to_str(rv.ty.zero(), rv.ty)
+
+        # Create one RepeaterContext per component
+        contexts = [self._declare_repeater_context(vec_type, zero_str, n_rows) for _ in range(n)]
+
+        # Register all prev_vars so body signals can read them
+        for i, pv in enumerate(rv.prev_vars):
+            self.var2d_context[pv.name] = (contexts[i], n_rows - 1)
+
+        # Generate the body (SignalVectorExpr) — Tuple node writes n consecutive regs per slice
+        body_regs = self.generate_signal(rv.a)[0]
+
+        # Clean up prev_var context
+        for pv in rv.prev_vars:
+            del self.var2d_context[pv.name]
+
+        # Declare one Repeater<> per component, reading body_regs[s]+i for slice s
+        comp_regs_list: List[List[int]] = []
+        for i in range(n):
+            comp_regs = self._new_registers(vec_type, n_slices)
+            self._declare_node(
+                f"Repeater<{vec_type}, {n_rows}>",
+                contexts[i],
+                [[comp_regs[s], body_regs[s] + i] for s in range(n_slices)],
+                vec_type,
+                vec_type,
+            )
+            comp_regs_list.append(comp_regs)
+
+        self.rvec_comp_regs[rv] = comp_regs_list
+
     def _sum_registers(
         self,
         vec_type: str,
@@ -781,4 +835,13 @@ class CodeGen:
             )
             return signal2d.n_rows
 
-        raise ValueError(f"Ith expects RVar2D, Repeater, or Var2D as signal2d, got {type(signal2d)}")
+        if isinstance(signal2d, Signal2DAt):
+            rv = signal2d.a
+            assert isinstance(rv, RepeaterVec)
+            assert rv.n_rows is not None, (
+                "RepeaterVec has n_rows=None at codegen time. "
+                "Did you forget to include InferNRows in your schedule before AnnotateLanes?"
+            )
+            return rv.n_rows
+
+        raise ValueError(f"Ith expects RVar2D, Repeater, Var2D, or Signal2DAt as signal2d, got {type(signal2d)}")
