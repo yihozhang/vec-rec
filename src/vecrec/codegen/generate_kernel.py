@@ -69,8 +69,10 @@ def generate_benchmark(
 
     # Generate the benchmark program
     if ele_per_iter_list is None:
-        assert all(expr.lanes is not None for expr in exprs), "If ele_per_iter_list is not provided, all expressions must have a defined lane count"
-        ele_per_iter_list = [max(16, expr.lanes) for expr in exprs] # type: ignore
+        assert all(
+            expr.lanes is not None for expr in exprs
+        ), "If ele_per_iter_list is not provided, all expressions must have a defined lane count"
+        ele_per_iter_list = [max(16, expr.lanes) for expr in exprs]  # type: ignore
 
     benchmark_code = _generate_benchmark_code(
         all_vars,
@@ -593,7 +595,9 @@ def _generate_kernel_runner_code(
     text += "    int pos = 0;\n"
     text += "    while (pos < N) {\n"
     text += f"        using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
-    text += f"        {kernel_name}_vector_type out[{ele_per_iter}/(sizeof({kernel_name}_vector_type)/sizeof(elt_type))];\n"
+    text += (
+        f"        {kernel_name}_vector_type out[{ele_per_iter}/(sizeof({kernel_name}_vector_type)/sizeof(elt_type))];\n"
+    )
     text += "        kernel.run(out);\n"
     text += f"        const int copy_count = (N - pos) < {ele_per_iter} ? (N - pos) : {ele_per_iter};\n"
     text += f"        std::memcpy(output.data() + pos, &out, sizeof({output_cpp_type}) * copy_count);\n"

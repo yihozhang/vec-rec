@@ -26,6 +26,9 @@ class Eliminate2DKernels(Transform):
     The only places where 2D kernels appear are in Convolve2D and Recurse2D.
     """
 
+    def __init__(self) -> None:
+        self._memo: dict[int, list[SignalExpr2D]] = {}
+
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         if isinstance(expr, Convolve2D):
             assert isinstance(expr.a, TIKernel2D) or isinstance(
@@ -41,6 +44,10 @@ class Eliminate2DKernels(Transform):
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         if isinstance(expr, Recurse2D):
+            key = id(expr)
+            if key in self._memo:
+                return self._memo[key]
+
             # Recurse2D(A, G) = Repeater(\f', Recurse(A[0], A[1:] x f' +  G))
             assert isinstance(expr.a, TIKernel2D) or isinstance(
                 expr.a, TVKernel2D
@@ -61,7 +68,9 @@ class Eliminate2DKernels(Transform):
                 expr.a.ty,
                 expr.a.element_type,
             )
-            return [new_expr]
+            result: list[SignalExpr2D] = [new_expr]
+            self._memo[key] = result
+            return result
         else:
             return []
 

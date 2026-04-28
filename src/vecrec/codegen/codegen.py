@@ -373,7 +373,7 @@ class CodeGen:
             match expr:
                 case Repeater(g, n_rows, prev_rows_var):
                     assert n_rows is not None
-                    regs = self._new_registers(vec_type, n_slices)
+                    regs = self._new_registers(vec_type, n_slices, n_rows)
                     zero_str = expr.element_type.val_to_str(ty.zero(), ty)
                     repeater_context = self._declare_repeater_context(vec_type, zero_str, n_rows)
 
@@ -390,9 +390,8 @@ class CodeGen:
                     )
 
                 case RVar2D(name):
-                    regs = self._new_registers(vec_type, n_slices)
-
                     repeater_context, n_rows = self.var2d_context[name]
+                    regs = self._new_registers(vec_type, n_slices, n_rows)
                     code = self._declare_node(
                         f"Signal2D<{vec_type}, {n_rows}>",
                         repeater_context,
@@ -651,7 +650,7 @@ class CodeGen:
         # Declare one Repeater<> per component, reading body_regs[s]+i for slice s
         comp_regs_list: List[List[int]] = []
         for i in range(n):
-            comp_regs = self._new_registers(vec_type, n_slices)
+            comp_regs = self._new_registers(vec_type, n_slices, n_rows)
             self._declare_node(
                 f"Repeater<{vec_type}, {n_rows}>",
                 contexts[i],
