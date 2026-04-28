@@ -4,7 +4,7 @@ from vecrec.expr.base import SignalExpr, SignalExpr2D, Type, with_types
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.expr.signal import Var, RVar2D, Num
 from vecrec.expr.signal_ops import Convolve2D, Ith, Repeater, SAdd
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.transform import AnnotateLanes, InferNRows, Preorder, Eliminate2DKernels, Try
 
@@ -14,8 +14,8 @@ def test_convolve2d_ti_kernel() -> None:
     with with_types(Type.Arith, ElementType.Float):
         # Create a simple 2D kernel (2x3)
         kernel_data = [
-            [1.0/6, 1.0/6, 1.0/6],
-            [1.0/6, 1.0/6, 1.0/6],
+            [1.0 / 6, 1.0 / 6, 1.0 / 6],
+            [1.0 / 6, 1.0 / 6, 1.0 / 6],
         ]
         kernel2d = TIKernel2D(kernel_data)
         g = Var("g")
@@ -32,10 +32,10 @@ def test_convolve2d_ti_kernel() -> None:
     # Apply transforms: first eliminate 2D kernels, then annotate lanes
     repeater = Preorder(Try(Eliminate2DKernels())).apply_generic(repeater)[0]
     repeater = InferNRows().apply_generic(repeater)[0]
-    repeater = AnnotateLanes(512).apply_generic(repeater)[0]
+    repeater = AnnotateLanes(get_native_bits()).apply_generic(repeater)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [repeater])
-    assert result['return_code'] == 0
+    assert result["return_code"] == 0
     print(result)
 
     codegen = CodeGen()
@@ -78,10 +78,10 @@ def test_convolve2d_tv_kernel() -> None:
     # Apply transforms: first eliminate 2D kernels, then annotate lanes
     repeater = Preorder(Try(Eliminate2DKernels())).apply_signal2d(repeater)[0]
     repeater = InferNRows().apply_generic(repeater)[0]
-    repeater = AnnotateLanes(512).apply_signal2d(repeater)[0]
+    repeater = AnnotateLanes(get_native_bits()).apply_signal2d(repeater)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [repeater])
-    assert result['return_code'] == 0
+    assert result["return_code"] == 0
     codegen = CodeGen()
     code = codegen.generate(repeater, "test_convolve2d_tv")
 
@@ -120,10 +120,10 @@ def test_convolve2d_single_row() -> None:
     # Apply transforms: first eliminate 2D kernels, then annotate lanes
     repeater = Preorder(Try(Eliminate2DKernels())).apply_signal2d(repeater)[0]
     repeater = InferNRows().apply_generic(repeater)[0]
-    repeater = AnnotateLanes(512).apply_signal2d(repeater)[0]
+    repeater = AnnotateLanes(get_native_bits()).apply_signal2d(repeater)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [repeater])
-    assert result['return_code'] == 0
+    assert result["return_code"] == 0
     codegen = CodeGen()
     code = codegen.generate(repeater, "test_convolve2d_single")
 

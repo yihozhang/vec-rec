@@ -11,7 +11,7 @@ from vecrec.expr.pretty import pp
 from vecrec.expr.signal import Var, RVar2D
 from vecrec.expr.signal_ops import Convolve, Ith, Recurse, Repeater, SAdd
 from vecrec.expr.kernel import TIKernel
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.transform import AnnotateLanes, InferNRows, PushDownConvertLanes
 
@@ -19,7 +19,7 @@ from vecrec.transform import AnnotateLanes, InferNRows, PushDownConvertLanes
 def test_repeater_recurse_lane_mismatch() -> None:
     """Repeater containing a Recurse whose lanes < max_lanes (due to kernel time delay).
 
-    With 512-bit SIMD and Float32: max_lanes = 16.
+    With get_native_bits()-bit SIMD and Float32: max_lanes = 16.
     The feedback kernel has time delay 4, so Recurse.lanes = 4.
     After AnnotateLanes + PushDownConvertLanes, Ith.lanes = 4 but RVar2D.lanes = 16.
     The codegen fix wraps IthRow with ConvertOne2N to bridge the type mismatch.
@@ -39,11 +39,12 @@ def test_repeater_recurse_lane_mismatch() -> None:
     expr: SignalExpr
     expr = Ith(repeater, 0)
     expr = InferNRows().apply_generic(expr)[0]
-    expr = AnnotateLanes(512).apply_generic(expr)[0]
+    expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
     expr = PushDownConvertLanes().apply_generic(expr)[0]
     print(pp(expr))
     result = generate_and_run_benchmark(CodeGen(), [expr])
-    assert result['return_code'] == 0, f"C++ compilation/execution failed: {result}"
+    assert result["return_code"] == 0, f"C++ compilation/execution failed: {result}"
+
 
 def test_repeater_recurse_lane_mismatch2() -> None:
     with with_types(Type.Arith, ElementType.Float):
@@ -59,8 +60,8 @@ def test_repeater_recurse_lane_mismatch2() -> None:
     expr: SignalExpr
     expr = Ith(repeater, 0)
     expr = InferNRows().apply_generic(expr)[0]
-    expr = AnnotateLanes(512).apply_generic(expr)[0]
+    expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
     expr = PushDownConvertLanes().apply_generic(expr)[0]
     print(pp(expr))
     result = generate_and_run_benchmark(CodeGen(), [expr])
-    assert result['return_code'] == 0, f"C++ compilation/execution failed: {result}"
+    assert result["return_code"] == 0, f"C++ compilation/execution failed: {result}"

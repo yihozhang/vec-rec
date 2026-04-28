@@ -9,10 +9,10 @@ from vecrec.expr import *
 from vecrec.expr import Type
 from vecrec.transform import *
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 
 SEED = 42
-LANES = 512
+LANES = get_native_bits()
 MAX_KERNEL_ORDER = 128
 
 
@@ -29,9 +29,7 @@ def make_cascade(n_stages: int, stage_order: int, rng: random.Random) -> SignalE
     """Chain of `n_stages` nested Recurse nodes, each with `stage_order` taps."""
     g: SignalExpr = Var("g", Type.Arith, ElementType.Float)
     for _ in range(n_stages):
-        taps: List[float] = [0.0] + [
-            round(rng.uniform(-0.3, 0.3), 4) for _ in range(stage_order)
-        ]
+        taps: List[float] = [0.0] + [round(rng.uniform(-0.3, 0.3), 4) for _ in range(stage_order)]
         g = Recurse(TIKernel(taps, Type.Arith, ElementType.Float), g)
     return g
 
@@ -61,7 +59,7 @@ class ApplyToAllRecurse(Transform):
     def _walk_signal(self, expr: SignalExpr) -> SignalExpr:
         if expr.is_leaf():
             return expr
-        new_children = [self._walk_generic(c) for c in expr.children()] # type: ignore
+        new_children = [self._walk_generic(c) for c in expr.children()]  # type: ignore
         rebuilt = type(expr)(*new_children)  # type: ignore
         rebuilt.lanes = expr.lanes
         results = self.transform.apply_signal(rebuilt)
@@ -70,7 +68,7 @@ class ApplyToAllRecurse(Transform):
     def _walk_kernel(self, expr: KernelExpr) -> KernelExpr:
         if isinstance(expr, (TIKernel, TVKernel)):
             return expr
-        new_children = [self._walk_generic(c) for c in expr.children()] # type: ignore
+        new_children = [self._walk_generic(c) for c in expr.children()]  # type: ignore
         rebuilt = type(expr)(*new_children)  # type: ignore
         rebuilt.lanes = expr.lanes
         return rebuilt
@@ -117,16 +115,11 @@ def run_config(
         file=sys.stderr,
     )
     results = transforms.apply_signal(program)
-    print(
-        f" {len(results)} variant(s), compiling...", end="", flush=True, file=sys.stderr
-    )
+    print(f" {len(results)} variant(s), compiling...", end="", flush=True, file=sys.stderr)
     codegen = CodeGen()
-    benchmark_result = generate_and_run_benchmark(
-        codegen, results, include_correctness_check=True
-    )
+    benchmark_result = generate_and_run_benchmark(codegen, results, include_correctness_check=True)
     assert benchmark_result["return_code"] == 0, (
-        f"Benchmark failed for {topology} {params} {sched_label}: "
-        f"{benchmark_result.get('error', '')}"
+        f"Benchmark failed for {topology} {params} {sched_label}: " f"{benchmark_result.get('error', '')}"
     )
     rows: List[Tuple[str, str, str, str, str]] = []
     output = benchmark_result["output"]

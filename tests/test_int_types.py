@@ -2,9 +2,10 @@
 """Simple test to verify multi-element type support"""
 
 from vecrec.expr import *
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 from vecrec.transform import *
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
+
 
 def test_float_backward_compatibility():
     with with_types(Type.Arith, ElementType.Float):
@@ -14,7 +15,7 @@ def test_float_backward_compatibility():
 
     schedule = Seq(
         Dilate(),
-        AnnotateLanes(512),
+        AnnotateLanes(get_native_bits()),
         PushDownConvertLanes(),
     )
     results = schedule.apply_signal(expr)
@@ -22,6 +23,7 @@ def test_float_backward_compatibility():
     codegen = CodeGen()
     out = generate_and_run_benchmark(codegen, results, True)
     print(out)
+
 
 def test_int32_support():
     # Create an int32 prefix sum
@@ -32,14 +34,15 @@ def test_int32_support():
 
     schedule = Seq(
         Dilate(),
-        AnnotateLanes(512),
+        AnnotateLanes(get_native_bits()),
         PushDownConvertLanes(),
     )
     results = schedule.apply_signal(expr)
 
     codegen = CodeGen()
     out = generate_and_run_benchmark(codegen, results, True)
-    assert out['return_code'] == 0, "Int32 benchmark failed"
+    assert out["return_code"] == 0, "Int32 benchmark failed"
+
 
 def test_multiple_types():
     """Test that we catch type mismatches"""
@@ -57,6 +60,7 @@ def test_multiple_types():
     except AssertionError as e:
         print(f"✓ Correctly caught type mismatch: {e}")
 
+
 if __name__ == "__main__":
     print("=" * 60)
     print("VecRec Multi-Element Type Support Test")
@@ -73,5 +77,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n✗ Test failed with error: {e}")
         import traceback
+
         traceback.print_exc()
         exit(1)

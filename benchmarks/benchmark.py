@@ -61,7 +61,7 @@ class Benchmark(ABC):
     @property
     def max_bits(self) -> int:
         """Hardware SIMD width"""
-        return 512
+        return 256
 
     @property
     def verify_atol(self) -> float:

@@ -13,7 +13,7 @@ from vecrec.transform import (
     Seq,
 )
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 
 
 @pytest.mark.parametrize(
@@ -45,7 +45,7 @@ def test_second_order_ti_element_types(element_type, coefficients):
                 Any(Dilate(), Delay()),
             ),
         ),
-        AnnotateLanes(512),
+        AnnotateLanes(get_native_bits()),
         PushDownConvertLanes(),
     )
 

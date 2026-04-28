@@ -6,7 +6,7 @@ from vecrec.expr.base import SignalExpr, Type, with_types
 from vecrec.expr.kernel import TIKernel2D
 from vecrec.expr.signal import Var, Var2D
 from vecrec.expr.signal_ops import Convolve2D, Ith, SAdd
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 from vecrec.codegen import (
     CodeGen,
     generate_and_run_benchmark,
@@ -22,7 +22,7 @@ def test_var2d_ith_compiles_and_runs() -> None:
         var2d = Var2D("img")
         expr: SignalExpr = Ith(var2d, 0)
         expr = InferNRows().apply_generic(expr)[0]
-        expr = AnnotateLanes(512).apply_generic(expr)[0]
+        expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [expr])
     assert result["return_code"] == 0, result.get("error")
@@ -39,7 +39,7 @@ def test_var2d_generates_input_signal2d() -> None:
         var2d = Var2D("img")
         expr: SignalExpr = Ith(var2d, 1)
         expr = InferNRows().apply_generic(expr)[0]
-        expr = AnnotateLanes(512).apply_generic(expr)[0]
+        expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
 
     runner = generate_kernel_executable(CodeGen(), expr)
     input = np.random.rand(4, 1024).astype(np.float32)
@@ -66,7 +66,7 @@ def test_var2d_with_convolve2d_compiles_and_runs() -> None:
         expr: SignalExpr = Convolve2D(kernel2d, var2d)
         expr = Preorder(Try(Eliminate2DKernels())).apply_generic(expr)[0]
         expr = InferNRows().apply_generic(expr)[0]
-        expr = AnnotateLanes(512).apply_generic(expr)[0]
+        expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [expr])
     assert result["return_code"] == 0, result.get("error")
@@ -89,9 +89,7 @@ def test_var2d_with_convolve2d_compiles_and_runs() -> None:
     for row_idx in range(input.shape[0]):
         current_row = input[row_idx]
         prev_row = input[row_idx - 1] if row_idx > 0 else zero_row
-        expected_row = causal_conv_1d(current_row, kernel_data[0]) + causal_conv_1d(
-            prev_row, kernel_data[1]
-        )
+        expected_row = causal_conv_1d(current_row, kernel_data[0]) + causal_conv_1d(prev_row, kernel_data[1])
         expected_rows.append(expected_row)
 
     expected_output = np.concatenate(expected_rows)
@@ -105,7 +103,7 @@ def test_var2d_alongside_var1d() -> None:
         var2d = Var2D("img")
         expr: SignalExpr = SAdd(Ith(var2d, 0), var1d)
         expr = InferNRows().apply_generic(expr)[0]
-        expr = AnnotateLanes(512).apply_generic(expr)[0]
+        expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
 
     codegen = CodeGen()
     code = codegen.generate(expr, "test_var2d_var1d")
@@ -142,7 +140,7 @@ def test_var2d_kernel_executable_ith_row() -> None:
         var2d = Var2D("img")
         expr: SignalExpr = Ith(var2d, 0)
         expr = InferNRows().apply_generic(expr)[0]
-        expr = AnnotateLanes(512).apply_generic(expr)[0]
+        expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
 
     runner = generate_kernel_executable(CodeGen(), expr)
 
@@ -159,6 +157,4 @@ def test_var2d_kernel_executable_ith_row() -> None:
 
     # Each 1024-element chunk of output corresponds to one row of img_in
     expected = img_in.flatten()
-    assert np.allclose(
-        output, expected, atol=1e-6
-    ), f"max abs error: {np.abs(output - expected).max()}"
+    assert np.allclose(output, expected, atol=1e-6), f"max abs error: {np.abs(output - expected).max()}"

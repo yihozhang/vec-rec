@@ -15,7 +15,7 @@ from vecrec.transform import (
     Seq,
 )
 from vecrec.expr import Convolve, Impulse, Num, PointwiseDiv, Recurse, TIKernel, TVKernel, Type, Var, with_types
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 from vecrec.codegen import generate_kernel_executable
 
 
@@ -35,7 +35,7 @@ def test_generate_and_run() -> None:
                 SaturatePreorder(ConstantFold),
             )
         ),
-        AnnotateLanes(512),
+        AnnotateLanes(get_native_bits()),
         PushDownConvertLanes(),
     )
     results = schedule.apply_signal(expr)
@@ -73,7 +73,7 @@ def test_generate_kernel_executable_roundtrip() -> None:
         expr = Convolve(kernel, signal)
 
     schedule = Seq(
-        AnnotateLanes(512),
+        AnnotateLanes(get_native_bits()),
         PushDownConvertLanes(),
     )
     results = schedule.apply_signal(expr)
@@ -104,7 +104,7 @@ def test_generate_kernel_executable_fibonacci_sum() -> None:
 
     schedule = Seq(
         SaturatePreorder(ConstantFold),
-        AnnotateLanes(512),
+        AnnotateLanes(get_native_bits()),
         PushDownConvertLanes(),
     )
     results = schedule.apply_signal(fib_sum)
@@ -142,7 +142,7 @@ def test_generate_kernel_executable_continued_fraction() -> None:
         delayed_h = Convolve(TIKernel.z(), h)
         program = PointwiseDiv(h, delayed_h)
 
-    results = get_candidate_schedules(program, 512)
+    results = get_candidate_schedules(program, get_native_bits())
     assert len(results) > 0
 
     codegen = CodeGen()
@@ -181,7 +181,7 @@ def test_common_subexpression_convolve_div() -> None:
         cse = Convolve(k1, x)  # shared node
         program = PointwiseMul(cse, Convolve(k2, cse))
 
-    results = get_candidate_schedules(program, 512)
+    results = get_candidate_schedules(program, get_native_bits())
     assert len(results) > 0
 
     runner = generate_kernel_executable(CodeGen(), results[0])

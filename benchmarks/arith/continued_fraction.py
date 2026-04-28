@@ -21,12 +21,10 @@ import numpy as np
 
 from vecrec.codegen import (
     CodeGen,
-    generate_and_run_benchmark,
     generate_kernel_executable,
 )
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr, SignalExpr2D
-from vecrec.optimize import get_candidate_schedules
 from vecrec.util import ElementType
 
 from benchmark import Benchmark
@@ -105,30 +103,3 @@ class ContinuedFractionBenchmark(Benchmark):
             return True, ""
         except Exception as exc:
             return False, str(exc)
-
-
-def main() -> None:
-    lanes = 512
-    program = ContinuedFractionBenchmark().original_expr()
-    results = get_candidate_schedules(program, lanes)
-    codegen = CodeGen()
-    generate_and_run_benchmark(codegen, results[1:], True)
-
-    for result in results:
-        runner = generate_kernel_executable(codegen, result)
-
-        n = 64
-        a_in = np.random.uniform(-1.0, 1.0, size=n).astype(np.float32)
-        b_in = np.random.uniform(-1.0, 1.0, size=n).astype(np.float32)
-        output, elapsed_us = runner.run({"a": a_in[1:], "b": b_in[1:]})
-
-        f_expected = np.zeros(n, dtype=np.float32)
-        f_expected[0] = 1.0
-        for i in range(1, n):
-            f_expected[i] = a_in[i] + b_in[i] / f_expected[i - 1]
-
-        assert np.allclose(output[2:], f_expected[1:-2], atol=1e-3, rtol=1e-3)
-
-
-if __name__ == "__main__":
-    main()

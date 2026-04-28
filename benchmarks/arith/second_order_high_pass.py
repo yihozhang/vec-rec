@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.expr import *
-from vecrec.optimize import get_candidate_schedules
 from vecrec.util import ElementType
 
 from benchmark import Benchmark
@@ -39,20 +37,3 @@ class SecondOrderHighPassBenchmark(Benchmark):
             g2 = g[i - 2] if i >= 2 else 0.0
             f[i] = np.float32(1.6) * f1 + np.float32(-0.64) * f2 + g0 - np.float32(2.0) * g1 + g2
         return f
-
-
-def main() -> None:
-    lanes = 512
-    with with_types(Type.Arith, ElementType.Float):
-        program = Recurse(
-            TIKernel([0, 1.6, -0.64]),
-            Convolve(TIKernel([1, -2, 1]), Var("g")),
-        )
-    results = get_candidate_schedules(program, lanes)
-    codegen = CodeGen()
-    benchmark_result = generate_and_run_benchmark(codegen, results, True)
-    print(benchmark_result)
-
-
-if __name__ == "__main__":
-    main()

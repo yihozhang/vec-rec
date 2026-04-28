@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from vecrec.expr import Type
 
-__all__ = ["ElementType", "allclose"]
+__all__ = ["ElementType", "allclose", "get_native_bits"]
+
 
 class ElementType(Enum):
     Float = 1
@@ -59,6 +60,7 @@ class ElementType(Enum):
             case ElementType.I8:
                 return str(int(val))
 
+
 def allclose(a, b, tol=1e-6):
     if len(a) != len(b):
         return False
@@ -66,3 +68,17 @@ def allclose(a, b, tol=1e-6):
         if abs(x - y) > tol:
             return False
     return True
+
+
+def get_native_bits() -> int:
+    # run lscpu and grep for avx512
+    import subprocess
+
+    try:
+        output = subprocess.check_output("lscpu", text=True)
+        for line in output.splitlines():
+            if "avx512" in line.lower():
+                return 512
+    except subprocess.CalledProcessError:
+        pass
+    return 256

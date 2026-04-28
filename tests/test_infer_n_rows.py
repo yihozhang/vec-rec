@@ -4,7 +4,7 @@ from vecrec.expr.base import SignalExpr, Type, with_types
 from vecrec.expr.kernel import TIKernel2D
 from vecrec.expr.signal import Var, Var2D
 from vecrec.expr.signal_ops import Convolve2D, Ith, Repeater, SAdd
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.optimize import get_candidate_schedules
 from vecrec.transform import AnnotateLanes, InferNRows, Preorder, Eliminate2DKernels, Try
@@ -57,7 +57,7 @@ def test_infer_via_convolve2d_eliminate() -> None:
     InferNRows().apply_generic(expr)
     assert var2d.n_rows == 2
 
-    expr = AnnotateLanes(512).apply_generic(expr)[0]
+    expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
     result = generate_and_run_benchmark(CodeGen(), [expr])
     assert result["return_code"] == 0, result.get("error")
 
@@ -70,7 +70,7 @@ def test_infer_end_to_end_via_get_candidate_schedules() -> None:
         var2d = Var2D("img")
         expr: SignalExpr = Convolve2D(kernel2d, var2d)
 
-    results = get_candidate_schedules(expr, 512)
+    results = get_candidate_schedules(expr, get_native_bits())
     assert len(results) > 0
     result = generate_and_run_benchmark(CodeGen(), results)
     assert result["return_code"] == 0, result.get("error")

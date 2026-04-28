@@ -1,6 +1,5 @@
 """Tests for 2D kernel factorization."""
 
-
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr
 from vecrec.expr.kernel import TIKernel2D
@@ -18,7 +17,7 @@ from vecrec.transform import (
     SaturatePreorder,
     Try,
 )
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 
 
 # ---------------------------------------------------------------------------
@@ -47,8 +46,8 @@ def test_separable_diff_kernel():
     with with_types(Type.Arith, ElementType.Float):
         data = [
             [1.0, 0.0, 0.0, -1.0],
-            [0.0, 0.0, 0.0,  0.0],
-            [0.0, 0.0, 0.0,  0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
             [-1.0, 0.0, 0.0, 1.0],
         ]
         A = TIKernel2D(data)
@@ -144,7 +143,7 @@ def test_factorize2d_codegen():
     expr = SaturatePreorder(ConstantFold).apply_signal(expr)[0]
     expr = Preorder(Try(Eliminate2DKernels())).apply_signal(expr)[0]
     expr = InferNRows().apply_generic(expr)[0]
-    expr = AnnotateLanes(512).apply_signal(expr)[0]
+    expr = AnnotateLanes(get_native_bits()).apply_signal(expr)[0]
 
     result = generate_and_run_benchmark(CodeGen(), [expr])
     assert result["return_code"] == 0

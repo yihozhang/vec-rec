@@ -3,7 +3,7 @@ from __future__ import annotations
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
 from vecrec.transform import *
 from vecrec.expr import Recurse, TIKernel, Type, Var, with_types
-from vecrec.util import ElementType
+from vecrec.util import ElementType, get_native_bits
 
 
 def main():
@@ -11,7 +11,7 @@ def main():
         kernel = TIKernel([0, 1.8, -0.9])
         signal = Var("x")
     expr = Recurse(kernel, signal)
-    
+
     constant_fold = SaturatePreorder(ConstantFold)
     schedule = Seq(
         Any(
@@ -20,18 +20,17 @@ def main():
                 Dilate(),
                 constant_fold,
                 Any(
-                    Noop(), 
+                    Noop(),
                     Seq(Delay(), constant_fold),
-                    Seq(*[Delay(), constant_fold] * 3), 
+                    Seq(*[Delay(), constant_fold] * 3),
                     Seq(*[Delay(), constant_fold] * 9),
                     Dilate(),
-                )
-            )
+                ),
+            ),
         ),
-        
-        AnnotateLanes(512),
+        AnnotateLanes(get_native_bits()),
         PushDownConvertLanes(),
-        # UnrollToMaxLanes(512),
+        # UnrollToMaxLanes(get_native_bits()),
     )
     results = schedule.apply_signal(expr)
     codegen = CodeGen()
