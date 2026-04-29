@@ -5,6 +5,9 @@ import typing
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr, Type
 from vecrec.expr.kernel import TIKernel2D
+from vecrec.expr.signal_ops import WindowMap, WMVar
+from vecrec.expr.signal_vec import RecurseV, SignalVector
+from vecrec.expr.kernel_matrix import KernelMatrix
 from vecrec.factorize import factorize_polynomial, factorize_kernel2d
 from vecrec.util import ElementType
 from . import Transform, ArithTransform, TropTransform
@@ -20,6 +23,7 @@ __all__ = [
     "DilateTVWithSingleOddOrder",
     "DilateLTVArith",
     "DilateLTVTrop",
+    "DilateLTVHalfPoints",
 ]
 
 
@@ -335,10 +339,10 @@ class DilateTVWithSingleOddOrder(Transform):
                 return []
 
 
-
 # ---------------------------------------------------------------------------
 # LTV (linear time-varying) tower decomposition: dk/fk algorithm
 # ---------------------------------------------------------------------------
+
 
 def _ltv_delay(sig: SignalExpr, n: int, ty: Type, et: ElementType) -> SignalExpr:
     """Return sig delayed by n positions.  Constants are invariant to delay."""
@@ -408,6 +412,7 @@ def _build_ltv_tower(
 
     Returns (d[K], d[K-1], f[K]).
     """
+
     def delay(sig: SignalExpr, n: int) -> SignalExpr:
         return _ltv_delay(sig, n, ty, et)
 
@@ -428,11 +433,9 @@ def _build_ltv_tower(
 
     # Base case: k=1 -> 2k=2
     # d[2] = a(x)*a(x-1) + b(x)   [one*b*one = b simplifies the third term]
-    d[2] = add(mul(d[1], delay(d[1], 1)),
-               mul(d[0], mul(b_sig, delay(d[0], 2))))
+    d[2] = add(mul(d[1], delay(d[1], 1)), mul(d[0], mul(b_sig, delay(d[0], 2))))
     # f[2] = g(x) + a(x)*g(x-1)   [f[0]=zero so third term vanishes in both algebras]
-    f[2] = add(add(f[1], mul(d[1], delay(f[1], 1))),
-               mul(d[0], mul(b_sig, delay(f[0], 2))))
+    f[2] = add(add(f[1], mul(d[1], delay(f[1], 1))), mul(d[0], mul(b_sig, delay(f[0], 2))))
 
     # Tower iterations: k = 2, 4, 8, ..., K/2
     k = 2
@@ -449,14 +452,14 @@ def _build_ltv_tower(
             # Two-term: idempotency of ⊕ makes subtraction unnecessary
             d[2 * k - 1] = add(
                 mul(d[k], delay(d[k - 1], k)),
-                mul(d[k - 1], delay(d[k], k-1)),
+                mul(d[k - 1], delay(d[k], k - 1)),
             )
         else:
             # Three-term inclusion-exclusion
             a_del_km1 = delay(a_sig, k - 1)
             d[2 * k - 1] = sub(
-                add(mul(d[k], delay(d[k-1], k)), mul(d[k - 1], delay(d[k], k-1))),
-                mul(d[k - 1], mul(a_del_km1, delay(d[k-1], k))),
+                add(mul(d[k], delay(d[k - 1], k)), mul(d[k - 1], delay(d[k], k - 1))),
+                mul(d[k - 1], mul(a_del_km1, delay(d[k - 1], k))),
             )
 
         # f[2k]: even window
@@ -523,7 +526,7 @@ class DilateLTVArith(Transform):
 
                 ty = kernel.ty
                 et = kernel.element_type
-                results = []
+                results: List[SignalExpr] = [expr]
                 for K in _ltv_target_K(self.max_bits, et):
 
                     a_sig: SignalExpr = data[1]
@@ -535,6 +538,104 @@ class DilateLTVArith(Transform):
                     coeff_Kp1 = _ltv_mul(d_Km1, _ltv_delay(b_sig, K - 1, ty, et), ty, et)
                     stitching_data: List[SignalExpr] = [zero] * K + [d_K, coeff_Kp1]
                     results.append(Recurse(TVKernel(stitching_data, ty, et), f_K))
+                return results
+
+            case _:
+                return []
+
+
+# @ArithTransform
+class DilateLTVHalfPoints(Transform):
+    """Vectorize a 2nd-order arithmetic LTV recurrence via the half-points parallel scan.
+
+    Transforms::
+
+        Recurse(TVKernel([0, a(x), b(x)]), g)
+
+    into a WindowMap that processes 2K outputs per K-lane SIMD iteration using the
+    half-points matrix prefix scan described in ltv-recurrences-half-points.md.
+    """
+
+    max_bits: int
+
+    def __init__(self, max_bits: int = 2**63) -> None:
+        self.max_bits = max_bits
+
+    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        match expr:
+            case Recurse(TVKernel(data) as kernel, g):
+                if len(data) != 3:
+                    return []
+                if not (isinstance(data[0], Num) and kernel.ty.is_zero(data[0].value)):
+                    return []
+
+                ty = kernel.ty
+                et = kernel.element_type
+                a_sig: SignalExpr = data[1]
+                b_sig: SignalExpr = data[2]
+                results: List[SignalExpr] = [expr]
+
+                for K in [1] + list(_ltv_target_K(self.max_bits, et)):
+
+                    def make_body(wm_inputs: List[List[WMVar]]) -> SignalVectorExpr:
+                        a_even = wm_inputs[0][0]
+                        a_odd = wm_inputs[0][1]
+                        b_even = wm_inputs[1][0]
+                        b_odd = wm_inputs[1][1]
+                        g_even = wm_inputs[2][0]
+                        g_odd = wm_inputs[2][1]
+
+                        def mul(a: SignalExpr, b: SignalExpr) -> SignalExpr:
+                            return _ltv_mul(a, b, ty, et)
+
+                        def add(a: SignalExpr, b: SignalExpr) -> SignalExpr:
+                            return _ltv_add(a, b, ty, et)
+
+                        def delay(s: SignalExpr, d: int) -> SignalExpr:
+                            return _ltv_delay(s, d, ty, et)
+
+                        # Phase 1: M2' (first two rows of the 3x3 affine matrix product)
+                        # M2'(x) = M(2x+1) * M(2x)
+                        M: List[List[SignalExpr]] = [
+                            [
+                                add(mul(a_odd, a_even), b_odd),
+                                mul(a_odd, b_even),
+                                add(mul(a_odd, g_even), g_odd),
+                            ],
+                            [a_even, b_even, g_even],
+                        ]
+
+                        # Phase 2: log2(K) prefix scan layers
+                        # Layer ell uses delay d = 2^ell in the half-rate domain
+                        for ell in range(K.bit_length() - 1):
+                            d = 1 << ell
+                            M_new: List[List[SignalExpr]] = [[Num(ty.zero(), ty, et)] * 3 for _ in range(2)]
+                            for row in range(2):
+                                for col in range(2):
+                                    terms = [mul(M[row][m], delay(M[m][col], d)) for m in range(2)]
+                                    M_new[row][col] = add(terms[0], terms[1])
+                                # Affine column 2: sum + M[row][2]
+                                affine = [mul(M[row][m], delay(M[m][2], d)) for m in range(2)]
+                                M_new[row][2] = add(add(affine[0], affine[1]), M[row][2])
+                            M = M_new
+
+                        # Phase 3: RecurseV — F[0]=f_odd, F[1]=f_even
+                        # Kernel has K leading zeros so time_delay(K)=K → lanes=K
+                        zero = Num(ty.zero(), ty, et)
+
+                        def make_kernel(m_ij: SignalExpr) -> TVKernel:
+                            return TVKernel([zero] * K + [m_ij], ty, et)
+
+                        km = KernelMatrix(
+                            [
+                                [make_kernel(M[0][0]), make_kernel(M[0][1])],
+                                [make_kernel(M[1][0]), make_kernel(M[1][1])],
+                            ]
+                        )
+                        gvec = SignalVector([M[0][2], M[1][2]])
+                        return RecurseV(km, gvec)
+
+                    results.append(WindowMap(2, [a_sig, b_sig, g], make_body))
                 return results
 
             case _:
@@ -573,7 +674,7 @@ class DilateLTVTrop(Transform):
 
                 ty = kernel.ty
                 et = kernel.element_type
-                results = []
+                results: List[SignalExpr] = [expr]
                 for K in _ltv_target_K(self.max_bits, et):
                     a_sig: SignalExpr = data[1]
                     b_sig: SignalExpr = data[2]

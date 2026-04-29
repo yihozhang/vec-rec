@@ -22,10 +22,13 @@ from vecrec.expr.signal_ops import (
     Ith,
     Signal2DAt,
     RepeaterVec,
+    WMVar,
+    WindowMap,
 )
 from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
 from vecrec.expr.kernel import TIKernel, TVKernel, TIKernel2D, TVKernel2D
 from vecrec.expr.kernel_ops import KAdd, KSub, KConvolve, KNeg, KConvertLanes
+from vecrec.expr.kernel_matrix import KernelMatrix
 
 # Precedence levels (higher binds tighter)
 _PREC_BINDER = 10  # μ (Repeater)
@@ -41,7 +44,7 @@ def _prec(expr: RecLang) -> int:
     match expr:
         case Num(value=v) if v < 0:
             return _PREC_UNARY
-        case Num() | Impulse() | Var() | RVar2D():
+        case Num() | Impulse() | Var() | RVar2D() | WMVar():
             return _PREC_ATOM
         case TIKernel() | TVKernel() | TIKernel2D() | TVKernel2D():
             return _PREC_ATOM
@@ -57,7 +60,7 @@ def _prec(expr: RecLang) -> int:
             return _PREC_ADD
         case Recurse() | Recurse2D():
             return _PREC_RECURSE
-        case Repeater() | RepeaterVec():
+        case Repeater() | RepeaterVec() | WindowMap():
             return _PREC_BINDER
         case Signal2DAt() | VectorAt():
             return _PREC_INDEX
@@ -88,12 +91,14 @@ def _fmt_num(v: float) -> str:
         return str(int(v))
     return f"{v:g}"
 
+
 # Source - https://stackoverflow.com/a/13875688
 # Posted by Eric, modified by community. See post 'Timeline' for change history
 # Retrieved 2026-03-24, License - CC BY-SA 3.0
 
+
 def _fmt_superscript(s: str) -> str:
-    return u''.join(dict(zip(u"0123456789", u"⁰¹²³⁴⁵⁶⁷⁸⁹")).get(c, c) for c in s)
+    return "".join(dict(zip("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")).get(c, c) for c in s)
 
 
 def _fmt_kernel_row(row: list[float]) -> str:
@@ -105,6 +110,8 @@ def _all_children(expr: RecLang) -> list[RecLang]:
     match expr:
         case TVKernel2D():
             return [v for row in expr.data for v in row]
+        case KernelMatrix():
+            return [k for row in expr.data for k in row]
         case _:
             return expr.children()  # type: ignore[return-value]
 
@@ -119,6 +126,7 @@ def _fmt_one(
     `fmt` is called for each child; `bound` holds the ids of nodes that have
     been assigned a let-binding name (so their effective precedence is _PREC_ATOM).
     """
+
     def cp(e: RecLang) -> int:
         return _PREC_ATOM if id(e) in bound else _prec(e)
 
@@ -245,6 +253,18 @@ def _fmt_one(
         case RecurseV(a, g):
             return f"rec({fmt(a)}, {fmt(g)})"
 
+        case KernelMatrix():
+            rows = "; ".join(", ".join(fmt(k) for k in row) for row in expr.data)
+            return f"[{rows}]"
+
+        # --- WindowMap binder ---
+        case WMVar(name):
+            return name.lstrip("$")
+
+        case WindowMap():
+            inputs_str = ", ".join(fmt(inp) for inp in expr.inputs)
+            return f"wmap[{expr.n}]({inputs_str}; {fmt(expr.body)})"
+
         # --- Lane conversions (transparent) ---
         case ConvertLanes(a):
             return fmt(a)
@@ -318,8 +338,8 @@ def pp(expr: RecLang) -> str:
     # --- Assign let-binding names to shared non-trivial structural classes ---
     # A class is "shared" when the sum of its members' ref-counts exceeds 1,
     # covering both duplicate objects (len > 1) and DAG-shared single objects.
-    name_map: dict[int, str] = {}   # repr_id -> name
-    binding_order: list[int] = []   # repr_ids in definition (post-)order
+    name_map: dict[int, str] = {}  # repr_id -> name
+    binding_order: list[int] = []  # repr_ids in definition (post-)order
     counter = [0]
 
     for repr_id, members in struct_groups.items():
@@ -361,11 +381,7 @@ def pp(expr: RecLang) -> str:
             break
         active_repr_ids -= drop
 
-    name_map = {
-        repr_id: name
-        for repr_id, name in name_map.items()
-        if repr_id in active_repr_ids
-    }
+    name_map = {repr_id: name for repr_id, name in name_map.items() if repr_id in active_repr_ids}
     binding_order = [repr_id for repr_id in binding_order if repr_id in active_repr_ids]
 
     # bound: all node ids whose structural class has a let-binding name.
@@ -381,8 +397,5 @@ def pp(expr: RecLang) -> str:
     if not name_map:
         return _fmt_one(expr, fmt, bound)
 
-    lines = [
-        f"let {name_map[repr_id]} = {_fmt_one(id_to_node[repr_id], fmt, bound)}"
-        for repr_id in binding_order
-    ]
+    lines = [f"let {name_map[repr_id]} = {_fmt_one(id_to_node[repr_id], fmt, bound)}" for repr_id in binding_order]
     return "\n".join(lines) + "\nin " + _fmt_one(expr, fmt, bound)

@@ -5,7 +5,7 @@ from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr, SignalExpr2DVec
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec
+from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WMVar
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.expr.signal_vec import VectorAt, RecurseV, ConvolveV, SignalVector
 from vecrec.expr.kernel_matrix import KernelMatrix
@@ -285,6 +285,24 @@ class AnnotateLanes(Transform):
             new_vec_at = VectorAt(vec_inner, expr.i)
             new_vec_at.lanes = lanes
             return [new_vec_at]
+
+        if isinstance(expr, WindowMap):
+            # Probe the body at max lanes to discover K from the RecurseV time_delay.
+            probe = self.apply_signal_vector(expr.body)[0]
+            K = probe.lanes or self.max_lanes(element_type)
+            # Re-annotate body and inputs at exactly K lanes (no ConvertLanes wrappers
+            # needed inside the body; everything stays at K lanes throughout).
+            k_ann = AnnotateLanes(K * element_type.bit_width())
+            new_body = k_ann.apply_signal_vector(expr.body)[0]
+            new_inputs = tuple(k_ann.apply_signal(inp)[0] for inp in expr.inputs)
+            # WMVar placeholders live in the body's half-rate domain (K lanes).
+            new_ivars = tuple(
+                tuple(cast(WMVar, wv.with_lanes(K)) for wv in ivars)
+                for ivars in expr.input_vars
+            )
+            new_wm = WindowMap.make(expr.n, new_inputs, new_body, new_ivars)
+            new_wm.lanes = K
+            return [new_wm]
 
         match expr:
             case Recurse(a, _g):

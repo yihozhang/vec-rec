@@ -1305,3 +1305,198 @@ struct VectorAt {
 
     void reset_and_next_row() {}
 };
+
+// Primary templates — specializations below for each concrete vec_type.
+template <typename vec_type> struct Unzip2 { void reset_and_next_row() {} };
+template <typename vec_type> struct Zip2   { void reset_and_next_row() {} };
+
+#define VECREC_DEFINE_UNZIP2_ZIP2_K1(vec_type) \
+template <> struct Unzip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_even, int out_odd, int in_lo, int in_hi) { \
+        auto lo = reg[in_lo]; auto hi = reg[in_hi]; \
+        reg[out_even] = lo; \
+        reg[out_odd]  = hi; \
+    } \
+    void reset_and_next_row() {} \
+}; \
+template <> struct Zip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_lo, int out_hi, int in_even, int in_odd) { \
+        auto e = reg[in_even]; auto o = reg[in_odd]; \
+        reg[out_lo] = e; \
+        reg[out_hi] = o; \
+    } \
+    void reset_and_next_row() {} \
+};
+
+VECREC_DEFINE_UNZIP2_ZIP2_K1(float_vec1)
+VECREC_DEFINE_UNZIP2_ZIP2_K1(int8_vec1)
+VECREC_DEFINE_UNZIP2_ZIP2_K1(int32_vec1)
+VECREC_DEFINE_UNZIP2_ZIP2_K1(int64_vec1)
+#undef VECREC_DEFINE_UNZIP2_ZIP2_K1
+
+// K=2 specializations (float_vec2, int32_vec2, int64_vec2)
+// Unzip2: in = [e0,o0](lo) ++ [e1,o1](hi) -> even=[e0,e1], odd=[o0,o1]
+// Zip2:   even=[e0,e1], odd=[o0,o1] -> lo=[e0,o0], hi=[e1,o1]
+#define VECREC_DEFINE_UNZIP2_ZIP2_K2(vec_type) \
+template <> struct Unzip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_even, int out_odd, int in_lo, int in_hi) { \
+        auto lo = reg[in_lo]; auto hi = reg[in_hi]; \
+        reg[out_even] = __builtin_shufflevector(lo, hi, 0, 2); \
+        reg[out_odd]  = __builtin_shufflevector(lo, hi, 1, 3); \
+    } \
+    void reset_and_next_row() {} \
+}; \
+template <> struct Zip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_lo, int out_hi, int in_even, int in_odd) { \
+        auto e = reg[in_even]; auto o = reg[in_odd]; \
+        reg[out_lo] = __builtin_shufflevector(e, o, 0, 2); \
+        reg[out_hi] = __builtin_shufflevector(e, o, 1, 3); \
+    } \
+    void reset_and_next_row() {} \
+};
+
+VECREC_DEFINE_UNZIP2_ZIP2_K2(float_vec2)
+VECREC_DEFINE_UNZIP2_ZIP2_K2(int8_vec2)
+VECREC_DEFINE_UNZIP2_ZIP2_K2(int32_vec2)
+VECREC_DEFINE_UNZIP2_ZIP2_K2(int64_vec2)
+#undef VECREC_DEFINE_UNZIP2_ZIP2_K2
+
+// K=4 specializations (float_vec4, int32_vec4, int64_vec4)
+// Unzip2: in=[e0,o0,e1,o1](lo)++[e2,o2,e3,o3](hi) -> even=[e0,e1,e2,e3], odd=[o0,o1,o2,o3]
+// Zip2:   even=[e0..e3], odd=[o0..o3] -> lo=[e0,o0,e1,o1], hi=[e2,o2,e3,o3]
+#define VECREC_DEFINE_UNZIP2_ZIP2_K4(vec_type) \
+template <> struct Unzip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_even, int out_odd, int in_lo, int in_hi) { \
+        auto lo = reg[in_lo]; auto hi = reg[in_hi]; \
+        reg[out_even] = __builtin_shufflevector(lo, hi, 0, 2, 4, 6); \
+        reg[out_odd]  = __builtin_shufflevector(lo, hi, 1, 3, 5, 7); \
+    } \
+    void reset_and_next_row() {} \
+}; \
+template <> struct Zip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_lo, int out_hi, int in_even, int in_odd) { \
+        auto e = reg[in_even]; auto o = reg[in_odd]; \
+        reg[out_lo] = __builtin_shufflevector(e, o, 0, 4, 1, 5); \
+        reg[out_hi] = __builtin_shufflevector(e, o, 2, 6, 3, 7); \
+    } \
+    void reset_and_next_row() {} \
+};
+
+VECREC_DEFINE_UNZIP2_ZIP2_K4(float_vec4)
+VECREC_DEFINE_UNZIP2_ZIP2_K4(int8_vec4)
+VECREC_DEFINE_UNZIP2_ZIP2_K4(int32_vec4)
+VECREC_DEFINE_UNZIP2_ZIP2_K4(int64_vec4)
+#undef VECREC_DEFINE_UNZIP2_ZIP2_K4
+
+// K=8 specializations (float_vec8, int32_vec8, int64_vec8)
+// Unzip2: even indices 0,2,4,6,8,10,12,14; odd 1,3,5,7,9,11,13,15
+// Zip2:   lo=[e0,o0,e1,o1,e2,o2,e3,o3] odd=[e4,o4,e5,o5,e6,o6,e7,o7]
+#define VECREC_DEFINE_UNZIP2_ZIP2_K8(vec_type) \
+template <> struct Unzip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_even, int out_odd, int in_lo, int in_hi) { \
+        auto lo = reg[in_lo]; auto hi = reg[in_hi]; \
+        reg[out_even] = __builtin_shufflevector(lo, hi, 0, 2, 4, 6, 8, 10, 12, 14); \
+        reg[out_odd]  = __builtin_shufflevector(lo, hi, 1, 3, 5, 7, 9, 11, 13, 15); \
+    } \
+    void reset_and_next_row() {} \
+}; \
+template <> struct Zip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_lo, int out_hi, int in_even, int in_odd) { \
+        auto e = reg[in_even]; auto o = reg[in_odd]; \
+        reg[out_lo] = __builtin_shufflevector(e, o, 0, 8, 1, 9, 2, 10, 3, 11); \
+        reg[out_hi] = __builtin_shufflevector(e, o, 4, 12, 5, 13, 6, 14, 7, 15); \
+    } \
+    void reset_and_next_row() {} \
+};
+
+VECREC_DEFINE_UNZIP2_ZIP2_K8(float_vec8)
+VECREC_DEFINE_UNZIP2_ZIP2_K8(int8_vec8)
+VECREC_DEFINE_UNZIP2_ZIP2_K8(int32_vec8)
+VECREC_DEFINE_UNZIP2_ZIP2_K8(int64_vec8)
+#undef VECREC_DEFINE_UNZIP2_ZIP2_K8
+
+// K=16 specializations (float_vec16, int32_vec16)
+// Unzip2: even 0,2,...,30; odd 1,3,...,31
+// Zip2:   lo=[e0,o0,...,e7,o7], hi=[e8,o8,...,e15,o15]
+#define VECREC_DEFINE_UNZIP2_ZIP2_K16(vec_type) \
+template <> struct Unzip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_even, int out_odd, int in_lo, int in_hi) { \
+        auto lo = reg[in_lo]; auto hi = reg[in_hi]; \
+        reg[out_even] = __builtin_shufflevector(lo, hi, \
+            0,  2,  4,  6,  8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30); \
+        reg[out_odd]  = __builtin_shufflevector(lo, hi, \
+            1,  3,  5,  7,  9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31); \
+    } \
+    void reset_and_next_row() {} \
+}; \
+template <> struct Zip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_lo, int out_hi, int in_even, int in_odd) { \
+        auto e = reg[in_even]; auto o = reg[in_odd]; \
+        reg[out_lo] = __builtin_shufflevector(e, o, \
+            0, 16,  1, 17,  2, 18,  3, 19,  4, 20,  5, 21,  6, 22,  7, 23); \
+        reg[out_hi] = __builtin_shufflevector(e, o, \
+            8, 24,  9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31); \
+    } \
+    void reset_and_next_row() {} \
+};
+
+VECREC_DEFINE_UNZIP2_ZIP2_K16(float_vec16)
+VECREC_DEFINE_UNZIP2_ZIP2_K16(int8_vec16)
+VECREC_DEFINE_UNZIP2_ZIP2_K16(int32_vec16)
+#undef VECREC_DEFINE_UNZIP2_ZIP2_K16
+
+// K=32 specializations (int8_vec32)
+// Unzip2: even 0,2,...,62; odd 1,3,...,63
+// Zip2:   lo=[e0,o0,...,e15,o15], hi=[e16,o16,...,e31,o31]
+#define VECREC_DEFINE_UNZIP2_ZIP2_K32(vec_type) \
+template <> struct Unzip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_even, int out_odd, int in_lo, int in_hi) { \
+        auto lo = reg[in_lo]; auto hi = reg[in_hi]; \
+        reg[out_even] = __builtin_shufflevector(lo, hi, \
+             0,  2,  4,  6,  8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, \
+            32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62); \
+        reg[out_odd]  = __builtin_shufflevector(lo, hi, \
+             1,  3,  5,  7,  9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, \
+            33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63); \
+    } \
+    void reset_and_next_row() {} \
+}; \
+template <> struct Zip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_lo, int out_hi, int in_even, int in_odd) { \
+        auto e = reg[in_even]; auto o = reg[in_odd]; \
+        reg[out_lo] = __builtin_shufflevector(e, o, \
+             0, 32,  1, 33,  2, 34,  3, 35,  4, 36,  5, 37,  6, 38,  7, 39, \
+             8, 40,  9, 41, 10, 42, 11, 43, 12, 44, 13, 45, 14, 46, 15, 47); \
+        reg[out_hi] = __builtin_shufflevector(e, o, \
+            16, 48, 17, 49, 18, 50, 19, 51, 20, 52, 21, 53, 22, 54, 23, 55, \
+            24, 56, 25, 57, 26, 58, 27, 59, 28, 60, 29, 61, 30, 62, 31, 63); \
+    } \
+    void reset_and_next_row() {} \
+};
+
+VECREC_DEFINE_UNZIP2_ZIP2_K32(int8_vec32)
+#undef VECREC_DEFINE_UNZIP2_ZIP2_K32

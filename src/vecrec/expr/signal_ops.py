@@ -271,3 +271,75 @@ class RepeaterVec(SignalExpr2DVec):
     def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
         # Only expose the body, not prev_vars (internal placeholders)
         return [self.a]
+
+
+@dataclass(unsafe_hash=True)
+class WMVar(SignalExpr):
+    """Placeholder for one interleaved substream inside a WindowMap body."""
+
+    name: str
+    __match_args__ = ("name",)
+
+    def __init__(self, name: str, ty: Type, element_type: ElementType) -> None:
+        super().__init__(ty, element_type)
+        self.name = name
+
+
+@dataclass(unsafe_hash=True)
+class WindowMap(SignalExpr):
+    """Partition inputs into n interleaved substreams, apply body, zip result back.
+
+    For n=2: substream j=0 = even positions, j=1 = odd positions.
+    input_vars[i][j] is the WMVar placeholder for the j-th substream of the i-th input.
+    body is a SignalVectorExpr with n components (one per substream).
+    """
+
+    n: int
+    inputs: Tuple[SignalExpr, ...]
+    body: SignalVectorExpr
+    input_vars: Tuple[Tuple[WMVar, ...], ...]
+    __match_args__ = ("n", "inputs", "body", "input_vars")
+
+    var_count: int = 1
+
+    def __init__(
+        self,
+        n: int,
+        inputs: List[SignalExpr],
+        func: Callable[[List[List[WMVar]]], SignalVectorExpr],
+    ) -> None:
+        assert len(inputs) > 0
+        ty = inputs[0].ty
+        et = inputs[0].element_type
+        name = f"$wm{WindowMap.var_count}"
+        WindowMap.var_count += 1
+        self.n = n
+        self.inputs = tuple(inputs)
+        self.input_vars = tuple(
+            tuple(WMVar(f"{name}_{i}_{j}", ty, et) for j in range(n))
+            for i in range(len(inputs))
+        )
+        subs = [list(self.input_vars[i]) for i in range(len(inputs))]
+        self.body = func(subs)
+        assert self.body.n == n
+        super().__init__(ty, et)
+
+    @staticmethod
+    def make(
+        n: int,
+        inputs: Tuple[SignalExpr, ...],
+        body: SignalVectorExpr,
+        input_vars: Tuple[Tuple[WMVar, ...], ...],
+    ) -> "WindowMap":
+        wm: WindowMap = WindowMap.__new__(WindowMap)
+        ty = inputs[0].ty
+        et = inputs[0].element_type
+        super(WindowMap, wm).__init__(ty, et)
+        wm.n = n
+        wm.inputs = inputs
+        wm.body = body
+        wm.input_vars = input_vars
+        return wm
+
+    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+        return list(self.inputs) + [self.body]  # type: ignore[return-value]

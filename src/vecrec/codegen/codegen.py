@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Set, Tuple, cast
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec
+from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec, WindowMap, WMVar
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.expr.kernel_matrix import KernelMatrix
 from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
@@ -103,6 +103,8 @@ class CodeGen:
     program: List[Node]
     # The lsit of constant declaration
     prologue: List[str]
+    # Map WMVar names to their per-slice register indices (set during _generate_windowmap)
+    _wm_var_map: Dict[str, List[int]]
 
     def __init__(self, ele_per_iter: int = 16):
         self.ele_per_iter = ele_per_iter
@@ -114,6 +116,7 @@ class CodeGen:
         self.prologue = []
         self.var2d_context = {}
         self.rvec_comp_regs: Dict[RepeaterVec, List[List[int]]] = {}
+        self._wm_var_map: Dict[str, List[int]] = {}
 
     def clear(self):
         self.reg_counter = {}
@@ -124,6 +127,7 @@ class CodeGen:
         self.prologue = []
         self.var2d_context = {}
         self.rvec_comp_regs = {}
+        self._wm_var_map: Dict[str, List[int]] = {}
 
     def _max_lanes_in_tree(self, expr: RecLang, visited: Optional[set] = None) -> int:
         """Find the maximum lane width across all nodes in the expression tree."""
@@ -132,6 +136,10 @@ class CodeGen:
         if id(expr) in visited:
             return 0
         visited.add(id(expr))
+        # WindowMap outputs 2 K-lane vectors per iteration, so report 2*lanes
+        if isinstance(expr, WindowMap):
+            assert expr.lanes is not None
+            return 2 * expr.lanes
         max_l = expr.lanes or 0
         for child in expr.children():
             max_l = max(max_l, self._max_lanes_in_tree(child, visited))
@@ -144,7 +152,8 @@ class CodeGen:
         # ele_per_iter must be divisible by every lane width in the tree.
         # Sub-expressions (e.g. Var inside TVKernel) may have wider lanes than the
         # top-level expression, so we scan the whole tree for the maximum.
-        self.ele_per_iter = max(16, self._max_lanes_in_tree(expr))
+        # WindowMap outputs 2*K elements per run() call; do not clamp upward past that.
+        self.ele_per_iter = self._max_lanes_in_tree(expr) * 2
         result = self.generate_signal(expr)
         vars, vars2d = self.collect_input_variables(expr)
         args_1d = [f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items())]
@@ -198,11 +207,82 @@ class CodeGen:
         # """
         return KernelProgram(text, self.ele_per_iter)
 
+    def _generate_windowmap(self, wm: WindowMap) -> List[int]:
+        assert wm.lanes is not None
+        K = wm.lanes
+        vec_type = self.get_vec_type(wm.element_type, K)
+        self.vec_types.add(vec_type)
+        saved_ele = self.ele_per_iter
+
+        # Number of body iterations per outer iteration.
+        # Each body iteration consumes and produces 2K elements (one Unzip2 + one Zip2).
+        assert (
+            saved_ele % (2 * K) == 0
+        ), f"WindowMap (lanes={K}): ele_per_iter={saved_ele} is not a multiple of 2*K={2*K}"
+        n_body_slices = saved_ele // (2 * K)
+
+        # Generate each input at n_body_slices * 2K rate
+        self.ele_per_iter = n_body_slices * 2 * K
+        all_input_regs = [self.generate_signal(inp)[0] for inp in wm.inputs]
+
+        # For each input, run n_body_slices Unzip2 calls; collect per-slice even/odd registers.
+        for inp_regs, ivars in zip(all_input_regs, wm.input_vars):
+            even_regs: List[int] = []
+            odd_regs: List[int] = []
+            for s in range(n_body_slices):
+                even_reg = self._new_register(vec_type)
+                odd_reg = self._new_register(vec_type)
+                self._declare_node(
+                    f"Unzip2<{vec_type}>",
+                    "",
+                    [[even_reg, odd_reg, inp_regs[2 * s], inp_regs[2 * s + 1]]],
+                    vec_type,
+                    vec_type,
+                )
+                even_regs.append(even_reg)
+                odd_regs.append(odd_reg)
+            self._wm_var_map[ivars[0].name] = even_regs
+            self._wm_var_map[ivars[1].name] = odd_regs
+
+        # Generate body at n_body_slices * K lanes
+        self.ele_per_iter = n_body_slices * K
+        body_regs = self.generate_signal(wm.body)[0]
+
+        # Clean up WMVar mappings
+        for ivars in wm.input_vars:
+            for wm_var in ivars:
+                del self._wm_var_map[wm_var.name]
+
+        # For each body slice, zip the two output substreams back to full rate.
+        # Component 0 = f_odd, component 1 = f_even (matches current Zip2 argument order).
+        output_regs: List[int] = []
+        for s in range(n_body_slices):
+            out_lo = self._new_register(vec_type)
+            out_hi = self._new_register(vec_type)
+            self._declare_node(
+                f"Zip2<{vec_type}>",
+                "",
+                [[out_lo, out_hi, body_regs[s] + 1, body_regs[s]]],
+                vec_type,
+                vec_type,
+            )
+            output_regs.extend([out_lo, out_hi])
+
+        self.ele_per_iter = saved_ele
+        return output_regs
+
     def generate_signal(
         self, expr: SignalExpr | SignalExpr2D | KernelExpr | SignalVectorExpr | KernelMatrixExpr
     ) -> Tuple[List[int], Code]:
         if expr in self.mapping:
             return self.mapping[expr]
+
+        # WindowMap is handled specially: it switches ele_per_iter internally.
+        if isinstance(expr, WindowMap):
+            regs = self._generate_windowmap(expr)
+            result: Tuple[List[int], Code] = (regs, Code("", expr.ty, expr.element_type, expr.lanes))
+            self.mapping[expr] = result
+            return result
 
         # KernelMatrixExpr has no own registers; just recursively generate each entry.
         if isinstance(expr, KernelMatrixExpr):
@@ -226,6 +306,12 @@ class CodeGen:
 
         if isinstance(expr, SignalExpr):
             match expr:
+                case WMVar(name):
+                    regs = list(self._wm_var_map[expr.name])
+                    assert len(regs) == n_slices, f"WMVar {expr.name!r}: expected {n_slices} slices, got {len(regs)}"
+                    # The registers were pre-allocated by _generate_windowmap's Unzip2 nodes;
+                    # no new C++ node needs to be declared here.
+                    code = ""
                 case Num(value):
                     regs = self._new_registers(vec_type, n_slices)
                     code = self._declare_node(
@@ -414,9 +500,9 @@ class CodeGen:
                     )
 
                 case Signal2DAt(rv_inner, comp_idx):
-                    assert isinstance(rv_inner, RepeaterVec), (
-                        f"Signal2DAt.a must be a RepeaterVec, got {type(rv_inner)}"
-                    )
+                    assert isinstance(
+                        rv_inner, RepeaterVec
+                    ), f"Signal2DAt.a must be a RepeaterVec, got {type(rv_inner)}"
                     if rv_inner not in self.rvec_comp_regs:
                         self._generate_repeatervec(rv_inner)
                     regs = self.rvec_comp_regs[rv_inner][comp_idx]
@@ -528,7 +614,7 @@ class CodeGen:
                     pair_offsets: List[int] = []
                     flat_idxs_list: List[int] = []
                     off = 0
-                    for (_, _, _, k_taps, k_idxs) in pairs:
+                    for _, _, _, k_taps, k_idxs in pairs:
                         pair_offsets.append(off)
                         flat_idxs_list.extend(k_idxs)
                         off += k_taps
@@ -537,7 +623,7 @@ class CodeGen:
 
                     # Per-component history buffer sizes (minimum 1).
                     comp_buf_sizes: List[int] = [1] * n_vec
-                    for (_, j, _, k_taps, k_idxs) in pairs:
+                    for _, j, _, k_taps, k_idxs in pairs:
                         max_idx = k_idxs[-1]
                         buf_size = (max_idx + expr.lanes - 1) // expr.lanes + 1
                         comp_buf_sizes[j] = max(comp_buf_sizes[j], buf_size)
@@ -575,10 +661,8 @@ class CodeGen:
                         v_kb = self._declare_array("int", kernel_bases if n_pairs > 0 else pad)
                         run_args_list.append([regs[s], v_kb, g_regs[s]])
 
-                    code = self._declare_node(
-                        template_type, "", run_args_list, vec_type, vec_type
-                    )
-                
+                    code = self._declare_node(template_type, "", run_args_list, vec_type, vec_type)
+
                 case ConvertLanesV(child_vec):
                     target_lanes = expr.lanes
                     assert target_lanes is not None

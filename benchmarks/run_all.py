@@ -26,7 +26,12 @@ from arith.prefix_sum import PrefixSumBenchmark
 # from arith.first_order_ti import FirstOrderTIConstBenchmark, FirstOrderTIVarBenchmark
 from arith.first_order_high_pass import FirstOrderHighPassBenchmark
 from arith.second_order_ti import SecondOrderTIBenchmark
-from arith.second_order_tv import SecondOrderTVBenchmark
+from arith.second_order_tv import (
+    SecondOrderTVArithI8Benchmark,
+    SecondOrderTVArithI32Benchmark,
+    SecondOrderTVArithI64Benchmark,
+    SecondOrderTVArithFloatBenchmark,
+)
 from arith.second_order_high_pass import SecondOrderHighPassBenchmark
 from arith.audio_large_filters import AudioLargeFiltersBenchmark
 
@@ -43,7 +48,6 @@ from trop.needleman_wunsch import NeedlemanWunschBenchmark
 from trop.distance_transform import DistanceTransformBenchmark
 from trop.affine_gap import AffineGapBenchmark
 
-
 REGISTRY: list[Benchmark] = []
 
 
@@ -55,15 +59,18 @@ REGISTRY.extend(
         FirstOrderHighPassBenchmark(),
         SecondOrderTIBenchmark(),
         SecondOrderHighPassBenchmark(),
-        SecondOrderTVBenchmark(),
-        AudioLargeFiltersBenchmark(),
-        ContinuedFractionBenchmark(),
-        *[BoxFilterSATBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
-        *[RepeatedBoxFilterBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
+        SecondOrderTVArithI8Benchmark(),
+        SecondOrderTVArithI32Benchmark(),
+        SecondOrderTVArithI64Benchmark(),
+        SecondOrderTVArithFloatBenchmark(),
         SecondOrderTITropBenchmark(),
         SecondOrderTVTropI8Benchmark(),
         SecondOrderTVTropI32Benchmark(),
         SecondOrderTVTropI64Benchmark(),
+        AudioLargeFiltersBenchmark(),
+        ContinuedFractionBenchmark(),
+        *[BoxFilterSATBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
+        *[RepeatedBoxFilterBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
         DistanceTransformBenchmark(),
         NeedlemanWunschBenchmark(),
         AffineGapBenchmark(),
