@@ -174,6 +174,7 @@ __all__ = [
     "DilateTrop",
     "DilateLTVArith",
     "DilateLTVTrop",
+    "DilateLTVHalfPoints",
     "Delay",
     "ComposeRecurse",
     "Factorize",

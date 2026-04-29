@@ -55,6 +55,8 @@ __all__ = [
     "RecurseV",
     "ConvertLanesV",
     "VectorAt",
+    "WMVar",
+    "WindowMap",
     "pp",
     "pps",
 ]

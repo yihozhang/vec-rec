@@ -13,7 +13,7 @@ from vecrec.expr.base import (
     SignalExpr2DVec,
 )
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec
+from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WMVar
 from vecrec.expr.signal_vec import VectorAt
 from . import Transform, _dedup_exprs
 from typing import Callable
@@ -26,11 +26,9 @@ def _expand_tvkernel2d(
     """Return all TVKernel2D variants obtained by applying apply_signal to every entry."""
     return [
         TVKernel2D([list(row) for row in d], expr.ty, expr.element_type).with_lanes(expr.lanes)
-        for d in itertools.product(*[
-            itertools.product(*(apply_signal(v) for v in row))
-            for row in expr.data
-        ])
+        for d in itertools.product(*[itertools.product(*(apply_signal(v) for v in row)) for row in expr.data])
     ]
+
 
 __all__ = [
     "Noop",
@@ -69,9 +67,7 @@ class Seq(Transform):
     def apply_generic(self, expr):
         results = [expr]
         for transform in self.transforms:
-            results = _dedup_exprs(
-                [next for res in results for next in transform.apply_generic(res)]
-            )
+            results = _dedup_exprs([next for res in results for next in transform.apply_generic(res)])
         return results
 
     apply_kernel = apply_generic
@@ -81,6 +77,7 @@ class Seq(Transform):
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
     apply_signal2dvec = apply_generic
+
 
 class Repeat(Transform):
     def __init__(self, times: int, *transforms: Transform) -> None:
@@ -91,9 +88,7 @@ class Repeat(Transform):
     def apply_generic(self, expr):
         results = [expr]
         for _ in range(self.times):
-            results = _dedup_exprs(
-                [next for res in results for next in self.transform.apply_generic(res)]
-            )
+            results = _dedup_exprs([next for res in results for next in self.transform.apply_generic(res)])
         return results
 
     apply_kernel = apply_generic
@@ -103,6 +98,7 @@ class Repeat(Transform):
     apply_kernel_matrix = apply_generic
     apply_signal_vector = apply_generic
     apply_signal2dvec = apply_generic
+
 
 class RepeatUpTo(Transform):
     def __init__(self, max_times: int, *transforms: Transform) -> None:
@@ -168,16 +164,13 @@ class Try(Transform):
     apply_signal_vector = apply_generic
     apply_signal2dvec = apply_generic
 
+
 class Any(Transform):
     def __init__(self, *transforms: Transform) -> None:
         self.transforms = transforms
 
     def apply_generic(self, expr):
-        results = [
-            next
-            for transform in self.transforms
-            for next in transform.apply_generic(expr)
-        ]
+        results = [next for transform in self.transforms for next in transform.apply_generic(expr)]
         return _dedup_exprs(results)
 
     apply_kernel = apply_generic
@@ -188,16 +181,14 @@ class Any(Transform):
     apply_signal_vector = apply_generic
     apply_signal2dvec = apply_generic
 
+
 class Preorder(Transform):
     def __init__(self, transform: Transform) -> None:
         self.transform = transform
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[KernelExpr] = []
         for expr in self.transform.apply_kernel(expr):
@@ -206,12 +197,8 @@ class Preorder(Transform):
                     results.append(expr)
                 case TVKernel(data):
                     results += [
-                        TVKernel(data, expr.ty, expr.element_type).with_lanes(
-                            expr.lanes
-                        )
-                        for data in itertools.product(
-                            *[self.apply_signal(v) for v in data]
-                        )
+                        TVKernel(data, expr.ty, expr.element_type).with_lanes(expr.lanes)
+                        for data in itertools.product(*[self.apply_signal(v) for v in data])
                     ]
                 case _:
                     results += cartesian(
@@ -223,10 +210,7 @@ class Preorder(Transform):
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[SignalExpr] = []
         for expr in self.transform.apply_signal(expr):
@@ -243,6 +227,16 @@ class Preorder(Transform):
                     # Special handling for VectorAt to preserve the integer index
                     for new_vec_a in self.apply_generic(a):
                         results.append(VectorAt(new_vec_a, i).with_lanes(expr.lanes))
+                case WMVar():
+                    results.append(expr)
+                case WindowMap():
+                    new_bodies = list(self.apply_signal_vector(expr.body))
+                    new_inputs_lists = [list(self.apply_generic(inp)) for inp in expr.inputs]
+                    for new_inputs in itertools.product(*new_inputs_lists):
+                        for new_body in new_bodies:
+                            new_wm = WindowMap.make(expr.n, new_inputs, new_body, expr.input_vars)
+                            new_wm.lanes = expr.lanes
+                            results.append(new_wm)
                 case _:
                     results += cartesian(
                         type(expr),
@@ -253,10 +247,7 @@ class Preorder(Transform):
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr2D]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[KernelExpr2D] = []
         for expr in self.transform.apply_generic(expr):
@@ -275,10 +266,7 @@ class Preorder(Transform):
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         def cartesian(constructor, lists, lanes):
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[SignalExpr2D] = []
         for expr in self.transform.apply_generic(expr):
@@ -325,14 +313,9 @@ class Preorder(Transform):
             match expr:
                 case KernelMatrix(data):
                     results += [
-                        KernelMatrix([list(row) for row in matrix_data]).with_lanes(
-                            expr.lanes
-                        )
+                        KernelMatrix([list(row) for row in matrix_data]).with_lanes(expr.lanes)
                         for matrix_data in itertools.product(
-                            *[
-                                itertools.product(*(self.apply_kernel(k) for k in row))
-                                for row in data
-                            ]
+                            *[itertools.product(*(self.apply_kernel(k) for k in row)) for row in data]
                         )
                     ]
                 case _:
@@ -341,10 +324,7 @@ class Preorder(Transform):
 
     def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[SignalVectorExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[SignalVectorExpr] = []
         for expr in self.transform.apply_generic(expr):
@@ -352,9 +332,7 @@ class Preorder(Transform):
                 case SignalVector(data):
                     results += [
                         SignalVector(vec_data).with_lanes(expr.lanes)
-                        for vec_data in itertools.product(
-                            *[self.apply_signal(s) for s in data]
-                        )
+                        for vec_data in itertools.product(*[self.apply_signal(s) for s in data])
                     ]
                 case _:
                     results += cartesian(
@@ -371,10 +349,7 @@ class Postorder(Transform):
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: Sequence[KernelExpr]
         match expr:
@@ -395,25 +370,28 @@ class Postorder(Transform):
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: Sequence[SignalExpr]
         match expr:
             case Var(_) | Num(_) | Impulse(_):
                 results = [expr]
             case Ith(e, i):
-                results = [
-                    Ith(new_e, i).with_lanes(expr.lanes)
-                    for new_e in self.apply_signal2d(e)
-                ]
+                results = [Ith(new_e, i).with_lanes(expr.lanes) for new_e in self.apply_signal2d(e)]
             case VectorAt(a, i):
-                results = [
-                    VectorAt(new_vec_a, i).with_lanes(expr.lanes)
-                    for new_vec_a in self.apply_generic(a)
-                ]
+                results = [VectorAt(new_vec_a, i).with_lanes(expr.lanes) for new_vec_a in self.apply_generic(a)]
+            case WMVar():
+                results = [expr]
+            case WindowMap():
+                new_bodies = list(self.apply_signal_vector(expr.body))
+                new_inputs_lists = [list(self.apply_generic(inp)) for inp in expr.inputs]
+                wm_results: List[SignalExpr] = []
+                for new_inputs in itertools.product(*new_inputs_lists):
+                    for new_body in new_bodies:
+                        new_wm = WindowMap.make(expr.n, new_inputs, new_body, expr.input_vars)
+                        new_wm.lanes = expr.lanes
+                        wm_results.append(new_wm)
+                results = wm_results
             case _:
                 results = cartesian(
                     type(expr),
@@ -424,10 +402,7 @@ class Postorder(Transform):
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr2D]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: Sequence[KernelExpr2D]
         match expr:
@@ -445,10 +420,7 @@ class Postorder(Transform):
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
         def cartesian(constructor, lists, lanes):
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: List[SignalExpr2D] = []
         match expr:
@@ -491,37 +463,24 @@ class Postorder(Transform):
 
     def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[KernelMatrixExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: Sequence[KernelMatrixExpr]
         match expr:
             case KernelMatrix(data):
                 results = [
-                    KernelMatrix([list(row) for row in matrix_data]).with_lanes(
-                        expr.lanes
-                    )
+                    KernelMatrix([list(row) for row in matrix_data]).with_lanes(expr.lanes)
                     for matrix_data in itertools.product(
-                        *[
-                            itertools.product(*(self.apply_kernel(k) for k in row))
-                            for row in data
-                        ]
+                        *[itertools.product(*(self.apply_kernel(k) for k in row)) for row in data]
                     )
                 ]
             case _:
                 raise NotImplementedError()
-        return [
-            e for result in results for e in self.transform.apply_kernel_matrix(result)
-        ]
+        return [e for result in results for e in self.transform.apply_kernel_matrix(result)]
 
     def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
         def cartesian(constructor, lists, lanes) -> Sequence[SignalVectorExpr]:  # type: ignore
-            return [
-                constructor(*args).with_lanes(lanes)
-                for args in itertools.product(*lists)
-            ]
+            return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
         results: Sequence[SignalVectorExpr]
         match expr:
@@ -536,9 +495,7 @@ class Postorder(Transform):
                     [self.apply_generic(child) for child in expr.children()],
                     expr.lanes,
                 )
-        return [
-            e for result in results for e in self.transform.apply_signal_vector(result)
-        ]
+        return [e for result in results for e in self.transform.apply_signal_vector(result)]
 
 
 class SaturatePreorder(Transform):
@@ -556,7 +513,7 @@ class SaturatePreorder(Transform):
                 return results
             else:
                 return [expr]
-            
+
         apply_kernel = apply_generic
         apply_signal = apply_generic
         apply_signal2d = apply_generic
@@ -564,7 +521,6 @@ class SaturatePreorder(Transform):
         apply_kernel_matrix = apply_generic
         apply_signal_vector = apply_generic
         apply_signal2dvec = apply_generic
-
 
     def __init__(self, transform: Transform) -> None:
         self.transform = transform
