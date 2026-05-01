@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .base import *
-from .base import _resolve_types
+from .base import _resolve_types, Type
 from vecrec.util import ElementType
 
 @dataclass(unsafe_hash=True)

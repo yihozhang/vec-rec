@@ -1,11 +1,12 @@
 from typing import List, Optional, Dict, Set, Tuple, cast
 from vecrec.expr import *
-from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr
+from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr, Type
 from vecrec.expr.signal import RVar2D, Var2D
 from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec, WindowMap, WMVar
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.expr.kernel_matrix import KernelMatrix
 from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
+from vecrec.semiring import CustomSemiring
 from vecrec.transform import Transform
 from vecrec.util import ElementType
 from importlib.resources import files
@@ -117,6 +118,7 @@ class CodeGen:
         self.var2d_context = {}
         self.rvec_comp_regs: Dict[RepeaterVec, List[List[int]]] = {}
         self._wm_var_map: Dict[str, List[int]] = {}
+        self.custom_semirings: Set[CustomSemiring] = set()
 
     def clear(self):
         self.reg_counter = {}
@@ -128,6 +130,7 @@ class CodeGen:
         self.var2d_context = {}
         self.rvec_comp_regs = {}
         self._wm_var_map: Dict[str, List[int]] = {}
+        self.custom_semirings = set()
 
     def _max_lanes_in_tree(self, expr: RecLang, visited: Optional[set] = None) -> int:
         """Find the maximum lane width across all nodes in the expression tree."""
@@ -205,7 +208,8 @@ class CodeGen:
         #     return {name}({", ".join(list(vars.keys()) + list(vars2d.keys()) + ["row_size"])});
         # }}
         # """
-        return KernelProgram(text, self.ele_per_iter)
+        custom_preamble = "".join(sem.cpp_preamble() for sem in self.custom_semirings)
+        return KernelProgram(custom_preamble + text, self.ele_per_iter)
 
     def _generate_windowmap(self, wm: WindowMap) -> List[int]:
         assert wm.lanes is not None
@@ -915,22 +919,24 @@ class CodeGen:
         return ", ".join(map(str, lst))
 
     def get_sem_suffix(self, ty: Type, element_type: ElementType | None = None) -> str:
+        if isinstance(ty, CustomSemiring):
+            self.custom_semirings.add(ty)
+            return ty.name
         # int8 tropical ops use saturating addition to prevent overflow
         if element_type == ElementType.I8:
-            match ty:
-                case Type.Arith:
-                    return ""
-                case Type.TropMax:
-                    return "TropMaxSat"
-                case Type.TropMin:
-                    return "TropMinSat"
-        match ty:
-            case Type.Arith:
+            if ty is Type.Arith:
                 return ""
-            case Type.TropMax:
-                return "TropMax"
-            case Type.TropMin:
-                return "TropMin"
+            elif ty is Type.TropMax:
+                return "TropMaxSat"
+            elif ty is Type.TropMin:
+                return "TropMinSat"
+        if ty is Type.Arith:
+            return ""
+        elif ty is Type.TropMax:
+            return "TropMax"
+        elif ty is Type.TropMin:
+            return "TropMin"
+        assert False, f"Unknown built-in type: {ty}"
 
     def _signal2d_n_rows(self, signal2d: SignalExpr2D) -> int:
         # TODO: var2d_context

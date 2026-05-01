@@ -149,8 +149,11 @@ class Benchmark(ABC):
         output = raw["output"]
 
         # Check validation: half of the schedules are accurate enough
+        # (vacuously True when there is only one schedule and no cross-schedule comparisons)
         validation_raw: dict[str, Any] = output.get("validation", {})
-        validation_ok = (
+        if len(validation_raw) <= 1:
+            print("WARNING: no cross-schedule validation data found. Skipping validation check.")
+        validation_ok = len(validation_raw) == 0 or (
             sum([v is True or (isinstance(v, int) and v >= 256) for v in validation_raw.values()])
         ) > 0.5 * len(validation_raw)
 

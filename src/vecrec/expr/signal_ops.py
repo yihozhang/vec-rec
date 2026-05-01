@@ -7,7 +7,7 @@ from vecrec.expr.signal import RVar2D, RVec2D
 from vecrec.util import ElementType
 
 from .base import *
-from .base import _resolve_types, SignalExpr2DVec
+from .base import _resolve_types, SignalExpr2DVec, Type
 
 @dataclass(unsafe_hash=True)
 class SignalExprBinOp(SignalExpr):
@@ -36,7 +36,8 @@ class SAdd(SignalExprBinOp):
 class SSub(SignalExprBinOp):
     def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
         super().__init__(a, b)
-        assert self.ty == Type.Arith, "Subtraction is only defined for arithmetic type"
+        assert self.ty.has_additive_inverse(), \
+            "Subtraction is only defined for types with an additive inverse"
 
 
 class PointwiseMul(SignalExprBinOp):
@@ -55,7 +56,8 @@ class SNeg(SignalExpr):
 
     def __init__(self, a: SignalExpr) -> None:
         super().__init__(a.ty, a.element_type)
-        assert a.ty == Type.Arith, "Negation is only defined for arithmetic type"
+        assert a.ty.has_additive_inverse(), \
+            "Negation is only defined for types with an additive inverse"
         self.a = a
 
 
