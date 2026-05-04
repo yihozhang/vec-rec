@@ -30,6 +30,7 @@ class CustomSemiring(Type):
         cpp_sadd_op: str = "[](auto left, auto right) { return left + right; }",
         cpp_pmul_op: str = "[](auto left, auto right) { return left * right; }",
         cpp_ssub_op: str = "[](auto left, auto right) { return left - right; }",
+        add_idempotent: bool = False,
     ) -> None:
         _is_zero = is_zero_fn if is_zero_fn is not None else (lambda v, z=zero: bool(abs(v - z) < 1e-9))  # type: ignore[misc]
         _is_one = is_one_fn if is_one_fn is not None else (lambda v, o=one: bool(abs(v - o) < 1e-9))  # type: ignore[misc]
@@ -43,6 +44,7 @@ class CustomSemiring(Type):
             mult_fn=times,
             sub_fn=lambda x, y: x - y,
             div_fn=lambda x, y: x / y,
+            add_idempotent=add_idempotent,
         )
         self.cpp_zero_init = cpp_zero_init
         self.cpp_mul_op = cpp_mul_op

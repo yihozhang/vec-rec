@@ -32,10 +32,12 @@ class Code:
 class KernelProgram:
     text: str
     element_per_iter: int
+    custom_semirings: Set[CustomSemiring]
 
-    def __init__(self, text: str, element_per_iter: int):
+    def __init__(self, text: str, element_per_iter: int, custom_semirings: Optional[Set[CustomSemiring]] = None):
         self.text = text
         self.element_per_iter = element_per_iter
+        self.custom_semirings = custom_semirings if custom_semirings is not None else set()
 
 
 class TopoSort(Transform):
@@ -208,8 +210,7 @@ class CodeGen:
         #     return {name}({", ".join(list(vars.keys()) + list(vars2d.keys()) + ["row_size"])});
         # }}
         # """
-        custom_preamble = "".join(sem.cpp_preamble() for sem in self.custom_semirings)
-        return KernelProgram(custom_preamble + text, self.ele_per_iter)
+        return KernelProgram(text, self.ele_per_iter, set(self.custom_semirings))
 
     def _generate_windowmap(self, wm: WindowMap) -> List[int]:
         assert wm.lanes is not None

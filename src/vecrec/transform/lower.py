@@ -237,9 +237,16 @@ class AnnotateLanes(Transform):
 
         match expr:
             case Repeater(a, _n_rows, prev_rows_var):
-                new_repeater: Repeater = expr.with_lanes(lanes)  # type: ignore
-                new_repeater.a = self.convert_lanes(self.apply_signal(a)[0], lanes)
-                new_repeater.prev_rows_var = prev_rows_var.with_lanes(lanes)  # type: ignore
+                # Probe to discover actual K (may be < max_lanes, e.g. Recurse with
+                # delayed kernel or WindowMap whose RecurseV limits lanes).
+                actual_lanes = (self.apply_signal(a)[0].lanes) or lanes
+                # Re-annotate body at exactly K so all interior nodes (RVar2D etc.)
+                # land at K lanes and match the Repeater's vec_type.
+                k_ann = AnnotateLanes(actual_lanes * element_type.bit_width())
+                new_a = k_ann.apply_signal(a)[0]
+                new_repeater: Repeater = expr.with_lanes(actual_lanes)  # type: ignore
+                new_repeater.a = new_a
+                new_repeater.prev_rows_var = prev_rows_var.with_lanes(actual_lanes)  # type: ignore
                 return [new_repeater]
             case RVar2D(_name):
                 return [expr.with_lanes(lanes)]
@@ -282,10 +289,10 @@ class AnnotateLanes(Transform):
         element_type = expr.element_type
 
         if isinstance(expr, Ith):
-            lanes = self.max_lanes(element_type)
-            ith_inner = self.convert_lanes(self.apply_generic(expr.a)[0], lanes)
+            ith_inner = self.apply_generic(expr.a)[0]
+            actual_lanes = ith_inner.lanes or self.max_lanes(element_type)
             new_ith_expr = Ith(ith_inner, expr.i)
-            new_ith_expr.lanes = lanes
+            new_ith_expr.lanes = actual_lanes
             return [new_ith_expr]
 
         if isinstance(expr, VectorAt):

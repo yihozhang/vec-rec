@@ -21,6 +21,14 @@ TEMPLATE = files("vecrec.templates") / "common.h"
 
 def instantiate_kernels(path: str, codes: List[KernelProgram] | List[str]) -> None:
     text = TEMPLATE.read_text()
+    # Emit each custom semiring's preamble exactly once, regardless of how many kernels use it.
+    seen_semirings: set = set()
+    for code in codes:
+        if isinstance(code, KernelProgram):
+            for sem in code.custom_semirings:
+                if sem not in seen_semirings:
+                    seen_semirings.add(sem)
+                    text += "\n" + sem.cpp_preamble()
     for code in codes:
         text += "\n" + (code.text if isinstance(code, KernelProgram) else code)
     with open(path, "w") as f:

@@ -34,6 +34,7 @@ class Type:
     _sub_fn: Optional[Callable[[float, float], float]]
     _div_fn: Optional[Callable[[float, float], float]]
     _convolve_fn: Optional[Callable[[List[float], List[float]], List[float]]]
+    _add_idempotent: bool
 
     def __init__(
         self,
@@ -47,6 +48,7 @@ class Type:
         sub_fn: Optional[Callable[[float, float], float]] = None,
         div_fn: Optional[Callable[[float, float], float]] = None,
         convolve_fn: Optional[Callable[[List[float], List[float]], List[float]]] = None,
+        add_idempotent: bool = False,
     ) -> None:
         self._name = name
         self._zero_val = zero_val
@@ -58,6 +60,7 @@ class Type:
         self._sub_fn = sub_fn
         self._div_fn = div_fn
         self._convolve_fn = convolve_fn
+        self._add_idempotent = add_idempotent
 
     @property
     def name(self) -> str:
@@ -137,6 +140,13 @@ class Type:
         """Return True if every element has an additive inverse (i.e. subtraction/negation is defined)."""
         return self._sub_fn is not None
 
+    def is_add_idempotent(self) -> bool:
+        """Return True if addition is idempotent: a ⊕ a = a for all a.
+        Tropical semirings satisfy this (max/min); arithmetic does not.
+        When True, tropical dilation transforms may be applied.
+        """
+        return self._add_idempotent
+
     def convolve(self, a: List[float], b: List[float]) -> List[float]:
         if self._convolve_fn is not None:
             return self._convolve_fn(a, b)
@@ -178,6 +188,7 @@ Type.TropMax = Type(
     is_one_fn=lambda v: bool(np.isclose(v, 0.0)),
     add_fn=lambda x, y: max(x, y),
     mult_fn=lambda x, y: x + y,
+    add_idempotent=True,
 )
 Type.TropMin = Type(
     name="TropMin",
@@ -187,6 +198,7 @@ Type.TropMin = Type(
     is_one_fn=lambda v: bool(np.isclose(v, 0.0)),
     add_fn=lambda x, y: min(x, y),
     mult_fn=lambda x, y: x + y,
+    add_idempotent=True,
 )
 
 

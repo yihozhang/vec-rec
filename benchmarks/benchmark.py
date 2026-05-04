@@ -12,7 +12,7 @@ from vecrec.codegen import CodeGen, generate_and_run_benchmark, generate_kernel_
 from vecrec.expr.base import SignalExpr, SignalExpr2D
 from vecrec.expr.pretty import pp
 from vecrec.optimize import get_candidate_schedules
-from vecrec.util import ElementType
+from vecrec.util import Colors, ElementType
 
 
 # ── Result type ──────────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ class Benchmark(ABC):
         # (vacuously True when there is only one schedule and no cross-schedule comparisons)
         validation_raw: dict[str, Any] = output.get("validation", {})
         if len(validation_raw) <= 1:
-            print("WARNING: no cross-schedule validation data found. Skipping validation check.")
+            print(f"{Colors.WARNING}WARNING: no cross-schedule validation data found. Skipping validation check.{Colors.ENDC}")
         validation_ok = len(validation_raw) == 0 or (
             sum([v is True or (isinstance(v, int) and v >= 256) for v in validation_raw.values()])
         ) > 0.5 * len(validation_raw)
