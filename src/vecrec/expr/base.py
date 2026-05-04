@@ -3,94 +3,87 @@ from abc import abstractmethod
 import copy
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import Enum
 import numbers
 import threading
-from typing import Generator, List, Optional, Tuple, overload
+from typing import Callable, ClassVar, Generator, List, Optional, Tuple, Union, overload
 
 import numpy as np
 
 from vecrec.util import ElementType
 
 
-class Type(Enum):
-    Arith = 1
-    TropMax = 2
-    TropMin = 3
+class Type:
+    """Semiring type.
+
+    Built-in singleton constants: ``Type.Arith``, ``Type.TropMax``, ``Type.TropMin``.
+    Subclass :class:`~vecrec.semiring.CustomSemiring` for user-defined semirings.
+    """
+
+    # Class-level singleton constants (assigned after class body)
+    Arith: ClassVar["Type"]
+    TropMax: ClassVar["Type"]
+    TropMin: ClassVar["Type"]
+
+    _name: str
+    _zero_val: float
+    _one_val: float
+    _is_zero_fn: Callable[[float], bool]
+    _is_one_fn: Callable[[float], bool]
+    _add_fn: Callable[[float, float], float]
+    _mult_fn: Callable[[float, float], float]
+    _sub_fn: Optional[Callable[[float, float], float]]
+    _div_fn: Optional[Callable[[float, float], float]]
+    _convolve_fn: Optional[Callable[[List[float], List[float]], List[float]]]
+    _add_idempotent: bool
+
+    def __init__(
+        self,
+        name: str,
+        zero_val: float,
+        one_val: float,
+        is_zero_fn: Callable[[float], bool],
+        is_one_fn: Callable[[float], bool],
+        add_fn: Callable[[float, float], float],
+        mult_fn: Callable[[float, float], float],
+        sub_fn: Optional[Callable[[float, float], float]] = None,
+        div_fn: Optional[Callable[[float, float], float]] = None,
+        convolve_fn: Optional[Callable[[List[float], List[float]], List[float]]] = None,
+        add_idempotent: bool = False,
+    ) -> None:
+        self._name = name
+        self._zero_val = zero_val
+        self._one_val = one_val
+        self._is_zero_fn = is_zero_fn
+        self._is_one_fn = is_one_fn
+        self._add_fn = add_fn
+        self._mult_fn = mult_fn
+        self._sub_fn = sub_fn
+        self._div_fn = div_fn
+        self._convolve_fn = convolve_fn
+        self._add_idempotent = add_idempotent
+
+    @property
+    def name(self) -> str:
+        return self._name
 
     def is_zero(self, value: float) -> bool:
-        match self:
-            case Type.Arith:
-                return bool(np.isclose(value, 0.0))
-            case Type.TropMax:
-                return bool(np.isclose(value, -np.inf))
-            case Type.TropMin:
-                return bool(np.isclose(value, np.inf))
-        assert False, "unreachable"
+        return self._is_zero_fn(value)
 
     def is_one(self, value: float) -> bool:
-        match self:
-            case Type.Arith:
-                return bool(np.isclose(value, 1.0))
-            case Type.TropMax:
-                return bool(np.isclose(value, 0.0))
-            case Type.TropMin:
-                return bool(np.isclose(value, 0.0))
-        assert False, "unreachable"
+        return self._is_one_fn(value)
 
     def zero(self) -> float:
-        match self:
-            case Type.Arith:
-                return 0.0
-            case Type.TropMax:
-                return -np.inf
-            case Type.TropMin:
-                return np.inf
-        assert False, "unreachable"
+        return self._zero_val
 
     def one(self) -> float:
-        match self:
-            case Type.Arith:
-                return 1.0
-            case Type.TropMax:
-                return 0.0
-            case Type.TropMin:
-                return 0.0
-        assert False, "unreachable"
+        return self._one_val
 
-    def convolve(self, a: List[float], b: List[float]) -> List[float]:
-        match self:
-            case Type.Arith:
-                return np.convolve(a, b).tolist()
-            case Type.TropMax:
-                max_len = len(a) + len(b) - 1
-                result = [-np.inf] * max_len
-                for i in range(len(a)):
-                    for j in range(len(b)):
-                        result[i + j] = max(result[i + j], a[i] + b[j])
-                return result
-            case Type.TropMin:
-                max_len = len(a) + len(b) - 1
-                result = [np.inf] * max_len
-                for i in range(len(a)):
-                    for j in range(len(b)):
-                        result[i + j] = min(result[i + j], a[i] + b[j])
-                return result
-        assert False, "unreachable"
-
-    @overload
-    def add(self, a: float, b: float) -> float: ...
-    @overload
-    def add(self, a: list[float], b: list[float] | float) -> list[float]: ...
-    @overload
-    def add(self, a: float, b: list[float]) -> list[float]: ...
-
-    def add(self, a, b):
-        f = {
-            Type.Arith: lambda x, y: x + y,
-            Type.TropMax: lambda x, y: max(x, y),
-            Type.TropMin: lambda x, y: min(x, y),
-        }[self]
+    def _apply(
+        self,
+        f: Callable[[float, float], float],
+        a: Union[float, List[float]],
+        b: Union[float, List[float]],
+    ) -> Union[float, List[float]]:
         if isinstance(a, list) and isinstance(b, list):
             return [f(x, y) for x, y in zip(a, b)]
         elif isinstance(a, list) and isinstance(b, numbers.Number):
@@ -100,6 +93,16 @@ class Type(Enum):
         elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
             return f(a, b)
         assert False, "unreachable"
+
+    @overload
+    def add(self, a: float, b: float) -> float: ...
+    @overload
+    def add(self, a: List[float], b: Union[List[float], float]) -> List[float]: ...
+    @overload
+    def add(self, a: float, b: List[float]) -> List[float]: ...
+
+    def add(self, a: Union[float, List[float]], b: Union[float, List[float]]) -> Union[float, List[float]]:
+        return self._apply(self._add_fn, a, b)
 
     @overload
     def sub(self, a: List[float], b: List[float]) -> List[float]: ...
@@ -107,58 +110,96 @@ class Type(Enum):
     def sub(self, a: List[float], b: float) -> List[float]: ...
     @overload
     def sub(self, a: float, b: List[float]) -> List[float]: ...
-    def sub(self, a, b):
-        assert self == Type.Arith, "Subtraction is only defined for arithmetic type"
-        if isinstance(a, list) and isinstance(b, list):
-            return [x - y for x, y in zip(a, b)]
-        elif isinstance(a, list) and isinstance(b, numbers.Number):
-            return [x - b for x in a]
-        elif isinstance(a, numbers.Number) and isinstance(b, list):
-            return [a - y for y in b]
-        elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
-            return a - b  # type: ignore
-        assert False, "unreachable"
+
+    def sub(self, a: Union[float, List[float]], b: Union[float, List[float]]) -> Union[float, List[float]]:
+        assert self._sub_fn is not None, f"Subtraction is not defined for {self._name}"
+        return self._apply(self._sub_fn, a, b)
 
     @overload
     def mult(self, a: float, b: float) -> float: ...
     @overload
-    def mult(self, a: list[float], b: list[float] | float) -> list[float]: ...
+    def mult(self, a: List[float], b: Union[List[float], float]) -> List[float]: ...
     @overload
-    def mult(self, a: float, b: list[float]) -> list[float]: ...
+    def mult(self, a: float, b: List[float]) -> List[float]: ...
 
-    def mult(self, a, b):
-        f = {
-            Type.Arith: lambda x, y: x * y,
-            Type.TropMax: lambda x, y: x + y,
-            Type.TropMin: lambda x, y: x + y,
-        }[self]
-        if isinstance(a, list) and isinstance(b, list):
-            return [f(x, y) for x, y in zip(a, b)]
-        elif isinstance(a, list) and isinstance(b, numbers.Number):
-            return [f(x, b) for x in a]
-        elif isinstance(a, numbers.Number) and isinstance(b, list):
-            return [f(a, y) for y in b]
-        elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
-            return f(a, b)
-        assert False, "unreachable"
+    def mult(self, a: Union[float, List[float]], b: Union[float, List[float]]) -> Union[float, List[float]]:
+        return self._apply(self._mult_fn, a, b)
 
     @overload
     def div(self, a: float, b: float) -> float: ...
     @overload
-    def div(self, a: list[float], b: list[float] | float) -> list[float]: ...
+    def div(self, a: List[float], b: Union[List[float], float]) -> List[float]: ...
     @overload
-    def div(self, a: float, b: list[float]) -> list[float]: ...
-    def div(self, a, b):
-        assert self == Type.Arith, "Division is only defined for arithmetic type"
-        if isinstance(a, list) and isinstance(b, list):
-            return [x / y for x, y in zip(a, b)]
-        elif isinstance(a, list) and isinstance(b, numbers.Number):
-            return [x / b for x in a]
-        elif isinstance(a, numbers.Number) and isinstance(b, list):
-            return [a / y for y in b]
-        elif isinstance(a, numbers.Number) and isinstance(b, numbers.Number):
-            return a / b  # type: ignore
-        assert False, "unreachable"
+    def div(self, a: float, b: List[float]) -> List[float]: ...
+
+    def div(self, a: Union[float, List[float]], b: Union[float, List[float]]) -> Union[float, List[float]]:
+        assert self._div_fn is not None, f"Division is not defined for {self._name}"
+        return self._apply(self._div_fn, a, b)
+
+    def has_additive_inverse(self) -> bool:
+        """Return True if every element has an additive inverse (i.e. subtraction/negation is defined)."""
+        return self._sub_fn is not None
+
+    def is_add_idempotent(self) -> bool:
+        """Return True if addition is idempotent: a ⊕ a = a for all a.
+        Tropical semirings satisfy this (max/min); arithmetic does not.
+        When True, tropical dilation transforms may be applied.
+        """
+        return self._add_idempotent
+
+    def convolve(self, a: List[float], b: List[float]) -> List[float]:
+        if self._convolve_fn is not None:
+            return self._convolve_fn(a, b)
+        zero = self._zero_val
+        max_len = len(a) + len(b) - 1
+        result: List[float] = [zero] * max_len
+        for i in range(len(a)):
+            for j in range(len(b)):
+                result[i + j] = self._add_fn(result[i + j], self._mult_fn(a[i], b[j]))
+        return result
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+    def __hash__(self) -> int:
+        return id(self)
+
+    def __repr__(self) -> str:
+        return f"Type.{self._name}"
+
+
+Type.Arith = Type(
+    name="Arith",
+    zero_val=0.0,
+    one_val=1.0,
+    is_zero_fn=lambda v: bool(np.isclose(v, 0.0)),
+    is_one_fn=lambda v: bool(np.isclose(v, 1.0)),
+    add_fn=lambda x, y: x + y,
+    mult_fn=lambda x, y: x * y,
+    sub_fn=lambda x, y: x - y,
+    div_fn=lambda x, y: x / y,
+    convolve_fn=lambda a, b: np.convolve(a, b).tolist(),
+)
+Type.TropMax = Type(
+    name="TropMax",
+    zero_val=-np.inf,
+    one_val=0.0,
+    is_zero_fn=lambda v: bool(np.isclose(v, -np.inf)),
+    is_one_fn=lambda v: bool(np.isclose(v, 0.0)),
+    add_fn=lambda x, y: max(x, y),
+    mult_fn=lambda x, y: x + y,
+    add_idempotent=True,
+)
+Type.TropMin = Type(
+    name="TropMin",
+    zero_val=np.inf,
+    one_val=0.0,
+    is_zero_fn=lambda v: bool(np.isclose(v, np.inf)),
+    is_one_fn=lambda v: bool(np.isclose(v, 0.0)),
+    add_fn=lambda x, y: min(x, y),
+    mult_fn=lambda x, y: x + y,
+    add_idempotent=True,
+)
 
 
 @dataclass(kw_only=True, match_args=False)

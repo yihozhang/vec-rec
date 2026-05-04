@@ -101,7 +101,7 @@ class DilateTrop(Transform):
         return self.max_bits // element_type.bit_width()
 
     def op(self, k: TIKernel) -> typing.Optional[Tuple[TIKernel, TIKernel]]:
-        assert k.ty == Type.TropMax or k.ty == Type.TropMin
+        assert k.ty.is_add_idempotent()
         max_stride = self.max_lanes(k.element_type)
 
         stride = 2

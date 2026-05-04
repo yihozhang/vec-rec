@@ -7,7 +7,8 @@ from vecrec.expr.signal import RVar2D, RVec2D
 from vecrec.util import ElementType
 
 from .base import *
-from .base import _resolve_types, SignalExpr2DVec
+from .base import _resolve_types, SignalExpr2DVec, Type
+
 
 @dataclass(unsafe_hash=True)
 class SignalExprBinOp(SignalExpr):
@@ -36,11 +37,12 @@ class SAdd(SignalExprBinOp):
 class SSub(SignalExprBinOp):
     def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
         super().__init__(a, b)
-        assert self.ty == Type.Arith, "Subtraction is only defined for arithmetic type"
+        assert self.ty.has_additive_inverse(), "Subtraction is only defined for types with an additive inverse"
 
 
 class PointwiseMul(SignalExprBinOp):
     pass
+
 
 class PointwiseDiv(SignalExprBinOp):
     def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
@@ -55,7 +57,7 @@ class SNeg(SignalExpr):
 
     def __init__(self, a: SignalExpr) -> None:
         super().__init__(a.ty, a.element_type)
-        assert a.ty == Type.Arith, "Negation is only defined for arithmetic type"
+        assert a.ty.has_additive_inverse(), "Negation is only defined for types with an additive inverse"
         self.a = a
 
 
@@ -105,6 +107,7 @@ class ConvertLanes(SignalExpr):
     def __repr__(self) -> str:
         return f"ConvertLanes({self.lanes}, {self.a})"
 
+
 @dataclass(unsafe_hash=True)
 class Convolve2D(SignalExpr):
     """2D convolution: convolve a 2D kernel with a 2D signal (from Repeater). Produces a 1D signal"""
@@ -121,6 +124,7 @@ class Convolve2D(SignalExpr):
         ), f"ElementType mismatch in Convolve2D: {a.element_type} vs {b.element_type}"
         self.a = a
         self.b = b
+
 
 @dataclass(unsafe_hash=True)
 class Recurse2D(SignalExpr2D):
@@ -139,18 +143,19 @@ class Recurse2D(SignalExpr2D):
         self.a = a
         self.g = g
 
+
 @dataclass(unsafe_hash=True)
 class Repeater(SignalExpr2D):
     """
     Turns a 1D signal into a 2D signal by caching the last `n_rows` rows.
-    The minimal number of rows to cache is 2, which stores the previous row 
+    The minimal number of rows to cache is 2, which stores the previous row
     while computing and storing the current row.
 
     The callable receives a RVar2D representing the previous rows stored in
     the Repeater, with the current horizontal position aligned with the
     stream for the current row. Use Convolve2D with a 2D kernel to
     access data from multiple previous rows.
-    
+
     Streams as a 2D signal: run() returns n vectors at a time (current row
     plus the n-1 previously cached rows).
     """
@@ -174,7 +179,7 @@ class Repeater(SignalExpr2D):
         Repeater.var_count += 1
         self.a = func(self.prev_rows_var)
         super().__init__(self.a.ty, self.a.element_type)
-    
+
     @staticmethod
     def make(a: SignalExpr, n_rows: Optional[int], prev_rows_var: RVar2D) -> Repeater:
         repeater = Repeater.__new__(Repeater)
@@ -184,10 +189,15 @@ class Repeater(SignalExpr2D):
         repeater.prev_rows_var = prev_rows_var
         return repeater
 
-    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+    def children(
+        self,
+    ) -> List[
+        KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec
+    ]:
         # Only expose the inner expression, not prev_rows_var
         # (it's an internal placeholder, not an external input)
         return [self.a]
+
 
 @dataclass(unsafe_hash=True)
 class Ith(SignalExpr):
@@ -214,7 +224,11 @@ class Signal2DAt(SignalExpr2D):
         self.a = a
         self.comp_idx = comp_idx
 
-    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+    def children(
+        self,
+    ) -> List[
+        KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec
+    ]:
         return [self.a]
 
 
@@ -244,10 +258,7 @@ class RepeaterVec(SignalExpr2DVec):
     ) -> None:
         resolved_ty, resolved_et = _resolve_types(ty, element_type)
         self.n_rows = None
-        self.prev_vars = tuple(
-            RVar2D(f"$fv{RepeaterVec.var_count}_{i}", resolved_ty, resolved_et)
-            for i in range(n)
-        )
+        self.prev_vars = tuple(RVar2D(f"$fv{RepeaterVec.var_count}_{i}", resolved_ty, resolved_et) for i in range(n))
         RepeaterVec.var_count += 1
         self.a = func(RVec2D(list(self.prev_vars)))
         assert self.a.n == n, f"RepeaterVec body returned {self.a.n} components, expected {n}"
@@ -268,7 +279,11 @@ class RepeaterVec(SignalExpr2DVec):
         rv.prev_vars = prev_vars
         return rv
 
-    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+    def children(
+        self,
+    ) -> List[
+        KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec
+    ]:
         # Only expose the body, not prev_vars (internal placeholders)
         return [self.a]
 
@@ -315,10 +330,7 @@ class WindowMap(SignalExpr):
         WindowMap.var_count += 1
         self.n = n
         self.inputs = tuple(inputs)
-        self.input_vars = tuple(
-            tuple(WMVar(f"{name}_{i}_{j}", ty, et) for j in range(n))
-            for i in range(len(inputs))
-        )
+        self.input_vars = tuple(tuple(WMVar(f"{name}_{i}_{j}", ty, et) for j in range(n)) for i in range(len(inputs)))
         subs = [list(self.input_vars[i]) for i in range(len(inputs))]
         self.body = func(subs)
         assert self.body.n == n
@@ -341,7 +353,11 @@ class WindowMap(SignalExpr):
         wm.input_vars = input_vars
         return wm
 
-    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+    def children(
+        self,
+    ) -> List[
+        KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec
+    ]:
         return list(self.inputs) + [self.body]  # type: ignore[return-value]
 
 
@@ -381,14 +397,13 @@ class WindowMapVec(SignalVectorExpr):
         self.n_interleave = n_interleave
         self.inputs = tuple(inputs)
         self.input_vars = tuple(
-            tuple(WMVar(f"{name}_{i}_{j}", ty, et) for j in range(n_interleave))
-            for i in range(len(inputs))
+            tuple(WMVar(f"{name}_{i}_{j}", ty, et) for j in range(n_interleave)) for i in range(len(inputs))
         )
         subs = [list(self.input_vars[i]) for i in range(len(inputs))]
         self.body = func(subs)
-        assert self.body.n == n_interleave * n_out, (
-            f"WindowMapVec body must have n_interleave*n_out={n_interleave * n_out} components, got {self.body.n}"
-        )
+        assert (
+            self.body.n == n_interleave * n_out
+        ), f"WindowMapVec body must have n_interleave*n_out={n_interleave * n_out} components, got {self.body.n}"
         super().__init__(ty, et, n_out)
 
     @staticmethod
@@ -409,5 +424,9 @@ class WindowMapVec(SignalVectorExpr):
         wmv.input_vars = input_vars
         return wmv
 
-    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+    def children(
+        self,
+    ) -> List[
+        KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec
+    ]:
         return list(self.inputs) + [self.body]  # type: ignore[return-value]

@@ -105,25 +105,25 @@ def TropTransform(cls):
     cls.apply_kernel2d_impl = cls.apply_kernel2d
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:  # type: ignore
-        if expr.ty in (Type.TropMax, Type.TropMin):
+        if expr.ty.is_add_idempotent():
             return self.apply_kernel_impl(expr)
         else:
             return []
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:  # type: ignore
-        if expr.ty in (Type.TropMax, Type.TropMin):
+        if expr.ty.is_add_idempotent():
             return self.apply_signal_impl(expr)
         else:
             return []
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:  # type: ignore
-        if expr.ty in (Type.TropMax, Type.TropMin):
+        if expr.ty.is_add_idempotent():
             return self.apply_signal2d_impl(expr)
         else:
             return []
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:  # type: ignore
-        if expr.ty in (Type.TropMax, Type.TropMin):
+        if expr.ty.is_add_idempotent():
             return self.apply_kernel2d_impl(expr)
         else:
             return []

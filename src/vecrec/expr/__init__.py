@@ -1,4 +1,5 @@
 from .base import *
+from .base import Type
 from .kernel import *
 from .kernel_ops import *
 from .signal import *
@@ -6,11 +7,14 @@ from .signal_ops import *
 from .kernel_matrix import *
 from .signal_vec import *
 from .pretty import pp, pps
+from vecrec.semiring import CustomSemiring
 
 __all__ = [
     "RecLang",
     "SignalExpr",
     "KernelExpr",
+    "Type",
+    "CustomSemiring",
     "KernelConstant",
     "TIKernel",
     "TVKernel",
@@ -36,7 +40,6 @@ __all__ = [
     "Var2D",
     "RVar2D",
     "RVec2D",
-    "Type",
     "with_types",
     "ConvertLanes",
     "KConvertLanes",
