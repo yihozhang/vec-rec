@@ -2,24 +2,44 @@
 """Run all registered VecRec benchmarks.
 
 Usage:
-    uv run python benchmarks/run_all.py [FILTER ...] [--verbose]
+    uv run python benchmarks/run_all.py [FILTER ...] [options]
 
 Arguments:
     FILTER      Optional substrings. Only benchmarks whose name contains
                 ALL provided substrings are run. If omitted, all benchmarks run.
 
+Options:
+    --verbose, -v          Print per-schedule timing and validation detail.
+    --list                 List registered benchmarks and exit.
+    --save [DESCRIPTION]   Opt in to writing a JSON result file. The argument
+                           is an optional human-readable description, embedded
+                           in the file's metadata and sanitized into the
+                           filename. Without --save, nothing is written.
+    --output-dir DIR       Folder to write the JSON result file into.
+                           Default: results/  (only used with --save)
+
+Output filename format:
+    YYYY-MM-DDTHH-MM-SS[__sanitized-description].json
+
 Examples:
     uv run python benchmarks/run_all.py
     uv run python benchmarks/run_all.py prefix-sum
-    uv run python benchmarks/run_all.py trop
-    uv run python benchmarks/run_all.py box-filter D5
-    uv run python benchmarks/run_all.py --verbose
+    uv run python benchmarks/run_all.py --save "experiment: tweaked PushConvolveBelowRecurse"
+    uv run python benchmarks/run_all.py box-filter D5 --save "D-sweep, semiring v2"
+    uv run python benchmarks/run_all.py --save --output-dir results/exp1
+    uv run python benchmarks/run_all.py --list
 """
 
 from __future__ import annotations
 
+import argparse
+import datetime
+import json
+import os
+import re
 import sys
 import traceback
+from typing import Any
 from benchmark import Benchmark, BenchmarkResult
 from arith.prefix_sum import PrefixSumBenchmark
 
@@ -84,47 +104,155 @@ REGISTRY.extend(
 
 
 def main() -> None:
-    # Simple argument parsing: --verbose flag + optional filter substrings
-    args = sys.argv[1:]
-    verbose = "--verbose" in args
-    filters = [a for a in args if not a.startswith("--")]
-    if "--list" in args:
+    parser = argparse.ArgumentParser(
+        description="Run VecRec benchmarks and (optionally) record JSON results.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("filters", nargs="*", help="Substrings; benchmark names must contain ALL of them.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Print per-schedule timing.")
+    parser.add_argument("--list", action="store_true", help="List registered benchmarks and exit.")
+    parser.add_argument(
+        "--save",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="DESCRIPTION",
+        help="Opt in to saving a JSON result file with an optional description.",
+    )
+    parser.add_argument("--output-dir", default="results", help="Folder for the JSON result file (default: results).")
+    args = parser.parse_args()
+
+    if args.list:
         print("Registered benchmarks:")
         for bench in REGISTRY:
             print(f"  {bench.name}: {bench.description}")
         sys.exit(0)
 
     benchmarks = list(REGISTRY)
-    if filters:
-        benchmarks = [b for b in benchmarks if all(f in b.name for f in filters)]
+    if args.filters:
+        benchmarks = [b for b in benchmarks if all(f in b.name for f in args.filters)]
 
     if not benchmarks:
         print("No benchmarks matched.", file=sys.stderr)
         sys.exit(1)
 
+    started_at = datetime.datetime.now()
     passed = 0
     failed = 0
+    entries: list[dict[str, Any]] = []
 
     for bench in benchmarks:
         print(f"\n=== {bench.name} ===")
         print(f"  {bench.description}")
         try:
             result = bench.run()
-            _print_result(result, verbose)
+            _print_result(result, args.verbose)
             ok = result.validation_ok and result.ref_verified and result.best_verified
             if ok:
                 passed += 1
             else:
                 failed += 1
+            entries.append(_result_to_json(result))
         except Exception as exc:
             print(f"  EXCEPTION: {exc}")
-            if verbose:
+            if args.verbose:
                 traceback.print_exc()
             failed += 1
+            entries.append(
+                {
+                    "name": bench.name,
+                    "description": bench.description,
+                    "error": str(exc),
+                }
+            )
 
     print(f"\n{'=' * 40}")
     print(f"Results: {passed} passed, {failed} failed out of {passed + failed} total")
+
+    if args.save is not None:
+        out_path = _save_results(
+            output_dir=args.output_dir,
+            description=args.save,
+            filters=args.filters,
+            started_at=started_at,
+            entries=entries,
+            passed=passed,
+            failed=failed,
+        )
+        print(f"Saved results to {out_path}")
+
     sys.exit(1 if failed > 0 else 0)
+
+
+def _result_to_json(result: BenchmarkResult) -> dict[str, Any]:
+    """Serialize a BenchmarkResult into a JSON-friendly dict.
+
+    `relative_to_best` is throughput / max(throughput); 1.0 marks the winner.
+    """
+    best_mb = result.timing.get(result.best_schedule_pp, 0.0)
+    schedules = []
+    for sched_pp, mb in result.timing.items():
+        schedules.append(
+            {
+                "schedule": sched_pp,
+                "throughput_mbs": mb,
+                "relative_to_best": (mb / best_mb) if best_mb > 0 else 0.0,
+                "is_best": sched_pp == result.best_schedule_pp,
+            }
+        )
+    return {
+        "name": result.name,
+        "description": result.description,
+        "original_expr": result.original_expr_pp,
+        "best_schedule": result.best_schedule_pp,
+        "best_throughput_mbs": best_mb,
+        "schedules": schedules,
+        "validation_ok": result.validation_ok,
+        "validation_detail": {k: v for k, v in result.validation_detail.items()},
+        "ref_verified": result.ref_verified,
+        "best_verified": result.best_verified,
+        "ref_error": result.ref_error,
+        "best_error": result.best_error,
+    }
+
+
+_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_for_filename(text: str) -> str:
+    """Lowercase, collapse runs of unsafe chars to single hyphens, trim."""
+    cleaned = _FILENAME_SAFE_RE.sub("-", text.strip().lower()).strip("-_.")
+    return cleaned[:80]
+
+
+def _save_results(
+    output_dir: str,
+    description: str,
+    filters: list[str],
+    started_at: datetime.datetime,
+    entries: list[dict[str, Any]],
+    passed: int,
+    failed: int,
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    stamp = started_at.strftime("%Y-%m-%dT%H-%M-%S")
+    suffix = _sanitize_for_filename(description)
+    filename = f"{stamp}__{suffix}.json" if suffix else f"{stamp}.json"
+    out_path = os.path.join(output_dir, filename)
+
+    payload = {
+        "metadata": {
+            "timestamp": started_at.isoformat(),
+            "description": description,
+            "filters": filters,
+            "passed": passed,
+            "failed": failed,
+        },
+        "benchmarks": entries,
+    }
+    with open(out_path, "w") as f:
+        json.dump(payload, f, indent=2)
+    return out_path
 
 
 def _print_result(result: BenchmarkResult, verbose: bool) -> None:

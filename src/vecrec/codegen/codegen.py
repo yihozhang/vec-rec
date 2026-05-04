@@ -92,7 +92,7 @@ class CodeGen:
 
     ele_per_iter: int
     # mapping from a node to its register(s) and code information
-    mapping: Dict[RecLang, Tuple[List[int], Code]]
+    mapping: Dict[Tuple[RecLang, int], Tuple[List[int], Code]]
     # All the vector types used in the generated code. Useful for determining which registers to declare.
     vec_types: Set[str]
     # Map RVar2D names to their context variables and n_rows
@@ -352,21 +352,22 @@ class CodeGen:
     def generate_signal(
         self, expr: SignalExpr | SignalExpr2D | KernelExpr | SignalVectorExpr | KernelMatrixExpr
     ) -> Tuple[List[int], Code]:
-        if expr in self.mapping:
-            return self.mapping[expr]
+        cache_key = (expr, self.ele_per_iter)
+        if cache_key in self.mapping:
+            return self.mapping[cache_key]
 
         # WindowMap is handled specially: it switches ele_per_iter internally.
         if isinstance(expr, WindowMap):
             regs = self._generate_windowmap(expr)
             result: Tuple[List[int], Code] = (regs, Code("", expr.ty, expr.element_type, expr.lanes))
-            self.mapping[expr] = result
+            self.mapping[cache_key] = result
             return result
 
         # WindowMapVec is handled specially: it switches ele_per_iter internally.
         if isinstance(expr, WindowMapVec):
             regs = self._generate_windowmapvec(expr)
             wmv_result: Tuple[List[int], Code] = (regs, Code("", expr.ty, expr.element_type, expr.lanes))
-            self.mapping[expr] = wmv_result
+            self.mapping[cache_key] = wmv_result
             return wmv_result
 
         # KernelMatrixExpr has no own registers; just recursively generate each entry.
@@ -374,7 +375,7 @@ class CodeGen:
             for k in expr.children():
                 self.generate_signal(cast(KernelExpr, k))
             placeholder: Tuple[List[int], Code] = ([], Code("", expr.ty, expr.element_type, expr.lanes))
-            self.mapping[expr] = placeholder
+            self.mapping[cache_key] = placeholder
             return placeholder
 
         assert expr.lanes is not None
@@ -630,7 +631,7 @@ class CodeGen:
                             k_taps, k_idxs, _ = k.to_sparse_repr()
                             if k_taps == 0:
                                 continue
-                            k_regs = self.mapping[k][0]
+                            k_regs = self.mapping[(k, self.ele_per_iter)][0]
                             idx_var = self._declare_array("int", k_idxs)
                             conv_regs = self._new_registers(vec_type, n_slices)
                             self._declare_node(
@@ -741,7 +742,7 @@ class CodeGen:
                     regs = self._new_registers(vec_type, n_slices, n_vec)
                     run_args_list = []
                     for s in range(n_slices):
-                        kernel_bases = [self.mapping[p[2]][0][s] for p in pairs]
+                        kernel_bases = [self.mapping[(p[2], self.ele_per_iter)][0][s] for p in pairs]
                         v_kb = self._declare_array("int", kernel_bases if n_pairs > 0 else pad)
                         run_args_list.append([regs[s], v_kb, g_regs[s]])
 
@@ -784,9 +785,9 @@ class CodeGen:
         else:
             raise AssertionError(f"CodeGen: unhandled expr type {type(expr)}")
 
-        assert expr not in self.mapping
-        self.mapping[expr] = (regs, Code(code, ty, element_type, expr.lanes, taps))
-        return self.mapping[expr]
+        assert cache_key not in self.mapping
+        self.mapping[cache_key] = (regs, Code(code, ty, element_type, expr.lanes, taps))
+        return self.mapping[cache_key]
 
     def _generate_repeatervec(self, rv: RepeaterVec) -> None:
         """Generate n Repeater C++ nodes (one per component) for a RepeaterVec.

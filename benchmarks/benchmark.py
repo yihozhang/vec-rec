@@ -12,7 +12,7 @@ from vecrec.codegen import CodeGen, generate_and_run_benchmark, generate_kernel_
 from vecrec.expr.base import SignalExpr, SignalExpr2D
 from vecrec.expr.pretty import pp
 from vecrec.optimize import get_candidate_schedules
-from vecrec.util import Colors, ElementType
+from vecrec.util import Colors, ElementType, get_native_bits
 
 
 # ── Result type ──────────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ class BenchmarkResult:
 
 # ── Base class ────────────────────────────────────────────────────────────────
 
-
+native_bits = get_native_bits()
 class Benchmark(ABC):
     """Abstract base class for all VecRec benchmarks."""
 
@@ -61,7 +61,7 @@ class Benchmark(ABC):
     @property
     def max_bits(self) -> int:
         """Hardware SIMD width"""
-        return 256
+        return native_bits
 
     @property
     def verify_atol(self) -> float:
