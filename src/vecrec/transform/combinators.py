@@ -186,16 +186,18 @@ class Preorder(Transform):
     def __init__(self, transform: Transform, cache: bool = True) -> None:
         self.transform = transform
         self._cache_enabled = cache
-        self._cache: list = []  # List[Tuple[expr, List[results]]]
+        # Keyed by id(expr); the value retains a strong reference to expr so
+        # its id cannot be recycled while the cache lives.
+        self._cache: dict[int, tuple[object, list]] = {}
 
     def _cache_get(self, expr: object) -> list | None:
-        for k, v in self._cache:
-            if k == expr:
-                return v
-        return None
+        entry = self._cache.get(id(expr))
+        if entry is None:
+            return None
+        return entry[1]
 
     def _cache_set(self, expr: object, result: list) -> None:
-        self._cache.append((expr, result))
+        self._cache[id(expr)] = (expr, result)
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         if self._cache_enabled:
@@ -417,16 +419,18 @@ class Postorder(Transform):
     def __init__(self, transform: Transform, cache: bool = False) -> None:
         self.transform = transform
         self._cache_enabled = cache
-        self._cache: list = []  # List[Tuple[expr, List[results]]]
+        # Keyed by id(expr); the value retains a strong reference to expr so
+        # its id cannot be recycled while the cache lives.
+        self._cache: dict[int, tuple[object, list]] = {}
 
     def _cache_get(self, expr: object) -> list | None:
-        for k, v in self._cache:
-            if k == expr:
-                return v
-        return None
+        entry = self._cache.get(id(expr))
+        if entry is None:
+            return None
+        return entry[1]
 
     def _cache_set(self, expr: object, result: list) -> None:
-        self._cache.append((expr, result))
+        self._cache[id(expr)] = (expr, result)
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         if self._cache_enabled:
