@@ -183,7 +183,7 @@ class Any(Transform):
 
 
 class Preorder(Transform):
-    def __init__(self, transform: Transform, cache: bool = False) -> None:
+    def __init__(self, transform: Transform, cache: bool = True) -> None:
         self.transform = transform
         self._cache_enabled = cache
         self._cache: list = []  # List[Tuple[expr, List[results]]]
@@ -397,7 +397,9 @@ class Preorder(Transform):
                     new_inputs_lists = [list(self.apply_generic(inp)) for inp in expr.inputs]
                     for new_inputs in itertools.product(*new_inputs_lists):
                         for new_body in new_bodies:
-                            new_wmv = WindowMapVec.make(expr.n_interleave, expr.n, new_inputs, new_body, expr.input_vars)
+                            new_wmv = WindowMapVec.make(
+                                expr.n_interleave, expr.n, new_inputs, new_body, expr.input_vars
+                            )
                             new_wmv.lanes = expr.lanes
                             results.append(new_wmv)
                 case _:

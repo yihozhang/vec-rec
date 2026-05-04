@@ -61,6 +61,7 @@ class Transform:
     def apply_signal2dvec(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]:
         return []
 
+
 def ArithTransform(cls):
     cls.apply_kernel_impl = cls.apply_kernel
     cls.apply_signal_impl = cls.apply_signal
@@ -141,6 +142,29 @@ class DebugPrint(Transform):
 
     def apply_generic(self, expr):
         print(pp(expr))
+        return [expr]
+
+
+class PrintSizes(Transform):
+    def __init__(self) -> None:
+        self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
+
+    def apply_generic(self, expr):
+        class Inc(Transform):
+            counter: int
+
+            def __init__(self):
+                self.counter = 0
+                self.apply_kernel = self.apply_signal = self.apply_signal2d = self.apply_kernel2d = self.apply_generic  # type: ignore
+
+            def apply_generic(self, expr):
+                self.counter += 1
+                return [expr]
+
+        inc = Inc()
+        Preorder(inc).apply_generic(expr)
+        print(inc.counter)
+
         return [expr]
 
 

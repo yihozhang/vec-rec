@@ -63,6 +63,7 @@ def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
             )
         ),
         # DebugPrint() if debug else Noop(),
+        # PrintSizes(),
 
         InferNRows(),
         AnnotateLanes(max_bits),
