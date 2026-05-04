@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Set, Tuple, cast
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec, WindowMap, WMVar
+from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.expr.kernel_matrix import KernelMatrix
 from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
@@ -140,6 +140,10 @@ class CodeGen:
         if isinstance(expr, WindowMap):
             assert expr.lanes is not None
             return 2 * expr.lanes
+        # WindowMapVec outputs n_interleave K-lane vectors per iteration
+        if isinstance(expr, WindowMapVec):
+            assert expr.lanes is not None
+            return expr.n_interleave * expr.lanes
         max_l = expr.lanes or 0
         for child in expr.children():
             max_l = max(max_l, self._max_lanes_in_tree(child, visited))
@@ -271,6 +275,75 @@ class CodeGen:
         self.ele_per_iter = saved_ele
         return output_regs
 
+    def _generate_windowmapvec(self, wmv: WindowMapVec) -> List[int]:
+        assert wmv.lanes is not None
+        assert wmv.n_interleave == 2, "Only n_interleave=2 (even/odd) is currently supported"
+        K = wmv.lanes
+        n_interleave = wmv.n_interleave
+        n_out = wmv.n
+        vec_type = self.get_vec_type(wmv.element_type, K)
+        self.vec_types.add(vec_type)
+        saved_ele = self.ele_per_iter
+
+        assert (
+            saved_ele % (n_interleave * K) == 0
+        ), f"WindowMapVec (lanes={K}): ele_per_iter={saved_ele} is not a multiple of n_interleave*K={n_interleave*K}"
+        n_body_slices = saved_ele // (n_interleave * K)
+
+        # Generate each input at saved_ele rate (unchanged).
+        all_input_regs = [self.generate_signal(inp)[0] for inp in wmv.inputs]
+
+        # For each input, Unzip2 each consecutive pair into even/odd substreams.
+        for inp_regs, ivars in zip(all_input_regs, wmv.input_vars):
+            even_regs: List[int] = []
+            odd_regs: List[int] = []
+            for s in range(n_body_slices):
+                even_reg = self._new_register(vec_type)
+                odd_reg = self._new_register(vec_type)
+                self._declare_node(
+                    f"Unzip2<{vec_type}>",
+                    "",
+                    [[even_reg, odd_reg, inp_regs[n_interleave * s], inp_regs[n_interleave * s + 1]]],
+                    vec_type,
+                    vec_type,
+                )
+                even_regs.append(even_reg)
+                odd_regs.append(odd_reg)
+            self._wm_var_map[ivars[0].name] = even_regs
+            self._wm_var_map[ivars[1].name] = odd_regs
+
+        # Generate body at n_body_slices * K rate.
+        # Body has n_interleave * n_out components; for output i:
+        #   even substream = body[bs] + 2*i, odd substream = body[bs] + 2*i+1.
+        self.ele_per_iter = n_body_slices * K
+        body_regs = self.generate_signal(wmv.body)[0]
+
+        # Clean up WMVar mappings.
+        for ivars in wmv.input_vars:
+            for wm_var in ivars:
+                del self._wm_var_map[wm_var.name]
+
+        # For each body slice, zip the n_out even/odd component pairs back to outer rate.
+        # Pre-allocate output register bases: n_slices = 2*n_body_slices, n_out components each.
+        n_slices = n_interleave * n_body_slices
+        output_regs: List[int] = []
+        for s in range(n_body_slices):
+            even_base = self._new_register(vec_type, n_out)
+            odd_base = self._new_register(vec_type, n_out)
+            for i in range(n_out):
+                self._declare_node(
+                    f"Zip2<{vec_type}>",
+                    "",
+                    [[even_base + i, odd_base + i, body_regs[s] + n_interleave * i + 1, body_regs[s] + n_interleave * i]],
+                    vec_type,
+                    vec_type,
+                )
+            output_regs.extend([even_base, odd_base])
+
+        assert len(output_regs) == n_slices
+        self.ele_per_iter = saved_ele
+        return output_regs
+
     def generate_signal(
         self, expr: SignalExpr | SignalExpr2D | KernelExpr | SignalVectorExpr | KernelMatrixExpr
     ) -> Tuple[List[int], Code]:
@@ -283,6 +356,13 @@ class CodeGen:
             result: Tuple[List[int], Code] = (regs, Code("", expr.ty, expr.element_type, expr.lanes))
             self.mapping[expr] = result
             return result
+
+        # WindowMapVec is handled specially: it switches ele_per_iter internally.
+        if isinstance(expr, WindowMapVec):
+            regs = self._generate_windowmapvec(expr)
+            wmv_result: Tuple[List[int], Code] = (regs, Code("", expr.ty, expr.element_type, expr.lanes))
+            self.mapping[expr] = wmv_result
+            return wmv_result
 
         # KernelMatrixExpr has no own registers; just recursively generate each entry.
         if isinstance(expr, KernelMatrixExpr):

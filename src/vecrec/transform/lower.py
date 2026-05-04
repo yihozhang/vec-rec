@@ -5,7 +5,7 @@ from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr, SignalExpr2DVec
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WMVar
+from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.expr.signal_vec import VectorAt, RecurseV, ConvolveV, SignalVector
 from vecrec.expr.kernel_matrix import KernelMatrix
@@ -287,6 +287,24 @@ class AnnotateLanes(Transform):
             new_ith_expr = Ith(ith_inner, expr.i)
             new_ith_expr.lanes = lanes
             return [new_ith_expr]
+
+        if isinstance(expr, VectorAt) and isinstance(expr.a, WindowMapVec):
+            wmv = expr.a
+            # Discover K from the body (same pattern as WindowMap).
+            probe = self.apply_signal_vector(wmv.body)[0]
+            K = probe.lanes or self.max_lanes(element_type)
+            k_ann = AnnotateLanes(K * element_type.bit_width())
+            new_body = k_ann.apply_signal_vector(wmv.body)[0]
+            new_inputs = tuple(k_ann.apply_signal(inp)[0] for inp in wmv.inputs)
+            new_ivars = tuple(
+                tuple(cast(WMVar, wv.with_lanes(K)) for wv in ivars)
+                for ivars in wmv.input_vars
+            )
+            new_wmv = WindowMapVec.make(wmv.n_interleave, wmv.n, new_inputs, new_body, new_ivars)
+            new_wmv.lanes = K
+            new_vec_at = VectorAt(new_wmv, expr.i)
+            new_vec_at.lanes = K
+            return [new_vec_at]
 
         if isinstance(expr, VectorAt):
             lanes = self.max_lanes(element_type)

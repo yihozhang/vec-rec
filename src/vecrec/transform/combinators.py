@@ -13,7 +13,7 @@ from vecrec.expr.base import (
     SignalExpr2DVec,
 )
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WMVar
+from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar
 from vecrec.expr.signal_vec import VectorAt
 from . import Transform, _dedup_exprs
 from typing import Callable
@@ -183,10 +183,26 @@ class Any(Transform):
 
 
 class Preorder(Transform):
-    def __init__(self, transform: Transform) -> None:
+    def __init__(self, transform: Transform, cache: bool = False) -> None:
         self.transform = transform
+        self._cache_enabled = cache
+        self._cache: list = []  # List[Tuple[expr, List[results]]]
+
+    def _cache_get(self, expr: object) -> list | None:
+        for k, v in self._cache:
+            if k == expr:
+                return v
+        return None
+
+    def _cache_set(self, expr: object, result: list) -> None:
+        self._cache.append((expr, result))
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -206,9 +222,16 @@ class Preorder(Transform):
                         [self.apply_generic(child) for child in expr.children()],
                         expr.lanes,
                     )
+        if self._cache_enabled:
+            self._cache_set(expr, results)
         return results
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -243,9 +266,16 @@ class Preorder(Transform):
                         [self.apply_generic(child) for child in expr.children()],
                         expr.lanes,
                     )
+        if self._cache_enabled:
+            self._cache_set(expr, results)
         return results
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr2D]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -262,9 +292,16 @@ class Preorder(Transform):
                         [self.apply_generic(child) for child in expr.children()],
                         expr.lanes,
                     )
+        if self._cache_enabled:
+            self._cache_set(expr, results)
         return results
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes):
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -293,9 +330,16 @@ class Preorder(Transform):
                     raise NotImplementedError(
                         "Preorder traversal of non-RVar2D, non-Var2D, non-Repeater SignalExpr2D not implemented"
                     )
+        if self._cache_enabled:
+            self._cache_set(expr, results)
         return results
 
     def apply_signal2dvec(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         results: List[SignalExpr2DVec] = []
         for e in self.transform.apply_signal2dvec(expr):
             if isinstance(e, RepeaterVec):
@@ -305,9 +349,16 @@ class Preorder(Transform):
                     results.append(new_rv)
             else:
                 results.append(e)
+        if self._cache_enabled:
+            self._cache_set(expr, results)
         return results
 
     def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         results: List[KernelMatrixExpr] = []
         for expr in self.transform.apply_generic(expr):
             match expr:
@@ -320,9 +371,16 @@ class Preorder(Transform):
                     ]
                 case _:
                     raise NotImplementedError()
+        if self._cache_enabled:
+            self._cache_set(expr, results)
         return results
 
     def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[SignalVectorExpr]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -334,20 +392,46 @@ class Preorder(Transform):
                         SignalVector(vec_data).with_lanes(expr.lanes)
                         for vec_data in itertools.product(*[self.apply_signal(s) for s in data])
                     ]
+                case WindowMapVec():
+                    new_bodies = list(self.apply_signal_vector(expr.body))
+                    new_inputs_lists = [list(self.apply_generic(inp)) for inp in expr.inputs]
+                    for new_inputs in itertools.product(*new_inputs_lists):
+                        for new_body in new_bodies:
+                            new_wmv = WindowMapVec.make(expr.n_interleave, expr.n, new_inputs, new_body, expr.input_vars)
+                            new_wmv.lanes = expr.lanes
+                            results.append(new_wmv)
                 case _:
                     results += cartesian(
                         type(expr),
                         [self.apply_generic(child) for child in expr.children()],
                         expr.lanes,
                     )
+        if self._cache_enabled:
+            self._cache_set(expr, results)
         return results
 
 
 class Postorder(Transform):
-    def __init__(self, transform: Transform) -> None:
+    def __init__(self, transform: Transform, cache: bool = False) -> None:
         self.transform = transform
+        self._cache_enabled = cache
+        self._cache: list = []  # List[Tuple[expr, List[results]]]
+
+    def _cache_get(self, expr: object) -> list | None:
+        for k, v in self._cache:
+            if k == expr:
+                return v
+        return None
+
+    def _cache_set(self, expr: object, result: list) -> None:
+        self._cache.append((expr, result))
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -366,9 +450,17 @@ class Postorder(Transform):
                     [self.apply_generic(child) for child in expr.children()],
                     expr.lanes,
                 )
-        return [e for result in results for e in self.transform.apply_kernel(result)]
+        final = [e for result in results for e in self.transform.apply_kernel(result)]
+        if self._cache_enabled:
+            self._cache_set(expr, final)
+        return final
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[SignalExpr]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -398,9 +490,17 @@ class Postorder(Transform):
                     [self.apply_generic(child) for child in expr.children()],
                     expr.lanes,
                 )
-        return [e for result in results for e in self.transform.apply_signal(result)]
+        final = [e for result in results for e in self.transform.apply_signal(result)]
+        if self._cache_enabled:
+            self._cache_set(expr, final)
+        return final
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[KernelExpr2D]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -416,9 +516,17 @@ class Postorder(Transform):
                     [self.apply_generic(child) for child in expr.children()],
                     expr.lanes,
                 )
-        return [e for result in results for e in self.transform.apply_kernel2d(result)]
+        final = [e for result in results for e in self.transform.apply_kernel2d(result)]
+        if self._cache_enabled:
+            self._cache_set(expr, final)
+        return final
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes):
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -446,9 +554,17 @@ class Postorder(Transform):
                 raise NotImplementedError(
                     "Postorder traversal of non-RVar2D, non-Var2D, non-Repeater SignalExpr2D not implemented"
                 )
-        return [e for result in results for e in self.transform.apply_signal2d(result)]
+        final = [e for result in results for e in self.transform.apply_signal2d(result)]
+        if self._cache_enabled:
+            self._cache_set(expr, final)
+        return final
 
     def apply_signal2dvec(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         results: List[SignalExpr2DVec]
         if isinstance(expr, RepeaterVec):
             body_results: List[SignalExpr2DVec] = []
@@ -459,9 +575,17 @@ class Postorder(Transform):
             results = body_results
         else:
             results = [expr]
-        return [e for result in results for e in self.transform.apply_signal2dvec(result)]
+        final = [e for result in results for e in self.transform.apply_signal2dvec(result)]
+        if self._cache_enabled:
+            self._cache_set(expr, final)
+        return final
 
     def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[KernelMatrixExpr]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -476,9 +600,17 @@ class Postorder(Transform):
                 ]
             case _:
                 raise NotImplementedError()
-        return [e for result in results for e in self.transform.apply_kernel_matrix(result)]
+        final = [e for result in results for e in self.transform.apply_kernel_matrix(result)]
+        if self._cache_enabled:
+            self._cache_set(expr, final)
+        return final
 
     def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        if self._cache_enabled:
+            cached = self._cache_get(expr)
+            if cached is not None:
+                return cached
+
         def cartesian(constructor, lists, lanes) -> Sequence[SignalVectorExpr]:  # type: ignore
             return [constructor(*args).with_lanes(lanes) for args in itertools.product(*lists)]
 
@@ -489,13 +621,26 @@ class Postorder(Transform):
                     SignalVector(vec_data).with_lanes(expr.lanes)
                     for vec_data in itertools.product(*[self.apply_signal(s) for s in data])
                 ]
+            case WindowMapVec():
+                new_bodies = list(self.apply_signal_vector(expr.body))
+                new_inputs_lists = [list(self.apply_generic(inp)) for inp in expr.inputs]
+                wmv_results: List[SignalVectorExpr] = []
+                for new_inputs in itertools.product(*new_inputs_lists):
+                    for new_body in new_bodies:
+                        new_wmv = WindowMapVec.make(expr.n_interleave, expr.n, new_inputs, new_body, expr.input_vars)
+                        new_wmv.lanes = expr.lanes
+                        wmv_results.append(new_wmv)
+                results = wmv_results
             case _:
                 results = cartesian(
                     type(expr),
                     [self.apply_generic(child) for child in expr.children()],
                     expr.lanes,
                 )
-        return [e for result in results for e in self.transform.apply_signal_vector(result)]
+        final = [e for result in results for e in self.transform.apply_signal_vector(result)]
+        if self._cache_enabled:
+            self._cache_set(expr, final)
+        return final
 
 
 class SaturatePreorder(Transform):

@@ -189,9 +189,7 @@ class TVKernel(KernelExpr):
                     continue
                 case _:
                     return i, TVKernel(self.data[i:], self.ty, self.element_type).with_lanes(self.lanes)
-        if max_delay < len(self.data):
-            return max_delay, TVKernel(self.data[max_delay:], self.ty, self.element_type).with_lanes(self.lanes)
-        assert False, "max_delay exceeds kernel length"
+        return max_delay, TVKernel(self.data[max_delay:], self.ty, self.element_type).with_lanes(self.lanes)
 
     def to_sparse_repr(self) -> Tuple[int, List[int], List[SignalExpr]]:
         """Returns a tuple of (num_nonzero, indices, values) representing the sparse form of the kernel."""

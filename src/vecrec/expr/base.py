@@ -174,6 +174,9 @@ class RecLang:
     def __eq__(self, other: object) -> bool:
         if type(self) is not type(other):
             return False
+        
+        if id(self) == id(other):
+            return True
 
         return self.__dict__ == other.__dict__
 

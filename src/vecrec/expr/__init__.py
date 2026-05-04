@@ -57,6 +57,7 @@ __all__ = [
     "VectorAt",
     "WMVar",
     "WindowMap",
+    "WindowMapVec",
     "pp",
     "pps",
 ]

@@ -2,7 +2,7 @@ from typing import overload
 
 from vecrec.expr.base import SignalExpr, SignalExpr2D
 from vecrec.transform import *
-from vecrec.transform.core import DilateLTVTrop
+from vecrec.transform.core import DilateLTVTrop, DilateLTVArithVec, DilateLTVTropVec, DilateLTVHalfPointsVec
 
 
 def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
@@ -30,10 +30,17 @@ def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
 
                 Preorder(Try(DilateLTVHalfPoints(max_bits))),
                 SaturatePreorder(ConstantFold),
+                Preorder(Try(DilateLTVHalfPointsVec(max_bits))),
+                SaturatePreorder(ConstantFold),
 
                 Preorder(Try(DilateLTVTrop(max_bits))),
-                SaturatePreorder(ConstantFold),                
+                SaturatePreorder(ConstantFold),
+                Preorder(Try(DilateLTVTropVec(max_bits))),
+                SaturatePreorder(ConstantFold),
+
                 Preorder(Try(DilateLTVArith(max_bits))),
+                SaturatePreorder(ConstantFold),
+                Preorder(Try(DilateLTVArithVec(max_bits))),
                 SaturatePreorder(ConstantFold),
                 
                 Preorder(Try(Eliminate2DKernels())),

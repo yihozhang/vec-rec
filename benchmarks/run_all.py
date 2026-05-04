@@ -36,6 +36,7 @@ from arith.second_order_high_pass import SecondOrderHighPassBenchmark
 from arith.audio_large_filters import AudioLargeFiltersBenchmark
 
 from arith.continued_fraction import ContinuedFractionBenchmark
+from arith.mutual_recurse import MutualRecurseTIFBenchmark, MutualRecurseTIGBenchmark
 from arith.box_filter_summed_area_table import BoxFilterSATBenchmark
 from arith.repeated_box_filter import RepeatedBoxFilterBenchmark
 from trop.second_order_ti_trop import SecondOrderTITropBenchmark
@@ -74,6 +75,8 @@ REGISTRY.extend(
         DistanceTransformBenchmark(),
         NeedlemanWunschBenchmark(),
         AffineGapBenchmark(),
+        MutualRecurseTIFBenchmark(),
+        MutualRecurseTIGBenchmark(),
     ]
 )
 

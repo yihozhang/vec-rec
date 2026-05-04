@@ -24,6 +24,7 @@ from vecrec.expr.signal_ops import (
     RepeaterVec,
     WMVar,
     WindowMap,
+    WindowMapVec,
 )
 from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
 from vecrec.expr.kernel import TIKernel, TVKernel, TIKernel2D, TVKernel2D
@@ -60,7 +61,7 @@ def _prec(expr: RecLang) -> int:
             return _PREC_ADD
         case Recurse() | Recurse2D():
             return _PREC_RECURSE
-        case Repeater() | RepeaterVec() | WindowMap():
+        case Repeater() | RepeaterVec() | WindowMap() | WindowMapVec():
             return _PREC_BINDER
         case Signal2DAt() | VectorAt():
             return _PREC_INDEX
@@ -264,6 +265,10 @@ def _fmt_one(
         case WindowMap():
             inputs_str = ", ".join(fmt(inp) for inp in expr.inputs)
             return f"wmap[{expr.n}]({inputs_str}; {fmt(expr.body)})"
+
+        case WindowMapVec():
+            inputs_str = ", ".join(fmt(inp) for inp in expr.inputs)
+            return f"wmapv[{expr.n_interleave}, {expr.n}]({inputs_str}; {fmt(expr.body)})"
 
         # --- Lane conversions (transparent) ---
         case ConvertLanes(a):

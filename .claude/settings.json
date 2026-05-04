@@ -3,7 +3,7 @@
     "allow": [
       "Bash(uv run *)",
       "Bash(clang++ --version)",
-      "Bash(python3 -c \"import numpy as np; print\\(np.iinfo\\(np.int8\\).min, np.iinfo\\(np.int8\\).min // 2, np.iinfo\\(np.int8\\).min // 8\\)\")"
+      "Read(//tmp/**)"
     ]
   }
 }

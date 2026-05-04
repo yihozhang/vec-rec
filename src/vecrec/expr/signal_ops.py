@@ -343,3 +343,71 @@ class WindowMap(SignalExpr):
 
     def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
         return list(self.inputs) + [self.body]  # type: ignore[return-value]
+
+
+@dataclass(unsafe_hash=True)
+class WindowMapVec(SignalVectorExpr):
+    """Vector variant of WindowMap: produces n_out interleaved output streams.
+
+    Partitions each input into n_interleave interleaved substreams, applies
+    body which returns n_interleave * n_out components, and zips them back into
+    n_out output streams (inherited as SignalVectorExpr.n).
+
+    For n_interleave=2 (even/odd): output component i is the interleaving of
+    body components 2i (substream 0 / even) and 2i+1 (substream 1 / odd).
+    Requires body.n == n_interleave * n_out.
+    """
+
+    n_interleave: int
+    inputs: Tuple[SignalExpr, ...]
+    body: SignalVectorExpr
+    input_vars: Tuple[Tuple[WMVar, ...], ...]
+    __match_args__ = ("n_interleave", "inputs", "body", "input_vars")
+
+    var_count: int = 1
+
+    def __init__(
+        self,
+        n_interleave: int,
+        n_out: int,
+        inputs: List[SignalExpr],
+        func: Callable[[List[List[WMVar]]], SignalVectorExpr],
+    ) -> None:
+        assert len(inputs) > 0
+        ty = inputs[0].ty
+        et = inputs[0].element_type
+        name = f"$wmv{WindowMapVec.var_count}"
+        WindowMapVec.var_count += 1
+        self.n_interleave = n_interleave
+        self.inputs = tuple(inputs)
+        self.input_vars = tuple(
+            tuple(WMVar(f"{name}_{i}_{j}", ty, et) for j in range(n_interleave))
+            for i in range(len(inputs))
+        )
+        subs = [list(self.input_vars[i]) for i in range(len(inputs))]
+        self.body = func(subs)
+        assert self.body.n == n_interleave * n_out, (
+            f"WindowMapVec body must have n_interleave*n_out={n_interleave * n_out} components, got {self.body.n}"
+        )
+        super().__init__(ty, et, n_out)
+
+    @staticmethod
+    def make(
+        n_interleave: int,
+        n_out: int,
+        inputs: Tuple[SignalExpr, ...],
+        body: SignalVectorExpr,
+        input_vars: Tuple[Tuple[WMVar, ...], ...],
+    ) -> "WindowMapVec":
+        wmv: WindowMapVec = WindowMapVec.__new__(WindowMapVec)
+        ty = inputs[0].ty
+        et = inputs[0].element_type
+        super(WindowMapVec, wmv).__init__(ty, et, n_out)
+        wmv.n_interleave = n_interleave
+        wmv.inputs = inputs
+        wmv.body = body
+        wmv.input_vars = input_vars
+        return wmv
+
+    def children(self) -> List[KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec]:
+        return list(self.inputs) + [self.body]  # type: ignore[return-value]
