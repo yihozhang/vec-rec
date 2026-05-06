@@ -19,3 +19,7 @@ benchmark
 _codeql_detected_source_root
 
 results/
+prof/
+/*.S
+/*.txt
+/scratch/

@@ -67,7 +67,7 @@ def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
 
         InferNRows(),
         AnnotateLanes(max_bits),
-        # PushDownConvertLanes(),
+        PushDownConvertLanes(),
     )
 
 

@@ -1,8 +1,9 @@
-from typing import List, Optional, Sequence, Dict, Tuple, Union
+from typing import Any, List, Optional, Sequence, Dict, Tuple, Union
 from vecrec.codegen.codegen import CodeGen, KernelProgram
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D
 from vecrec.util import ElementType
+import concurrent.futures
 import json
 import numpy as np
 import os
@@ -714,109 +715,164 @@ def generate_and_run_benchmark(
     compiler: str = "clang++",
     compiler_flags: Optional[List[str]] = None,
     row_size: int = 1024,
+    schedules_per_runner: int = 5,
 ) -> dict:
     """
     Generate, compile, and run a benchmark for the given kernels.
 
+    The schedules are split into batches of size ``schedules_per_runner``
+    (each batch always includes the reference schedule k0). Every batch is
+    compiled into its own runner; runners are compiled in parallel. After
+    running, each batch's reported throughputs are normalized so that all
+    batches agree on a common k0 throughput, anchored to batch 0's k0.
+
     Args:
         codegen: CodeGen instance used to generate the kernels
         exprs: List of signal expressions corresponding to each kernel
-        header_path: Path where the kernel header file will be written
-        benchmark_path: Path where the benchmark C++ file will be written (default: random file in /tmp/)
-        executable_path: Path for the compiled benchmark executable (default: random file in /tmp/)
+        header_path: Used only when there is a single batch. Otherwise
+            per-batch headers are auto-generated under /tmp.
+        benchmark_path: Used only when there is a single batch. Otherwise
+            per-batch sources are auto-generated under /tmp.
+        executable_path: Used only when there is a single batch. Otherwise
+            per-batch executables are auto-generated under /tmp.
         include_correctness_check: If True, adds correctness checking code
         correctness_tolerance: Tolerance for floating point comparisons in correctness checking
         input_size: Size of input data for benchmarking
         warmup_iterations: Number of warmup iterations before timing
         benchmark_iterations: Number of iterations for timing
         compiler: Compiler to use (default: clang++)
-        compiler_flags: Additional compiler flags (default: ["-std=c++20", "-O2", "-march=native"])
+        compiler_flags: Additional compiler flags (default: ["-std=c++20", "-O3", "-march=native", "-I", "."])
         row_size: Number of elements per row (used to call reset_and_next_row at row boundaries)
+        schedules_per_runner: Maximum schedules per runner (k0 always included)
 
     Returns:
         A dictionary containing:
-            - 'output': stdout from benchmark execution
+            - 'output': dict mapping kernel name -> throughput, plus optional 'validation'
             - 'error': stderr if any errors occurred
             - 'return_code': return code from benchmark execution
     """
     if compiler_flags is None:
         compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
 
-    if header_path is None:
-        fd, header_path = tempfile.mkstemp(suffix=".h", prefix="header_", dir="/tmp")
-        print(header_path)
-        os.close(fd)  # Close the file descriptor, we'll write to it later
+    assert len(exprs) > 0, "At least one expression must be provided"
+    assert schedules_per_runner >= 1, "schedules_per_runner must be at least 1"
 
-    # Generate unique random file names if not provided
-    if benchmark_path is None:
-        fd, benchmark_path = tempfile.mkstemp(suffix=".cpp", prefix="benchmark_", dir="/tmp")
-        print(benchmark_path)
-        os.close(fd)  # Close the file descriptor, we'll write to it later
+    n_exprs = len(exprs)
+    kernel_names_global = [f"k{i}" for i in range(n_exprs)]
+    codes_global = [codegen.generate(expr, name) for expr, name in zip(exprs, kernel_names_global)]
 
-    if executable_path is None:
-        fd, executable_path = tempfile.mkstemp(prefix="benchmark_", dir="/tmp")
-        os.close(fd)  # Close the file descriptor
-
-    kernel_names = [f"k{i}" for i in range(len(exprs))]
-
-    # Generate kernel code
-    codes = [codegen.generate(expr, name) for expr, name in zip(exprs, kernel_names)]
-    instantiate_kernels(header_path, codes)
-
-    # Generate benchmark program
-    generate_benchmark(
-        codegen=codegen,
-        exprs=exprs,
-        kernel_names=kernel_names,
-        kernel_header_path=header_path,
-        output_path=benchmark_path,
-        include_correctness_check=include_correctness_check,
-        correctness_tolerance=correctness_tolerance,
-        input_size=input_size,
-        warmup_iterations=warmup_iterations,
-        benchmark_iterations=benchmark_iterations,
-        row_size=row_size,
-        ele_per_iter_list=[code.element_per_iter for code in codes],
-    )
-
-    # Compile benchmark
-    compile_cmd = [compiler] + compiler_flags + [benchmark_path, "-o", executable_path]
-    compile_result = subprocess.run(
-        compile_cmd,
-        capture_output=True,
-        text=True,
-    )
-
-    if compile_result.returncode != 0:
-        result = {
-            "output": compile_result.stdout,
-            "error": f"Compilation failed: {compile_result.stderr}",
-            "return_code": compile_result.returncode,
-        }
+    # Build batches. Each batch holds at most ``schedules_per_runner`` kernels,
+    # and always includes k0 so its measured throughput can anchor normalization.
+    batches: List[List[int]] = []
+    if n_exprs <= schedules_per_runner:
+        batches.append(list(range(n_exprs)))
     else:
+        # First batch already contains k0 by virtue of starting at 0.
+        batches.append(list(range(schedules_per_runner)))
+        new_per_batch = schedules_per_runner - 1
+        i = schedules_per_runner
+        while i < n_exprs:
+            batches.append([0] + list(range(i, min(i + new_per_batch, n_exprs))))
+            i += new_per_batch
 
-        # Run benchmark
-        run_result = subprocess.run(
-            [os.path.abspath(executable_path)],
-            capture_output=True,
-            text=True,
+    single_batch = len(batches) == 1
+
+    # Per-batch artifact paths. Honor explicit paths only for the single-batch case.
+    batch_paths: List[Tuple[str, str, str]] = []
+    for b_idx in range(len(batches)):
+        if single_batch and header_path is not None:
+            h_path = header_path
+        else:
+            fd, h_path = tempfile.mkstemp(suffix=".h", prefix=f"header_b{b_idx}_", dir="/tmp")
+            os.close(fd)
+        if single_batch and benchmark_path is not None:
+            b_path = benchmark_path
+        else:
+            fd, b_path = tempfile.mkstemp(suffix=".cpp", prefix=f"benchmark_b{b_idx}_", dir="/tmp")
+            os.close(fd)
+        if single_batch and executable_path is not None:
+            e_path = executable_path
+        else:
+            fd, e_path = tempfile.mkstemp(prefix=f"benchmark_b{b_idx}_", dir="/tmp")
+            os.close(fd)
+        batch_paths.append((h_path, b_path, e_path))
+
+    # Generate header + benchmark .cpp for every batch.
+    for b_idx, batch in enumerate(batches):
+        h_path, b_path, _e_path = batch_paths[b_idx]
+        instantiate_kernels(h_path, [codes_global[i] for i in batch])
+        generate_benchmark(
+            codegen=codegen,
+            exprs=[exprs[i] for i in batch],
+            kernel_names=[kernel_names_global[i] for i in batch],
+            kernel_header_path=h_path,
+            output_path=b_path,
+            include_correctness_check=include_correctness_check,
+            correctness_tolerance=correctness_tolerance,
+            input_size=input_size,
+            warmup_iterations=warmup_iterations,
+            benchmark_iterations=benchmark_iterations,
+            row_size=row_size,
+            ele_per_iter_list=[codes_global[i].element_per_iter for i in batch],
         )
 
-        print(executable_path)
-        print("result:", run_result.stdout)
-        json_output = json.loads(run_result.stdout)
-        validation = json_output.pop("validation", None)
-        # Since Python 3.7, Python dicts maintain insertion order.
-        json_output = dict(sorted(json_output.items(), key=lambda item: item[1]))
-        if validation is not None:
-            json_output["validation"] = validation
+    # Compile every batch in parallel.
+    def _compile(idx: int) -> Tuple[int, subprocess.CompletedProcess]:
+        h_path, b_path, e_path = batch_paths[idx]
+        cmd = [compiler] + compiler_flags + [b_path, "-o", e_path]
+        return idx, subprocess.run(cmd, capture_output=True, text=True)
 
-        result = {
-            "output": json_output,
-            "error": run_result.stderr if run_result.returncode != 0 else "",
-            "return_code": run_result.returncode,
-        }
+    max_workers = min(len(batches), os.cpu_count() or 1)
+    compile_results: List[Optional[subprocess.CompletedProcess]] = [None] * len(batches)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_compile, i) for i in range(len(batches))]
+        for fut in concurrent.futures.as_completed(futures):
+            idx, res = fut.result()
+            compile_results[idx] = res
 
-    if result["return_code"] != 0:
-        raise RuntimeError(f"Benchmark execution failed: {result['error']}")
-    return result
+    for idx, maybe_res in enumerate(compile_results):
+        assert maybe_res is not None
+        if maybe_res.returncode != 0:
+            raise RuntimeError(
+                f"Benchmark execution failed: Compilation failed for batch {idx}: {maybe_res.stderr}"
+            )
+
+    # Run runners sequentially so concurrent execution doesn't skew timing.
+    parsed_outputs: List[Dict[str, Any]] = []
+    parsed_validations: List[Dict[str, Any]] = []
+    for idx, batch in enumerate(batches):
+        _h_path, _b_path, e_path = batch_paths[idx]
+        run_result = subprocess.run([os.path.abspath(e_path)], capture_output=True, text=True)
+        if run_result.returncode != 0:
+            raise RuntimeError(
+                f"Benchmark execution failed for batch {idx}: {run_result.stderr}"
+            )
+        parsed = json.loads(run_result.stdout)
+        validation = parsed.pop("validation", None)
+        parsed_outputs.append(parsed)
+        parsed_validations.append(validation if validation is not None else {})
+
+    # Normalize: anchor every batch's reported throughputs to batch 0's k0,
+    # so that all batches agree on the same k0 number and the rest scale with it.
+    anchor_k0 = float(parsed_outputs[0]["k0"])
+    aggregated: Dict[str, float] = {"k0": anchor_k0}
+    aggregated_validation: Dict[str, Any] = {}
+    for parsed, validation in zip(parsed_outputs, parsed_validations):
+        local_k0 = float(parsed["k0"])
+        scale = (anchor_k0 / local_k0) if local_k0 != 0.0 else 1.0
+        for kname, throughput in parsed.items():
+            if kname == "k0":
+                continue
+            aggregated[kname] = float(throughput) * scale
+        for kname, val in validation.items():
+            aggregated_validation.setdefault(kname, val)
+
+    aggregated_sorted: Dict[str, Any] = dict(sorted(aggregated.items(), key=lambda item: item[1]))
+    if aggregated_validation:
+        aggregated_sorted["validation"] = aggregated_validation
+
+    return {
+        "output": aggregated_sorted,
+        "error": "",
+        "return_code": 0,
+    }

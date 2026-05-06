@@ -1500,3 +1500,48 @@ template <> struct Zip2<vec_type> { \
 
 VECREC_DEFINE_UNZIP2_ZIP2_K32(int8_vec32)
 #undef VECREC_DEFINE_UNZIP2_ZIP2_K32
+
+// K=64 specializations (int8_vec64)
+// Unzip2: even 0,2,...,126; odd 1,3,...,127
+// Zip2:   lo=[e0,o0,...,e31,o31], hi=[e32,o32,...,e63,o63]
+#define VECREC_DEFINE_UNZIP2_ZIP2_K64(vec_type) \
+template <> struct Unzip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_even, int out_odd, int in_lo, int in_hi) { \
+        auto lo = reg[in_lo]; auto hi = reg[in_hi]; \
+        reg[out_even] = __builtin_shufflevector(lo, hi, \
+              0,   2,   4,   6,   8,  10,  12,  14,  16,  18,  20,  22,  24,  26,  28,  30, \
+             32,  34,  36,  38,  40,  42,  44,  46,  48,  50,  52,  54,  56,  58,  60,  62, \
+             64,  66,  68,  70,  72,  74,  76,  78,  80,  82,  84,  86,  88,  90,  92,  94, \
+             96,  98, 100, 102, 104, 106, 108, 110, 112, 114, 116, 118, 120, 122, 124, 126); \
+        reg[out_odd]  = __builtin_shufflevector(lo, hi, \
+              1,   3,   5,   7,   9,  11,  13,  15,  17,  19,  21,  23,  25,  27,  29,  31, \
+             33,  35,  37,  39,  41,  43,  45,  47,  49,  51,  53,  55,  57,  59,  61,  63, \
+             65,  67,  69,  71,  73,  75,  77,  79,  81,  83,  85,  87,  89,  91,  93,  95, \
+             97,  99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127); \
+    } \
+    void reset_and_next_row() {} \
+}; \
+template <> struct Zip2<vec_type> { \
+    template <typename Reg_t> \
+    inline __attribute__((always_inline)) void \
+    run(Reg_t &reg, int out_lo, int out_hi, int in_even, int in_odd) { \
+        auto e = reg[in_even]; auto o = reg[in_odd]; \
+        reg[out_lo] = __builtin_shufflevector(e, o, \
+              0,  64,   1,  65,   2,  66,   3,  67,   4,  68,   5,  69,   6,  70,   7,  71, \
+              8,  72,   9,  73,  10,  74,  11,  75,  12,  76,  13,  77,  14,  78,  15,  79, \
+             16,  80,  17,  81,  18,  82,  19,  83,  20,  84,  21,  85,  22,  86,  23,  87, \
+             24,  88,  25,  89,  26,  90,  27,  91,  28,  92,  29,  93,  30,  94,  31,  95); \
+        reg[out_hi] = __builtin_shufflevector(e, o, \
+             32,  96,  33,  97,  34,  98,  35,  99,  36, 100,  37, 101,  38, 102,  39, 103, \
+             40, 104,  41, 105,  42, 106,  43, 107,  44, 108,  45, 109,  46, 110,  47, 111, \
+             48, 112,  49, 113,  50, 114,  51, 115,  52, 116,  53, 117,  54, 118,  55, 119, \
+             56, 120,  57, 121,  58, 122,  59, 123,  60, 124,  61, 125,  62, 126,  63, 127); \
+    } \
+    void reset_and_next_row() {} \
+};
+
+VECREC_DEFINE_UNZIP2_ZIP2_K64(int8_vec64)
+#undef VECREC_DEFINE_UNZIP2_ZIP2_K64
+

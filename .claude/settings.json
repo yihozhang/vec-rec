@@ -3,7 +3,9 @@
     "allow": [
       "Bash(uv run *)",
       "Bash(clang++ --version)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(kill 3282468 3282470 3282474)",
+      "Bash(xargs -r kill)"
     ]
   }
 }

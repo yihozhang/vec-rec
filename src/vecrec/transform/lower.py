@@ -424,86 +424,246 @@ class AnnotateLanes(Transform):
             return [expr.with_lanes(lanes)]
 
 
+def _wrap_signal(expr: SignalExpr, target: int) -> SignalExpr:
+    new = ConvertLanes(expr)
+    new.lanes = target
+    return new
+
+
+def _wrap_vec(expr: SignalVectorExpr, target: int) -> SignalVectorExpr:
+    new = ConvertLanesV(expr)
+    new.lanes = target
+    return new
+
+
+def _count_adapters(expr: RecLang) -> int:
+    count = 0
+    stack: list[RecLang] = [expr]
+    while stack:
+        e = stack.pop()
+        if isinstance(e, (ConvertLanes, KConvertLanes, ConvertLanesV)):
+            count += 1
+        for c in e.children():
+            stack.append(c)
+    return count
+
+
 class PushDownConvertLanesImpl(Transform):
-    # Try to make the expression compute that many lanes at a time.
-    # (T, int) -> T for T in {SignalExpr, KernelExpr, SignalExpr2D, KernelExpr2D}
-    def narrow_lanes(self, expr, lanes):
-        assert not isinstance(
-            expr, KernelExpr2D
-        ), "2D kernels should be eliminated before pushing down lane annotations"
-        assert expr.lanes is not None
-        assert lanes <= expr.lanes
+    """Variant-generating push-down of ConvertLanes / KConvertLanes / ConvertLanesV.
 
-        if isinstance(expr, ConvertLanes) or isinstance(expr, KConvertLanes):
-            if expr.a.lanes == lanes:
-                return expr.a
+    For each adapter encountered (in postorder), emit two variants when push-down
+    strictly reduces the adapter count: the original, and a relane'd variant where
+    the adapter has been pushed through MUST=match operators and binding-variable
+    nodes (Repeater/WindowMap/RepeaterVec/WindowMapVec, updating their bound
+    variables in lockstep). Recurse-like nodes (Recurse, Recurse2D, RecurseV) are
+    fixed barriers — relane wraps them in a fresh adapter when target differs.
+    """
 
-            new_expr = copy.copy(expr)
-            new_expr.lanes = lanes
+    def relane(self, expr: RecLang, target: int) -> RecLang:
+        return self._relane(expr, target, {})
+
+    def _relane(self, expr: RecLang, target: int, subst: dict[str, RecLang]) -> RecLang:
+        # Fast path: subtree already at target lanes and not an adapter.
+        if expr.lanes == target and not isinstance(expr, (ConvertLanes, KConvertLanes, ConvertLanesV)):
+            return expr
+
+        # SignalExpr branch
+        if isinstance(expr, SignalExpr):
+            if isinstance(expr, ConvertLanes):
+                return self._relane(expr.a, target, subst)
+            if isinstance(expr, Recurse):
+                return expr if expr.lanes == target else _wrap_signal(expr, target)
+            if isinstance(expr, Convolve2D):
+                raise AssertionError("Convolve2D should have been eliminated")
+            if isinstance(expr, Ith):
+                new_inner_2d = cast(SignalExpr2D, self._relane(expr.a, target, subst))
+                new_ith = Ith(new_inner_2d, expr.i)
+                new_ith.lanes = target
+                return new_ith
+            if isinstance(expr, VectorAt):
+                new_inner_v = cast(SignalVectorExpr, self._relane(expr.a, target, subst))
+                new_vec_at = VectorAt(new_inner_v, expr.i)
+                new_vec_at.lanes = target
+                return new_vec_at
+            if isinstance(expr, WindowMap):
+                new_input_vars: tuple[tuple[WMVar, ...], ...] = tuple(
+                    tuple(cast(WMVar, WMVar(wv.name, wv.ty, wv.element_type).with_lanes(target)) for wv in row)
+                    for row in expr.input_vars
+                )
+                body_subst: dict[str, RecLang] = dict(subst)
+                for old_row, new_row in zip(expr.input_vars, new_input_vars):
+                    for old, new in zip(old_row, new_row):
+                        body_subst[old.name] = new
+                new_body = cast(SignalVectorExpr, self._relane(expr.body, target, body_subst))
+                new_inputs: tuple[SignalExpr, ...] = tuple(
+                    cast(SignalExpr, self._relane(inp, target, subst)) for inp in expr.inputs
+                )
+                wm = WindowMap.make(expr.n, new_inputs, new_body, new_input_vars)
+                wm.lanes = target
+                return wm
+            if isinstance(expr, WMVar):
+                if expr.name in subst:
+                    return subst[expr.name]
+                return WMVar(expr.name, expr.ty, expr.element_type).with_lanes(target)
+            if isinstance(expr, Var):
+                return Var(expr.name, expr.ty, expr.element_type).with_lanes(target)
+            if isinstance(expr, Num):
+                return Num(expr.value, expr.ty, expr.element_type).with_lanes(target)
+            if isinstance(expr, Impulse):
+                return Impulse(expr.value, expr.ty, expr.element_type).with_lanes(target)
+            # MUST=match operators: SAdd, SSub, SNeg, PointwiseMul, PointwiseDiv, Convolve.
+            new_children_s = [self._relane(c, target, subst) for c in expr.children()]
+            new_expr: SignalExpr = type(expr)(*new_children_s)  # type: ignore[arg-type]
+            new_expr.lanes = target
             return new_expr
-        elif isinstance(expr, KernelExpr):
+
+        # KernelExpr branch
+        if isinstance(expr, KernelExpr):
+            if isinstance(expr, KConvertLanes):
+                return self._relane(expr.a, target, subst)
             if isinstance(expr, TIKernel):
-                new_kernel_expr: KernelExpr = TIKernel(expr.data, expr.ty, expr.element_type)
-                new_kernel_expr.lanes = lanes
-                return new_kernel_expr
-            elif isinstance(expr, TVKernel):
-                # TODO: we can also use a ConvertLanes here
-                data = [self.narrow_lanes(child, lanes) for child in expr.data]
-                return TVKernel(data, expr.ty, expr.element_type).with_lanes(lanes)
-            else:
-                assert False, "unreachable"
-        elif isinstance(expr, Var):
-            new_signal_expr: SignalExpr = Var(expr.name, expr.ty, expr.element_type)
-            new_signal_expr.lanes = lanes
-            return new_signal_expr
-        elif isinstance(expr, Impulse):
-            new_signal_expr = Impulse(expr.value, expr.ty, expr.element_type)
-            new_signal_expr.lanes = lanes
-            return new_signal_expr
-        elif isinstance(expr, Repeater):
-            raise NotImplementedError("TODO: This happens only after we implement ConvertLanes2D")
-        elif isinstance(expr, Ith):
-            new_ith_expr = copy.copy(expr)
-            new_ith_expr.lanes = lanes
-            return new_ith_expr
-        else:
-            assert isinstance(expr, SignalExpr)
-            if expr.is_leaf():
-                new_signal_expr = copy.copy(expr)
-            else:
-                args = [self.narrow_lanes(child, lanes) for child in expr.children()]
-                new_signal_expr = type(expr)(*args)
+                return TIKernel(expr.data, expr.ty, expr.element_type).with_lanes(target)
+            if isinstance(expr, TVKernel):
+                new_data = [cast(SignalExpr, self._relane(s, target, subst)) for s in expr.data]
+                return TVKernel(new_data, expr.ty, expr.element_type).with_lanes(target)
+            # MUST=match: KAdd, KSub, KConvolve, KNeg.
+            new_children_k = [self._relane(c, target, subst) for c in expr.children()]
+            new_kernel: KernelExpr = type(expr)(*new_children_k)  # type: ignore[arg-type]
+            new_kernel.lanes = target
+            return new_kernel
 
-            new_signal_expr.lanes = lanes
+        # SignalVectorExpr branch
+        if isinstance(expr, SignalVectorExpr):
+            if isinstance(expr, ConvertLanesV):
+                return self._relane(expr.a, target, subst)
+            if isinstance(expr, RecurseV):
+                return expr if expr.lanes == target else _wrap_vec(expr, target)
+            if isinstance(expr, WindowMapVec):
+                new_input_vars_v: tuple[tuple[WMVar, ...], ...] = tuple(
+                    tuple(cast(WMVar, WMVar(wv.name, wv.ty, wv.element_type).with_lanes(target)) for wv in row)
+                    for row in expr.input_vars
+                )
+                body_subst_v: dict[str, RecLang] = dict(subst)
+                for old_row, new_row in zip(expr.input_vars, new_input_vars_v):
+                    for old, new in zip(old_row, new_row):
+                        body_subst_v[old.name] = new
+                new_body_v = cast(SignalVectorExpr, self._relane(expr.body, target, body_subst_v))
+                new_inputs_v: tuple[SignalExpr, ...] = tuple(
+                    cast(SignalExpr, self._relane(inp, target, subst)) for inp in expr.inputs
+                )
+                wmv = WindowMapVec.make(expr.n_interleave, expr.n, new_inputs_v, new_body_v, new_input_vars_v)
+                wmv.lanes = target
+                return wmv
+            if isinstance(expr, SignalVector):
+                new_data_sv = [cast(SignalExpr, self._relane(s, target, subst)) for s in expr.data]
+                new_sv = SignalVector(new_data_sv)
+                new_sv.lanes = target
+                return new_sv
+            if isinstance(expr, ConvolveV):
+                new_a_cv = cast(KernelMatrixExpr, self._relane(expr.a, target, subst))
+                new_g_cv = cast(SignalVectorExpr, self._relane(expr.g, target, subst))
+                new_cv = ConvolveV(new_a_cv, new_g_cv)
+                new_cv.lanes = target
+                return new_cv
+            raise AssertionError(f"relane unsupported for SignalVectorExpr: {type(expr)}")
 
-            return new_signal_expr
+        # KernelMatrixExpr branch
+        if isinstance(expr, KernelMatrixExpr):
+            if isinstance(expr, KernelMatrix):
+                new_rows = [
+                    [cast(KernelExpr, self._relane(k, target, subst)) for k in row] for row in expr.data
+                ]
+                return KernelMatrix(new_rows).with_lanes(target)
+            raise AssertionError(f"relane unsupported for KernelMatrixExpr: {type(expr)}")
+
+        # SignalExpr2D branch (reached via Ith / Signal2DAt)
+        if isinstance(expr, SignalExpr2D):
+            if isinstance(expr, RVar2D):
+                if expr.name in subst:
+                    return subst[expr.name]
+                return RVar2D(expr.name, expr.ty, expr.element_type).with_lanes(target)
+            if isinstance(expr, Var2D):
+                new_var2d = copy.copy(expr)
+                new_var2d.lanes = target
+                return new_var2d
+            if isinstance(expr, Repeater):
+                old_var = expr.prev_rows_var
+                new_var: RVar2D = cast(
+                    RVar2D, RVar2D(old_var.name, old_var.ty, old_var.element_type).with_lanes(target)
+                )
+                body_subst_r: dict[str, RecLang] = dict(subst)
+                body_subst_r[old_var.name] = new_var
+                new_body_r = cast(SignalExpr, self._relane(expr.a, target, body_subst_r))
+                rep = Repeater.make(new_body_r, expr.n_rows, new_var)
+                rep.lanes = target
+                return rep
+            if isinstance(expr, Signal2DAt):
+                new_inner_2dvec = cast(SignalExpr2DVec, self._relane(expr.a, target, subst))
+                new_at = Signal2DAt(new_inner_2dvec, expr.comp_idx)
+                new_at.lanes = target
+                return new_at
+            if isinstance(expr, Recurse2D):
+                raise AssertionError("Recurse2D should have been eliminated")
+            raise AssertionError(f"relane unsupported for SignalExpr2D: {type(expr)}")
+
+        # SignalExpr2DVec branch (reached via Signal2DAt)
+        if isinstance(expr, SignalExpr2DVec):
+            if isinstance(expr, RepeaterVec):
+                new_prev_vars: tuple[RVar2D, ...] = tuple(
+                    cast(RVar2D, RVar2D(pv.name, pv.ty, pv.element_type).with_lanes(target))
+                    for pv in expr.prev_vars
+                )
+                body_subst_rv: dict[str, RecLang] = dict(subst)
+                for old_pv, new_pv in zip(expr.prev_vars, new_prev_vars):
+                    body_subst_rv[old_pv.name] = new_pv
+                new_body_rv = cast(SignalVectorExpr, self._relane(expr.a, target, body_subst_rv))
+                rv = RepeaterVec.make(new_body_rv, expr.n, new_prev_vars, expr.n_rows)
+                rv.lanes = target
+                return rv
+            raise AssertionError(f"relane unsupported for SignalExpr2DVec: {type(expr)}")
+
+        if isinstance(expr, KernelExpr2D):
+            raise AssertionError("2D kernels should have been eliminated")
+
+        raise AssertionError(f"relane unknown type: {type(expr)}")
 
     def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
         if not isinstance(expr, KConvertLanes):
             return [expr]
-
         assert expr.lanes is not None and expr.a.lanes is not None
-        if expr.lanes < expr.a.lanes:
-            return [self.narrow_lanes(expr.a, expr.lanes)]
-
+        pushed = cast(KernelExpr, self.relane(expr.a, expr.lanes))
+        if _count_adapters(pushed) < _count_adapters(expr):
+            return [expr, pushed]
         return [expr]
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        results: List[SignalExpr] = [expr]
         if not isinstance(expr, ConvertLanes):
-            return results
-
+            return [expr]
         assert expr.lanes is not None and expr.a.lanes is not None
-        if expr.lanes < expr.a.lanes:
-            results.append(self.narrow_lanes(expr.a, expr.lanes))
+        pushed = cast(SignalExpr, self.relane(expr.a, expr.lanes))
+        if _count_adapters(pushed) < _count_adapters(expr):
+            return [expr, pushed]
+        return [expr]
 
-        return results
+    def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
+        if not isinstance(expr, ConvertLanesV):
+            return [expr]
+        assert expr.lanes is not None and expr.a.lanes is not None
+        pushed = cast(SignalVectorExpr, self.relane(expr.a, expr.lanes))
+        if _count_adapters(pushed) < _count_adapters(expr):
+            return [expr, pushed]
+        return [expr]
+
+    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
+        return [expr]
 
     def apply_kernel2d(self, expr: KernelExpr2D) -> Sequence[KernelExpr2D]:
         raise AssertionError("2D kernel should have been eliminated")
 
-    def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:
-        # TODO: KConvertLanes2D has not been implemented.
+    def apply_signal2dvec(self, expr: SignalExpr2DVec) -> Sequence[SignalExpr2DVec]:
+        return [expr]
+
+    def apply_kernel_matrix(self, expr: KernelMatrixExpr) -> Sequence[KernelMatrixExpr]:
         return [expr]
 
 
