@@ -2,7 +2,16 @@ from typing import List, Optional, Dict, Set, Tuple, cast
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr, Type
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring
+from vecrec.expr.signal_ops import (
+    Repeater,
+    Ith,
+    Signal2DAt,
+    RepeaterVec,
+    WindowMap,
+    WindowMapVec,
+    WMVar,
+    ChangeSemiring,
+)
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.expr.kernel_matrix import KernelMatrix
 from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
@@ -106,6 +115,8 @@ class CodeGen:
     program: List[Node]
     # The lsit of constant declaration
     prologue: List[str]
+
+    rvec_comp_regs: Dict[RepeaterVec, List[List[int]]]
     # Map WMVar names to their per-slice register indices (set during _generate_windowmap)
     _wm_var_map: Dict[str, List[int]]
 
@@ -118,8 +129,8 @@ class CodeGen:
         self.program = []
         self.prologue = []
         self.var2d_context = {}
-        self.rvec_comp_regs: Dict[RepeaterVec, List[List[int]]] = {}
-        self._wm_var_map: Dict[str, List[int]] = {}
+        self.rvec_comp_regs = {}
+        self._wm_var_map = {}
         self.custom_semirings: Set[CustomSemiring] = set()
 
     def clear(self):
@@ -131,7 +142,7 @@ class CodeGen:
         self.prologue = []
         self.var2d_context = {}
         self.rvec_comp_regs = {}
-        self._wm_var_map: Dict[str, List[int]] = {}
+        self._wm_var_map = {}
         self.custom_semirings = set()
 
     def _max_lanes_in_tree(self, expr: RecLang, visited: Optional[set] = None) -> int:
@@ -339,7 +350,14 @@ class CodeGen:
                 self._declare_node(
                     f"Zip2<{vec_type}>",
                     "",
-                    [[even_base + i, odd_base + i, body_regs[s] + n_interleave * i + 1, body_regs[s] + n_interleave * i]],
+                    [
+                        [
+                            even_base + i,
+                            odd_base + i,
+                            body_regs[s] + n_interleave * i + 1,
+                            body_regs[s] + n_interleave * i,
+                        ]
+                    ],
                     vec_type,
                     vec_type,
                 )
