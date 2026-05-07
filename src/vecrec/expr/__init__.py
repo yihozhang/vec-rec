@@ -43,6 +43,7 @@ __all__ = [
     "with_types",
     "ConvertLanes",
     "KConvertLanes",
+    "ChangeSemiring",
     "Repeater",
     "Ith",
     # RepeaterVec / Signal2DAt

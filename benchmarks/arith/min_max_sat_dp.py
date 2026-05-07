@@ -55,12 +55,14 @@ class MinMaxSatDPBenchmark(Benchmark):
 
             def row_func(prev_rows: RVar2D) -> Recurse:
                 f_prev = Ith(prev_rows, 0)
-                # TODO: this is not safe because ssub is not 
-                # actually the additive inverse. The proper fix is to 
-                # allow converting between different semirings.
-                # Same for SNeg
-                signal = SSub(f_prev, g)
-                kernel = TVKernel([Num(float("inf")), SNeg(g), SNeg(g)])
+                # MinMaxSat has no real additive inverse, so the subtraction and
+                # negation must happen in the arithmetic semiring; we then view
+                # the results back as MinMaxSat for the recurrence itself.
+                f_prev_arith = ChangeSemiring(f_prev, Type.Arith)
+                g_arith = ChangeSemiring(g, Type.Arith)
+                signal = ChangeSemiring(SSub(f_prev_arith, g_arith), MinMaxSat)
+                neg_g = ChangeSemiring(SNeg(g_arith), MinMaxSat)
+                kernel = TVKernel([Num(float("inf")), neg_g, neg_g])
                 return Recurse(kernel, signal)
 
             return Repeater(row_func, MinMaxSat, ElementType.Float)

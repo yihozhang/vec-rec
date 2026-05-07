@@ -109,6 +109,27 @@ class ConvertLanes(SignalExpr):
 
 
 @dataclass(unsafe_hash=True)
+class ChangeSemiring(SignalExpr):
+    """Re-interpret a signal as belonging to a different semiring.
+
+    The runtime values are unchanged (the underlying element_type is identical);
+    only the semiring view changes. This allows an expression to mix operators
+    from multiple semirings — e.g. computing a difference in the arithmetic
+    semiring (which has a real additive inverse) and feeding the result into a
+    recurrence in a tropical or custom semiring.
+
+    The outer ``ty`` is the target semiring; ``a.ty`` is the source semiring.
+    """
+
+    a: SignalExpr
+    __match_args__ = ("a",)
+
+    def __init__(self, a: SignalExpr, target_ty: Type) -> None:
+        super().__init__(target_ty, a.element_type)
+        self.a = a
+
+
+@dataclass(unsafe_hash=True)
 class Convolve2D(SignalExpr):
     """2D convolution: convolve a 2D kernel with a 2D signal (from Repeater). Produces a 1D signal"""
 

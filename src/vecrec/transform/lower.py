@@ -5,7 +5,7 @@ from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr, SignalExpr2DVec
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar
+from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.expr.signal_vec import VectorAt, RecurseV, ConvolveV, SignalVector
 from vecrec.expr.kernel_matrix import KernelMatrix
@@ -295,6 +295,13 @@ class AnnotateLanes(Transform):
             new_ith_expr.lanes = actual_lanes
             return [new_ith_expr]
 
+        if isinstance(expr, ChangeSemiring):
+            target_lanes = self.max_lanes(element_type)
+            new_inner = self.convert_lanes(self.apply_signal(expr.a)[0], target_lanes)
+            new_cs = ChangeSemiring(new_inner, expr.ty)
+            new_cs.lanes = target_lanes
+            return [new_cs]
+
         if isinstance(expr, VectorAt) and isinstance(expr.a, WindowMapVec):
             wmv = expr.a
             # Discover K from the body (same pattern as WindowMap).
@@ -471,6 +478,11 @@ class PushDownConvertLanesImpl(Transform):
         if isinstance(expr, SignalExpr):
             if isinstance(expr, ConvertLanes):
                 return self._relane(expr.a, target, subst)
+            if isinstance(expr, ChangeSemiring):
+                new_inner_cs = cast(SignalExpr, self._relane(expr.a, target, subst))
+                new_cs = ChangeSemiring(new_inner_cs, expr.ty)
+                new_cs.lanes = target
+                return new_cs
             if isinstance(expr, Recurse):
                 return expr if expr.lanes == target else _wrap_signal(expr, target)
             if isinstance(expr, Convolve2D):

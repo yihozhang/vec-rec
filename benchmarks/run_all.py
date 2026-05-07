@@ -54,6 +54,7 @@ from arith.second_order_tv import (
 )
 from arith.second_order_high_pass import SecondOrderHighPassBenchmark
 from arith.audio_large_filters import AudioLargeFiltersBenchmark
+from arith.recursive_gaussian import RecursiveGaussianBenchmark
 
 from arith.continued_fraction import ContinuedFractionBenchmark
 from arith.mutual_recurse import MutualRecurseTIFBenchmark, MutualRecurseTIGBenchmark
@@ -90,6 +91,7 @@ REGISTRY.extend(
         SecondOrderTVTropI32Benchmark(),
         SecondOrderTVTropI64Benchmark(),
         AudioLargeFiltersBenchmark(),
+        RecursiveGaussianBenchmark(),
         ContinuedFractionBenchmark(),
         *[BoxFilterSATBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],
         *[RepeatedBoxFilterBenchmark(D) for D in [3, 5, 7, 9, 11, 13, 15]],

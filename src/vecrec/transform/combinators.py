@@ -13,7 +13,7 @@ from vecrec.expr.base import (
     SignalExpr2DVec,
 )
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar
+from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring
 from vecrec.expr.signal_vec import VectorAt
 from . import Transform, _dedup_exprs
 from typing import Callable
@@ -248,6 +248,10 @@ class Preorder(Transform):
                         new_expr = copy.copy(expr)
                         new_expr.a = new_a
                         results.append(new_expr)
+                case ChangeSemiring(_):
+                    # target_ty is encoded in expr.ty (not a child); preserve it.
+                    for new_cs_inner in self.apply_signal(expr.a):
+                        results.append(ChangeSemiring(new_cs_inner, expr.ty).with_lanes(expr.lanes))
                 case VectorAt(a, i):
                     # Special handling for VectorAt to preserve the integer index
                     for new_vec_a in self.apply_generic(a):
@@ -476,6 +480,10 @@ class Postorder(Transform):
                 results = [expr]
             case Ith(e, i):
                 results = [Ith(new_e, i).with_lanes(expr.lanes) for new_e in self.apply_signal2d(e)]
+            case ChangeSemiring(_):
+                results = [
+                    ChangeSemiring(new_a, expr.ty).with_lanes(expr.lanes) for new_a in self.apply_signal(expr.a)
+                ]
             case VectorAt(a, i):
                 results = [VectorAt(new_vec_a, i).with_lanes(expr.lanes) for new_vec_a in self.apply_generic(a)]
             case WMVar():

@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Set, Tuple, cast
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr, Type
 from vecrec.expr.signal import RVar2D, Var2D
-from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar
+from vecrec.expr.signal_ops import Repeater, Ith, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.expr.kernel_matrix import KernelMatrix
 from vecrec.expr.signal_vec import SignalVector, ConvolveV, RecurseV, ConvertLanesV, VectorAt
@@ -480,6 +480,12 @@ class CodeGen:
 
                 case ConvertLanes(a):
                     regs, code = self.enforce_lanes(expr, n_slices)
+
+                case ChangeSemiring(a):
+                    # Pure relabeling: the runtime values are identical; the
+                    # surrounding operators dispatch on the new ty themselves.
+                    regs = self.generate_signal(a)[0]
+                    code = ""
 
                 case Ith(g, ith):
                     regs = self._new_registers(vec_type, n_slices)

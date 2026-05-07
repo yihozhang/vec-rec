@@ -18,6 +18,7 @@ from vecrec.expr.signal_ops import (
     Recurse,
     Recurse2D,
     ConvertLanes,
+    ChangeSemiring,
     Repeater,
     Ith,
     Signal2DAt,
@@ -71,6 +72,8 @@ def _prec(expr: RecLang) -> int:
             return _prec(expr.a)
         case KConvertLanes():
             return _prec(expr.a)
+        case ChangeSemiring():
+            return _PREC_INDEX
     return _PREC_ATOM
 
 
@@ -279,6 +282,10 @@ def _fmt_one(
 
         case KConvertLanes(a):
             return fmt(a)
+
+        # --- Semiring re-interpretation ---
+        case ChangeSemiring(a):
+            return f"⟨{expr.ty.name}⟩{w(a, _PREC_INDEX)}"
 
     return repr(expr)
 
