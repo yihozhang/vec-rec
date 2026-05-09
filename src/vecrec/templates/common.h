@@ -719,6 +719,22 @@ struct RepeaterContext {
         memcpy(&buffer[current_row * width + col], &value, sizeof(vec_type));
     }
 
+    // Block-aware get: read from the row at offset `row_offset` relative to the
+    // logical "current row" of block-row `block_row`.
+    vec_type get_at(int row_offset, int col, int block_row) {
+        int row_idx = (current_row + block_row - row_offset + 2 * n_rows) % n_rows;
+        vec_type result;
+        memcpy(&result, &buffer[row_idx * width + col], sizeof(vec_type));
+        return result;
+    }
+
+    // Block-aware set: write to the row at offset `block_row` relative to the
+    // current row (i.e. the slot that becomes (current_row + block_row) mod n_rows).
+    void set_at(vec_type value, int col, int block_row) {
+        int row_idx = (current_row + block_row) % n_rows;
+        memcpy(&buffer[row_idx * width + col], &value, sizeof(vec_type));
+    }
+
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &_reg) {
         // no-op: column tracking is now done per-call in Signal2D and Repeater
@@ -729,7 +745,7 @@ struct RepeaterContext {
     }
 };
 
-template <typename vec_type, int n_rows>
+template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
 struct Signal2D {
     using elt_type = typename ElementType<vec_type>::type;
     constexpr static int lanes = vec_lanes_of(vec_type{});
@@ -745,7 +761,7 @@ struct Signal2D {
         my_col += lanes;
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             asm volatile("" :::);
-            reg[base + i] = context->get(i + 1, my_col);
+            reg[base + i] = context->get_at(i + 1, my_col, block_row);
         }
     }
 
@@ -759,7 +775,7 @@ struct Signal2D {
 // Rows before row 0 are treated as zero (zero-padding).
 // Row pointers are kept as elt_type* to avoid alignment assumptions; memcpy
 // is used for the actual load so that unaligned input data is handled safely.
-template <typename vec_type, int n_rows>
+template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
 struct InputSignal2D {
     using elt_type = typename ElementType<vec_type>::type;
     static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
@@ -775,15 +791,15 @@ struct InputSignal2D {
     InputSignal2D(const elt_type *data, int stride, elt_type zero)
         : data(data),
           stride(stride),
-          current_row(0),
+          current_row(block_row),
           zero_row(new elt_type[stride]) {
         _Pragma("unroll") for (int i = 0; i < stride; i++) {
             zero_row[i] = zero;
         }
-        // d[0] = row 0 (current); d[1..n_rows-1] = zero (no previous rows yet)
-        row_ptrs[0] = data - lanes;
-        _Pragma("unroll") for (int i = 1; i < n_rows; i++) {
-            row_ptrs[i] = zero_row - lanes;
+        // d[i] = row (block_row - i), zero-padded for rows before 0
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
+            int src_row = block_row - i;
+            row_ptrs[i] = ((src_row >= 0) ? data + (size_t)src_row * stride : zero_row) - lanes;
         }
     }
 
@@ -796,6 +812,10 @@ struct InputSignal2D {
     }
 
     void reset_and_next_row() {
+        // Each call advances by exactly one row. The blocked runner calls
+        // reset_and_next_row exactly `block_size` times per block, so all the
+        // per-block-row InputSignal2D instances advance by `block_size` total
+        // (matching the way RepeaterContext::current_row is bumped).
         current_row++;
         // d[i] = row (current_row - i), zero-padded for rows before 0
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
@@ -810,7 +830,7 @@ struct InputSignal2D {
 //     return InputSignal2D<vec_type, n_rows>(base, data, stride, zero);
 // }
 
-template <typename vec_type, int n_rows>
+template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
 struct Repeater {
     using elt_type = typename ElementType<vec_type>::type;
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
@@ -825,9 +845,13 @@ struct Repeater {
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int inner) {
         my_col += vec_lanes;
         vec_type curr_output = reg[inner];
-        context->set(curr_output, my_col);
+        // Skip the cache write for the first (block_size - n_rows) block-rows,
+        // since their values are dead before any future block reads them.
+        if constexpr (block_row >= block_size - n_rows) {
+            context->set_at(curr_output, my_col, block_row);
+        }
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
-            reg[base + i] = context->get(i, my_col);
+            reg[base + i] = context->get_at(i, my_col, block_row);
         }
     }
 
@@ -1269,6 +1293,18 @@ struct SNeg {
 // auto make_convert_one2n(int inner) {
 //     return ConvertOne2N<vec_type_in, vec_type_out>(inner);
 // }
+
+// Mov: copy one register to another. Used by blocked codegen to forward
+// in-block previous-row outputs from earlier block-rows' inner registers
+// into the current block-row's Repeater/Signal2D output positions.
+template <typename vec_type>
+struct Mov {
+    template <typename Reg_t>
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int dst, int src) {
+        reg[dst] = reg[src];
+    }
+    void reset_and_next_row() {}
+};
 
 // IthRow: Extract the ith row from a 2D signal (Signal2D) as a 1D signal
 template <typename vec_type, int n_rows, int row_index>

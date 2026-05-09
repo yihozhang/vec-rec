@@ -6,6 +6,7 @@ import math
 
 import numpy as np
 
+from vecrec.codegen.codegen import CodeGen
 from vecrec.expr import *
 from vecrec.transform import *
 from vecrec.util import *
@@ -48,6 +49,9 @@ class DistanceTransformBenchmark(Benchmark):
         with with_types(Type.TropMin, ElementType.Float):
             g = Var2D("g")
             return Recurse2D(TIKernel2D(_KERNEL_DATA), g.at(0)).at(0)
+
+    def build_codegen(self) -> CodeGen:
+        return CodeGen(rows_per_iter=2)
 
     def _python_reference(self, inputs: dict[str, np.ndarray], n: int) -> np.ndarray:
         """

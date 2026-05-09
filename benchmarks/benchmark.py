@@ -58,6 +58,10 @@ class Benchmark(ABC):
         """Return candidate schedules. Default: get_candidate_schedules on original_expr."""
         return get_candidate_schedules(self.original_expr(), self.max_bits, debug=self.DEBUG)
 
+    def build_codegen(self) -> CodeGen:
+        """Return the CodeGen instance to use. Override to customize ele_per_iter, rows_per_iter, etc."""
+        return CodeGen()
+
     @property
     def max_bits(self) -> int:
         """Hardware SIMD width"""
@@ -100,7 +104,7 @@ class Benchmark(ABC):
         Returns (ok, error_message).
         """
         try:
-            codegen = CodeGen()
+            codegen = self.build_codegen()
             runner = generate_kernel_executable(codegen, expr, row_size=256)
 
             n_1d = runner.row_size  # 1024 by default
@@ -140,7 +144,7 @@ class Benchmark(ABC):
 
     def run(self) -> BenchmarkResult:
         """Run the full benchmark: timing, validation, and schedule verification."""
-        codegen = CodeGen()
+        codegen = self.build_codegen()
         schedules = self.build_schedules()
         original = self.original_expr()
 

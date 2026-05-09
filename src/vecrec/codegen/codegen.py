@@ -41,11 +41,19 @@ class Code:
 class KernelProgram:
     text: str
     element_per_iter: int
+    rows_per_iter: int
     custom_semirings: Set[CustomSemiring]
 
-    def __init__(self, text: str, element_per_iter: int, custom_semirings: Optional[Set[CustomSemiring]] = None):
+    def __init__(
+        self,
+        text: str,
+        element_per_iter: int,
+        custom_semirings: Optional[Set[CustomSemiring]] = None,
+        rows_per_iter: int = 0,
+    ):
         self.text = text
         self.element_per_iter = element_per_iter
+        self.rows_per_iter = rows_per_iter
         self.custom_semirings = custom_semirings if custom_semirings is not None else set()
 
 
@@ -100,12 +108,20 @@ class CodeGen:
     """ele_per_iter determines the number of elements to be processed within each element."""
 
     ele_per_iter: int
-    # mapping from a node to its register(s) and code information
-    mapping: Dict[Tuple[RecLang, int], Tuple[List[int], Code]]
+    # rows_per_iter > 0 enables blocking: kernel.run() emits k rows per call,
+    # and operators (other than Repeater/RepeaterVec) are replicated per block-row.
+    rows_per_iter: int
+    # mapping from a node to its register(s) and code information.
+    # Cache key includes block_row so different replicas memoise independently.
+    mapping: Dict[Tuple[RecLang, int, int], Tuple[List[int], Code]]
     # All the vector types used in the generated code. Useful for determining which registers to declare.
     vec_types: Set[str]
-    # Map RVar2D names to their context variables and n_rows
+    # Map RVar2D names to their context variables and signal2d n_rows (= owning Repeater n_rows - 1).
     var2d_context: Dict[str, Tuple[str, int]]
+    # Map RVar2D names to per-block-row inner-register lists (one entry per slice).
+    # Populated when the enclosing Repeater/RepeaterVec is codegened for that block_row;
+    # consumed when Signal2D (RVar2D case) emits register-reuse Mov overrides.
+    rvar_inners: Dict[str, Dict[int, List[int]]]
     # Map vector types to their current register count, used for generating new registers
     reg_counter: Dict[str, int]
     var_counter: int
@@ -116,12 +132,24 @@ class CodeGen:
     # The lsit of constant declaration
     prologue: List[str]
 
-    rvec_comp_regs: Dict[RepeaterVec, List[List[int]]]
+    rvec_comp_regs: Dict[Tuple[RepeaterVec, int], List[List[int]]]
     # Map WMVar names to their per-slice register indices (set during _generate_windowmap)
     _wm_var_map: Dict[str, List[int]]
+    # Active block_row for the current generate_signal recursion. Set by callers
+    # (generate() loops over block-rows; Repeater/RepeaterVec also set this when
+    # generating their bodies). Read by generate_signal to key the cache.
+    current_block_row: int
+    # Shared RepeaterContext per Repeater AST node (id-keyed): created once and
+    # reused across all block-rows so they share the same ring buffer.
+    shared_repeater_contexts: Dict[int, str]
+    # Shared per-component RepeaterContext per RepeaterVec AST node (id-keyed).
+    shared_repeatervec_contexts: Dict[int, List[str]]
 
-    def __init__(self, ele_per_iter: int = 16):
+    def __init__(self, ele_per_iter: int = 16, rows_per_iter: Optional[int] = None):
         self.ele_per_iter = ele_per_iter
+        self._rows_per_iter_override = rows_per_iter
+        self.rows_per_iter = 0
+        self.current_block_row = 0
         self.reg_counter = {}
         self.var_counter = 0
         self.vec_types = set()
@@ -129,11 +157,15 @@ class CodeGen:
         self.program = []
         self.prologue = []
         self.var2d_context = {}
+        self.rvar_inners = {}
+        self.shared_repeater_contexts = {}
+        self.shared_repeatervec_contexts = {}
         self.rvec_comp_regs = {}
         self._wm_var_map = {}
         self.custom_semirings: Set[CustomSemiring] = set()
 
     def clear(self):
+        self.current_block_row = 0
         self.reg_counter = {}
         self.var_counter = 0
         self.vec_types = set()
@@ -141,6 +173,9 @@ class CodeGen:
         self.program = []
         self.prologue = []
         self.var2d_context = {}
+        self.rvar_inners = {}
+        self.shared_repeater_contexts = {}
+        self.shared_repeatervec_contexts = {}
         self.rvec_comp_regs = {}
         self._wm_var_map = {}
         self.custom_semirings = set()
@@ -174,7 +209,23 @@ class CodeGen:
         # top-level expression, so we scan the whole tree for the maximum.
         # WindowMap outputs 2*K elements per run() call; do not clamp upward past that.
         self.ele_per_iter = self._max_lanes_in_tree(expr) * 2
-        result = self.generate_signal(expr)
+
+        # Decide rows_per_iter (block size). User override > auto-detect.
+        # Auto-detect: if expression contains Repeater/RepeaterVec, default to 2;
+        # otherwise 0 (no blocking, identical to legacy single-row codegen).
+        if self._rows_per_iter_override is not None:
+            self.rows_per_iter = self._rows_per_iter_override
+        else:
+            self.rows_per_iter = 2 if self._contains_repeater(expr) else 0
+
+        # Generate code per block-row. With rows_per_iter==0 we run once at
+        # block_row=0 and emit a single-pointer `run(out)` (legacy behaviour).
+        n_block_rows = max(1, self.rows_per_iter)
+        per_row_results: List[Tuple[List[int], Code]] = []
+        for br in range(n_block_rows):
+            self.current_block_row = br
+            per_row_results.append(self.generate_signal(expr))
+
         vars, vars2d = self.collect_input_variables(expr)
         args_1d = [f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items())]
         args_2d = [f"const {elt_type.to_str()} *{var}, int {var}_stride" for var, elt_type in sorted(vars2d.items())]
@@ -195,6 +246,30 @@ class CodeGen:
                 if (connector := "->" if x.is_pointer else ".")
             )
 
+        # Per-block-row output regs (each per_row_results[br][0] is a list of slice regs).
+        n_out_slices = len(per_row_results[0][0])
+
+        if self.rows_per_iter == 0:
+            # Legacy single-row path: kernel.run(T* out) writes ele_per_iter elements.
+            run_signature = f"void run({result_vec_type} *out)"
+            memcpy_lines = new_line.join(
+                f"memcpy(out + {i}, reg_{result_vec_type}.data + {per_row_results[0][0][i]}, "
+                f"sizeof({result_vec_type}));"
+                for i in range(n_out_slices)
+            )
+        else:
+            # Blocked path: kernel.run(T** out_per_row) writes ele_per_iter elements
+            # per block-row into out_per_row[br].
+            run_signature = f"void run({result_vec_type} **out_per_row)"
+            memcpy_block = []
+            for br in range(n_block_rows):
+                for i in range(n_out_slices):
+                    memcpy_block.append(
+                        f"memcpy(out_per_row[{br}] + {i}, reg_{result_vec_type}.data + "
+                        f"{per_row_results[br][0][i]}, sizeof({result_vec_type}));"
+                    )
+            memcpy_lines = new_line.join(memcpy_block)
+
         text = f"""
         struct {name} {{
             // static array declarations
@@ -203,14 +278,14 @@ class CodeGen:
             {new_line.join(map(lambda x: f"{x.class_name} {x.var_name};", self.program))}
             // register declaration
             {new_line.join(map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types))}
-            inline __attribute__((always_inline)) {name}({args}) : 
+            inline __attribute__((always_inline)) {name}({args}) :
               {", ".join(map(lambda x: f"{x.var_name}({x.constructor_args})", self.program))}
               {"".join(map(lambda x: f", reg_{x}()", self.vec_types))}
               {{}}
-            
-            inline __attribute__((always_inline)) void run({result_vec_type} *out) {{
+
+            inline __attribute__((always_inline)) {run_signature} {{
                 {new_line.join(map(generate_run_calls, self.program))}
-                {new_line.join(map(lambda i: f"memcpy(out + {i}, reg_{result_vec_type}.data + {result[0][i]}, sizeof({result_vec_type}));", range(len(result[0]))))}
+                {memcpy_lines}
             }}
 
             inline __attribute__((always_inline)) void reset_and_next_row() {{
@@ -225,7 +300,12 @@ class CodeGen:
         #     return {name}({", ".join(list(vars.keys()) + list(vars2d.keys()) + ["row_size"])});
         # }}
         # """
-        return KernelProgram(text, self.ele_per_iter, set(self.custom_semirings))
+        return KernelProgram(
+            text,
+            self.ele_per_iter,
+            set(self.custom_semirings),
+            rows_per_iter=self.rows_per_iter,
+        )
 
     def _generate_windowmap(self, wm: WindowMap) -> List[int]:
         assert wm.lanes is not None
@@ -370,7 +450,11 @@ class CodeGen:
     def generate_signal(
         self, expr: SignalExpr | SignalExpr2D | KernelExpr | SignalVectorExpr | KernelMatrixExpr
     ) -> Tuple[List[int], Code]:
-        cache_key = (expr, self.ele_per_iter)
+        # Per-block-row replication: each block_row gets its own emitted operators
+        # (its own state), so we key the cache on it. self.current_block_row is set
+        # by the caller (generate() and the Repeater/RepeaterVec cases).
+        block_row = self.current_block_row
+        cache_key = (expr, self.ele_per_iter, block_row)
         if cache_key in self.mapping:
             return self.mapping[cache_key]
 
@@ -569,39 +653,101 @@ class CodeGen:
             match expr:
                 case Repeater(g, n_rows, prev_rows_var):
                     assert n_rows is not None
-                    regs = self._new_registers(vec_type, n_slices, n_rows)
-                    zero_str = expr.element_type.val_to_str(ty.zero(), ty)
-                    repeater_context = self._declare_repeater_context(vec_type, zero_str, n_rows)
+                    block_row = self.current_block_row
+                    block_size = self._block_size_template()
 
+                    # One RepeaterContext is shared across all block-rows of this
+                    # Repeater AST node — created on the first block-row's pass.
+                    rep_id = id(expr)
+                    if rep_id not in self.shared_repeater_contexts:
+                        zero_str = expr.element_type.val_to_str(ty.zero(), ty)
+                        self.shared_repeater_contexts[rep_id] = self._declare_repeater_context(
+                            vec_type, zero_str, n_rows
+                        )
+                    repeater_context = self.shared_repeater_contexts[rep_id]
+
+                    # Generate the body for this block-row.
                     self.var2d_context[prev_rows_var.name] = (repeater_context, n_rows - 1)
                     g_regs = self.generate_signal(g)[0]
                     del self.var2d_context[prev_rows_var.name]
 
+                    # Track the body's per-slice inner registers so later block-rows'
+                    # Signal2D reads of "row R+block_row" can copy them via Mov.
+                    self.rvar_inners.setdefault(prev_rows_var.name, {})[block_row] = list(g_regs)
+
+                    regs = self._new_registers(vec_type, n_slices, n_rows)
+                    if self.rows_per_iter == 0:
+                        rep_template = f"Repeater<{vec_type}, {n_rows}>"
+                    else:
+                        rep_template = f"Repeater<{vec_type}, {n_rows}, {block_size}, {block_row}>"
                     code = self._declare_node(
-                        f"Repeater<{vec_type}, {n_rows}>",
+                        rep_template,
                         repeater_context,
                         [[regs[i], g_regs[i]] for i in range(n_slices)],
                         vec_type,
                         vec_type,
                     )
 
+                    # Register-reuse Mov overrides for in-block reads.
+                    # base[0] = current block-row's body output; base[i] for i>0 with
+                    # block_row-i >= 0 = body output of block-row (block_row - i).
+                    if self.rows_per_iter > 0:
+                        self._emit_repeater_movs(
+                            vec_type,
+                            n_slices,
+                            n_rows,
+                            block_row,
+                            regs,
+                            g_regs,
+                            self.rvar_inners[prev_rows_var.name],
+                        )
+
                 case RVar2D(name):
+                    block_row = self.current_block_row
+                    block_size = self._block_size_template()
                     repeater_context, n_rows = self.var2d_context[name]
                     regs = self._new_registers(vec_type, n_slices, n_rows)
+                    if self.rows_per_iter == 0:
+                        s2d_template = f"Signal2D<{vec_type}, {n_rows}>"
+                    else:
+                        s2d_template = f"Signal2D<{vec_type}, {n_rows}, {block_size}, {block_row}>"
                     code = self._declare_node(
-                        f"Signal2D<{vec_type}, {n_rows}>",
+                        s2d_template,
                         repeater_context,
                         [[r] for r in regs],
                         vec_type,
                         vec_type,
                     )
 
+                    # Mov overrides: Signal2D reads offset i+1 from block_row's
+                    # current row → row R+block_row-(i+1). If block_row-(i+1) >= 0,
+                    # that row was just produced inside this block.
+                    if self.rows_per_iter > 0 and name in self.rvar_inners:
+                        inners_by_br = self.rvar_inners[name]
+                        for s in range(n_slices):
+                            for i in range(n_rows):
+                                src_br = block_row - (i + 1)
+                                if src_br >= 0 and src_br in inners_by_br:
+                                    self._declare_node(
+                                        f"Mov<{vec_type}>",
+                                        "",
+                                        [[regs[s] + i, inners_by_br[src_br][s]]],
+                                        vec_type,
+                                        vec_type,
+                                    )
+
                 case Var2D(name, n_rows):
                     assert n_rows is not None
+                    block_row = self.current_block_row
+                    block_size = self._block_size_template()
                     regs = self._new_registers(vec_type, n_slices, n_rows)
                     zero_str = expr.element_type.val_to_str(ty.zero(), ty)
+                    if self.rows_per_iter == 0:
+                        is2d_template = f"InputSignal2D<{vec_type}, {n_rows}>"
+                    else:
+                        is2d_template = f"InputSignal2D<{vec_type}, {n_rows}, {block_size}, {block_row}>"
                     code = self._declare_node(
-                        f"InputSignal2D<{vec_type}, {n_rows}>",
+                        is2d_template,
                         f"{name}, {name}_stride, {zero_str}",
                         [[r] for r in regs],
                         vec_type,
@@ -612,9 +758,10 @@ class CodeGen:
                     assert isinstance(
                         rv_inner, RepeaterVec
                     ), f"Signal2DAt.a must be a RepeaterVec, got {type(rv_inner)}"
-                    if rv_inner not in self.rvec_comp_regs:
+                    rvec_key = (rv_inner, self.current_block_row)
+                    if rvec_key not in self.rvec_comp_regs:
                         self._generate_repeatervec(rv_inner)
-                    regs = self.rvec_comp_regs[rv_inner][comp_idx]
+                    regs = self.rvec_comp_regs[rvec_key][comp_idx]
                     code = ""
 
                 case _:
@@ -655,7 +802,7 @@ class CodeGen:
                             k_taps, k_idxs, _ = k.to_sparse_repr()
                             if k_taps == 0:
                                 continue
-                            k_regs = self.mapping[(k, self.ele_per_iter)][0]
+                            k_regs = self.mapping[(k, self.ele_per_iter, self.current_block_row)][0]
                             idx_var = self._declare_array("int", k_idxs)
                             conv_regs = self._new_registers(vec_type, n_slices)
                             self._declare_node(
@@ -766,7 +913,7 @@ class CodeGen:
                     regs = self._new_registers(vec_type, n_slices, n_vec)
                     run_args_list = []
                     for s in range(n_slices):
-                        kernel_bases = [self.mapping[(p[2], self.ele_per_iter)][0][s] for p in pairs]
+                        kernel_bases = [self.mapping[(p[2], self.ele_per_iter, self.current_block_row)][0][s] for p in pairs]
                         v_kb = self._declare_array("int", kernel_bases if n_pairs > 0 else pad)
                         run_args_list.append([regs[s], v_kb, g_regs[s]])
 
@@ -814,21 +961,31 @@ class CodeGen:
         return self.mapping[cache_key]
 
     def _generate_repeatervec(self, rv: RepeaterVec) -> None:
-        """Generate n Repeater C++ nodes (one per component) for a RepeaterVec.
+        """Generate n Repeater C++ nodes (one per component) for a RepeaterVec
+        at the active `current_block_row`.
 
-        Stores per-component output registers in self.rvec_comp_regs[rv].
+        Stores per-component output registers in
+        `self.rvec_comp_regs[(rv, block_row)]`. The shared per-component
+        `RepeaterContext` is created on the first block-row's pass and reused.
         """
         assert rv.lanes is not None
         assert rv.n_rows is not None
         n = rv.n
         n_rows = rv.n_rows
+        block_row = self.current_block_row
+        block_size = self._block_size_template()
         vec_type = self.get_vec_type(rv.element_type, rv.lanes)
         n_slices = self.ele_per_iter // rv.lanes
         self.vec_types.add(vec_type)
-        zero_str = rv.element_type.val_to_str(rv.ty.zero(), rv.ty)
 
-        # Create one RepeaterContext per component
-        contexts = [self._declare_repeater_context(vec_type, zero_str, n_rows) for _ in range(n)]
+        # One RepeaterContext per component, shared across all block-rows.
+        rv_id = id(rv)
+        if rv_id not in self.shared_repeatervec_contexts:
+            zero_str = rv.element_type.val_to_str(rv.ty.zero(), rv.ty)
+            self.shared_repeatervec_contexts[rv_id] = [
+                self._declare_repeater_context(vec_type, zero_str, n_rows) for _ in range(n)
+            ]
+        contexts = self.shared_repeatervec_contexts[rv_id]
 
         # Register all prev_vars so body signals can read them
         for i, pv in enumerate(rv.prev_vars):
@@ -841,20 +998,42 @@ class CodeGen:
         for pv in rv.prev_vars:
             del self.var2d_context[pv.name]
 
+        # Track per-component, per-block-row inner registers so later block-rows'
+        # Signal2D reads can copy them via Mov.
+        for i, pv in enumerate(rv.prev_vars):
+            comp_inner_per_slice = [body_regs[s] + i for s in range(n_slices)]
+            self.rvar_inners.setdefault(pv.name, {})[block_row] = comp_inner_per_slice
+
         # Declare one Repeater<> per component, reading body_regs[s]+i for slice s
         comp_regs_list: List[List[int]] = []
         for i in range(n):
             comp_regs = self._new_registers(vec_type, n_slices, n_rows)
+            if self.rows_per_iter == 0:
+                rep_template = f"Repeater<{vec_type}, {n_rows}>"
+            else:
+                rep_template = f"Repeater<{vec_type}, {n_rows}, {block_size}, {block_row}>"
+            comp_inner_regs = [body_regs[s] + i for s in range(n_slices)]
             self._declare_node(
-                f"Repeater<{vec_type}, {n_rows}>",
+                rep_template,
                 contexts[i],
-                [[comp_regs[s], body_regs[s] + i] for s in range(n_slices)],
+                [[comp_regs[s], comp_inner_regs[s]] for s in range(n_slices)],
                 vec_type,
                 vec_type,
             )
+
+            if self.rows_per_iter > 0:
+                self._emit_repeater_movs(
+                    vec_type,
+                    n_slices,
+                    n_rows,
+                    block_row,
+                    comp_regs,
+                    comp_inner_regs,
+                    self.rvar_inners[rv.prev_vars[i].name],
+                )
             comp_regs_list.append(comp_regs)
 
-        self.rvec_comp_regs[rv] = comp_regs_list
+        self.rvec_comp_regs[(rv, block_row)] = comp_regs_list
 
     def _sum_registers(
         self,
@@ -932,6 +1111,57 @@ class CodeGen:
                     vec_type,
                 )
         return regs, code
+
+    def _block_size_template(self) -> int:
+        """Template parameter for `block_size`. We use 1 in the non-blocking
+        path (rows_per_iter == 0) so the templates fall back to their default
+        single-row specialisation; otherwise it's the user-visible block size."""
+        return self.rows_per_iter if self.rows_per_iter > 0 else 1
+
+    def _emit_repeater_movs(
+        self,
+        vec_type: str,
+        n_slices: int,
+        n_rows: int,
+        block_row: int,
+        regs: List[int],
+        g_regs: List[int],
+        inners_by_br: Dict[int, List[int]],
+    ) -> None:
+        """Emit Mov nodes that override Repeater::run's cache reads with the
+        in-block body outputs. base[0] is always the current block-row's body
+        output; base[i] for i in 1..n_rows-1 is block-row (block_row-i)'s body
+        output if that row is in this block (block_row-i >= 0); otherwise the
+        cache read from Repeater::run stays in place."""
+        for s in range(n_slices):
+            self._declare_node(
+                f"Mov<{vec_type}>", "", [[regs[s] + 0, g_regs[s]]], vec_type, vec_type
+            )
+            for i in range(1, n_rows):
+                src_br = block_row - i
+                if src_br >= 0 and src_br in inners_by_br:
+                    self._declare_node(
+                        f"Mov<{vec_type}>",
+                        "",
+                        [[regs[s] + i, inners_by_br[src_br][s]]],
+                        vec_type,
+                        vec_type,
+                    )
+
+    def _contains_repeater(self, expr: RecLang, visited: Optional[Set[int]] = None) -> bool:
+        """True if the expression tree contains a Repeater or RepeaterVec node.
+        Used to auto-enable blocking when `rows_per_iter` is left unset."""
+        if visited is None:
+            visited = set()
+        if id(expr) in visited:
+            return False
+        visited.add(id(expr))
+        if isinstance(expr, (Repeater, RepeaterVec)):
+            return True
+        for child in expr.children():
+            if self._contains_repeater(child, visited):
+                return True
+        return False
 
     def collect_input_variables(
         self,

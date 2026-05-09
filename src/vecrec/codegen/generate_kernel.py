@@ -49,6 +49,7 @@ def generate_benchmark(
     benchmark_iterations: int = 100,
     row_size: int = 1024,
     ele_per_iter_list: Optional[List[int]] = None,
+    rows_per_iter_list: Optional[List[int]] = None,
 ) -> None:
     """
     Generate a C++ benchmarking program for the given kernels.
@@ -83,6 +84,9 @@ def generate_benchmark(
         ), "If ele_per_iter_list is not provided, all expressions must have a defined lane count"
         ele_per_iter_list = [max(16, expr.lanes) for expr in exprs]  # type: ignore
 
+    if rows_per_iter_list is None:
+        rows_per_iter_list = [0] * len(exprs)
+
     benchmark_code = _generate_benchmark_code(
         all_vars,
         all_vars2d,
@@ -96,6 +100,7 @@ def generate_benchmark(
         benchmark_iterations,
         row_size,
         ele_per_iter_list,
+        rows_per_iter_list,
     )
 
     with open(output_path, "w") as f:
@@ -115,6 +120,7 @@ def _generate_benchmark_code(
     benchmark_iterations: int,
     row_size: int,
     ele_per_iter_list: List[int],
+    rows_per_iter_list: List[int],
 ) -> str:
     """Generate the complete C++ benchmark code."""
 
@@ -203,35 +209,82 @@ def _generate_benchmark_code(
 
     for i, name in enumerate(kernel_names):
         epi = ele_per_iter_list[i]
+        rpi = rows_per_iter_list[i]
         benchmark_text += f"    // Benchmark {name}\n"
         benchmark_text += "    {\n"
 
-        benchmark_text += "        // Warmup\n"
-        benchmark_text += "        {\n"
-        benchmark_text += f"            auto kernel = {name}({var_args});\n"
-        benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
-        benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type; {name}_vector_type out[{epi}/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
-        benchmark_text += "                kernel.run(out);\n"
-        benchmark_text += "            }\n"
-        benchmark_text += "        }\n\n"
+        if rpi == 0:
+            benchmark_text += "        // Warmup\n"
+            benchmark_text += "        {\n"
+            benchmark_text += f"            auto kernel = {name}({var_args});\n"
+            benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
+            benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type; {name}_vector_type out[{epi}/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
+            benchmark_text += "                kernel.run(out);\n"
+            benchmark_text += "            }\n"
+            benchmark_text += "        }\n\n"
 
-        benchmark_text += "        // Timed run\n"
-        benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
-        benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
-        benchmark_text += f"            auto kernel = {name}({var_args});\n"
-        benchmark_text += "            int pos = 0;\n"
-        benchmark_text += "            while (pos < N) {\n"
-        benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type;\n{name}_vector_type out[{epi}/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
-        benchmark_text += "                kernel.run(out);\n"
-        benchmark_text += f"                memcpy(&output_{name}[pos], out, sizeof(out));\n"
-        benchmark_text += f"                pos += {epi};\n"
+            benchmark_text += "        // Timed run\n"
+            benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
+            benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
+            benchmark_text += f"            auto kernel = {name}({var_args});\n"
+            benchmark_text += "            int pos = 0;\n"
+            benchmark_text += "            while (pos < N) {\n"
+            benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type;\n{name}_vector_type out[{epi}/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
+            benchmark_text += "                kernel.run(out);\n"
+            benchmark_text += f"                memcpy(&output_{name}[pos], out, sizeof(out));\n"
+            benchmark_text += f"                pos += {epi};\n"
 
-        benchmark_text += "                if (pos % row_size == 0) {\n"
-        benchmark_text += "                    kernel.reset_and_next_row();\n"
-        benchmark_text += "                }\n"
-        benchmark_text += "            }\n"
-        benchmark_text += "        }\n"
-        benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
+            benchmark_text += "                if (pos % row_size == 0) {\n"
+            benchmark_text += "                    kernel.reset_and_next_row();\n"
+            benchmark_text += "                }\n"
+            benchmark_text += "            }\n"
+            benchmark_text += "        }\n"
+            benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
+        else:
+            benchmark_text += "        // Warmup (blocked)\n"
+            benchmark_text += "        {\n"
+            benchmark_text += f"            auto kernel = {name}({var_args});\n"
+            benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
+            benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
+            benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
+            benchmark_text += f"                {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
+            benchmark_text += f"                {name}_vector_type* out_per_row[{rpi}] = {{\n"
+            for r in range(rpi):
+                benchmark_text += f"                    out_buf[{r}],\n"
+            benchmark_text += "                };\n"
+            benchmark_text += "                kernel.run(out_per_row);\n"
+            benchmark_text += "            }\n"
+            benchmark_text += "        }\n\n"
+
+            benchmark_text += "        // Timed run (blocked)\n"
+            benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
+            benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
+            benchmark_text += f"            auto kernel = {name}({var_args});\n"
+            benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
+            benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
+            benchmark_text += "            int row_base = 0;\n"
+            benchmark_text += "            while (row_base < N) {\n"
+            benchmark_text += "                int col = 0;\n"
+            benchmark_text += "                while (col < row_size) {\n"
+            benchmark_text += f"                    {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
+            benchmark_text += f"                    {name}_vector_type* out_per_row[{rpi}] = {{\n"
+            for r in range(rpi):
+                benchmark_text += f"                        out_buf[{r}],\n"
+            benchmark_text += "                    };\n"
+            benchmark_text += "                    kernel.run(out_per_row);\n"
+            benchmark_text += f"                    for (int r = 0; r < {rpi}; r++) {{\n"
+            benchmark_text += "                        int dst = row_base + r * row_size + col;\n"
+            benchmark_text += "                        if (dst >= N) break;\n"
+            benchmark_text += f"                        int copy_count = ((N - dst) < {epi}) ? (N - dst) : {epi};\n"
+            benchmark_text += f"                        memcpy(&output_{name}[dst], out_buf[r], sizeof({output_type.to_str()}) * copy_count);\n"
+            benchmark_text += "                    }\n"
+            benchmark_text += f"                    col += {epi};\n"
+            benchmark_text += "                }\n"
+            benchmark_text += f"                for (int r = 0; r < {rpi}; r++) kernel.reset_and_next_row();\n"
+            benchmark_text += f"                row_base += {rpi} * row_size;\n"
+            benchmark_text += "            }\n"
+            benchmark_text += "        }\n"
+            benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += "        \n"
         benchmark_text += "        // XOR sum to prevent optimization of output array\n"
         benchmark_text += "        uint64_t xor_sum = 0;\n"
@@ -510,6 +563,7 @@ def _generate_kernel_runner_code(
     kernel_name: str,
     header_path: str,
     ele_per_iter: int,
+    rows_per_iter: int = 0,
 ) -> str:
     var_items = sorted(all_vars.items())
     var2d_items = sorted(all_vars2d.items())
@@ -601,20 +655,51 @@ def _generate_kernel_runner_code(
     text += f"    std::vector<{output_cpp_type}> output(N);\n\n"
 
     text += "    auto start = std::chrono::high_resolution_clock::now();\n"
-    text += "    int pos = 0;\n"
-    text += "    while (pos < N) {\n"
-    text += f"        using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
-    text += (
-        f"        {kernel_name}_vector_type out[{ele_per_iter}/(sizeof({kernel_name}_vector_type)/sizeof(elt_type))];\n"
-    )
-    text += "        kernel.run(out);\n"
-    text += f"        const int copy_count = (N - pos) < {ele_per_iter} ? (N - pos) : {ele_per_iter};\n"
-    text += f"        std::memcpy(output.data() + pos, &out, sizeof({output_cpp_type}) * copy_count);\n"
-    text += f"        pos += {ele_per_iter};\n"
-    text += "        if (pos % row_size == 0) {\n"
-    text += "            kernel.reset_and_next_row();\n"
-    text += "        }\n"
-    text += "    }\n"
+    if rows_per_iter == 0:
+        # Legacy single-row loop.
+        text += "    int pos = 0;\n"
+        text += "    while (pos < N) {\n"
+        text += f"        using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
+        text += f"        {kernel_name}_vector_type out[{ele_per_iter}/(sizeof({kernel_name}_vector_type)/sizeof(elt_type))];\n"
+        text += "        kernel.run(out);\n"
+        text += f"        const int copy_count = (N - pos) < {ele_per_iter} ? (N - pos) : {ele_per_iter};\n"
+        text += f"        std::memcpy(output.data() + pos, &out, sizeof({output_cpp_type}) * copy_count);\n"
+        text += f"        pos += {ele_per_iter};\n"
+        text += "        if (pos % row_size == 0) {\n"
+        text += "            kernel.reset_and_next_row();\n"
+        text += "        }\n"
+        text += "    }\n"
+    else:
+        # Blocked loop: process rows_per_iter rows per kernel.run call.
+        # `row_base` is the element index of the first row in the current block;
+        # `col` scans the columns of one row; we advance `row_base` by k*row_size
+        # after each block of k rows is fully scanned.
+        k = rows_per_iter
+        text += f"    using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
+        text += f"    constexpr int vec_lanes = sizeof({kernel_name}_vector_type) / sizeof(elt_type);\n"
+        text += "    int row_base = 0;\n"
+        text += "    while (row_base < N) {\n"
+        text += "        int col = 0;\n"
+        text += "        while (col < row_size) {\n"
+        text += f"            {kernel_name}_vector_type out_buf[{k}][{ele_per_iter}/vec_lanes];\n"
+        text += f"            {kernel_name}_vector_type* out_per_row[{k}] = {{\n"
+        for r in range(k):
+            text += f"                out_buf[{r}],\n"
+        text += "            };\n"
+        text += "            kernel.run(out_per_row);\n"
+        text += f"            for (int r = 0; r < {k}; r++) {{\n"
+        text += "                int dst = row_base + r * row_size + col;\n"
+        text += "                if (dst >= N) break;\n"
+        text += f"                int copy_count = ((N - dst) < {ele_per_iter}) ? (N - dst) : {ele_per_iter};\n"
+        text += (
+            f"                std::memcpy(output.data() + dst, out_buf[r], sizeof({output_cpp_type}) * copy_count);\n"
+        )
+        text += "            }\n"
+        text += f"            col += {ele_per_iter};\n"
+        text += "        }\n"
+        text += f"        for (int r = 0; r < {k}; r++) kernel.reset_and_next_row();\n"
+        text += f"        row_base += {k} * row_size;\n"
+        text += "    }\n"
     text += "    auto end = std::chrono::high_resolution_clock::now();\n"
     text += "\n"
 
@@ -636,9 +721,6 @@ def _generate_kernel_runner_code(
 def generate_kernel_executable(
     codegen: CodeGen,
     expr: SignalExpr | SignalExpr2D,
-    header_path: Optional[str] = None,
-    runner_path: Optional[str] = None,
-    executable_path: Optional[str] = None,
     compiler: str = "clang++",
     compiler_flags: Optional[List[str]] = None,
     row_size: int = 1024,
@@ -653,17 +735,14 @@ def generate_kernel_executable(
     if compiler_flags is None:
         compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
 
-    if header_path is None:
-        fd, header_path = tempfile.mkstemp(suffix=".h", prefix="header_", dir="/tmp")
-        os.close(fd)
+    fd, header_path = tempfile.mkstemp(suffix=".h", prefix="header_", dir="/tmp")
+    os.close(fd)
 
-    if runner_path is None:
-        fd, runner_path = tempfile.mkstemp(suffix=".cpp", prefix="kernel_runner_", dir="/tmp")
-        os.close(fd)
+    fd, runner_path = tempfile.mkstemp(suffix=".cpp", prefix="kernel_runner_", dir="/tmp")
+    os.close(fd)
 
-    if executable_path is None:
-        fd, executable_path = tempfile.mkstemp(prefix="kernel_runner_", dir="/tmp")
-        os.close(fd)
+    fd, executable_path = tempfile.mkstemp(prefix="kernel_runner_", dir="/tmp")
+    os.close(fd)
 
     kernel_name = "k0"
     code = codegen.generate(expr, kernel_name)
@@ -677,6 +756,7 @@ def generate_kernel_executable(
         kernel_name=kernel_name,
         header_path=header_path,
         ele_per_iter=code.element_per_iter,
+        rows_per_iter=code.rows_per_iter,
     )
     with open(runner_path, "w") as f:
         f.write(runner_code)
@@ -705,9 +785,6 @@ def generate_and_run_benchmark(
     codegen: CodeGen,
     exprs: Sequence[SignalExpr | SignalExpr2D],
     include_correctness_check: bool = True,
-    header_path: Optional[str] = None,
-    benchmark_path: Optional[str] = None,
-    executable_path: Optional[str] = None,
     correctness_tolerance: float = 1e-3,
     input_size: int = (1 << 20),
     warmup_iterations: int = 10,
@@ -729,12 +806,6 @@ def generate_and_run_benchmark(
     Args:
         codegen: CodeGen instance used to generate the kernels
         exprs: List of signal expressions corresponding to each kernel
-        header_path: Used only when there is a single batch. Otherwise
-            per-batch headers are auto-generated under /tmp.
-        benchmark_path: Used only when there is a single batch. Otherwise
-            per-batch sources are auto-generated under /tmp.
-        executable_path: Used only when there is a single batch. Otherwise
-            per-batch executables are auto-generated under /tmp.
         include_correctness_check: If True, adds correctness checking code
         correctness_tolerance: Tolerance for floating point comparisons in correctness checking
         input_size: Size of input data for benchmarking
@@ -775,26 +846,18 @@ def generate_and_run_benchmark(
             batches.append([0] + list(range(i, min(i + new_per_batch, n_exprs))))
             i += new_per_batch
 
-    single_batch = len(batches) == 1
-
-    # Per-batch artifact paths. Honor explicit paths only for the single-batch case.
+    # Per-batch artifact paths.
     batch_paths: List[Tuple[str, str, str]] = []
     for b_idx in range(len(batches)):
-        if single_batch and header_path is not None:
-            h_path = header_path
-        else:
-            fd, h_path = tempfile.mkstemp(suffix=".h", prefix=f"header_b{b_idx}_", dir="/tmp")
-            os.close(fd)
-        if single_batch and benchmark_path is not None:
-            b_path = benchmark_path
-        else:
-            fd, b_path = tempfile.mkstemp(suffix=".cpp", prefix=f"benchmark_b{b_idx}_", dir="/tmp")
-            os.close(fd)
-        if single_batch and executable_path is not None:
-            e_path = executable_path
-        else:
-            fd, e_path = tempfile.mkstemp(prefix=f"benchmark_b{b_idx}_", dir="/tmp")
-            os.close(fd)
+        fd, h_path = tempfile.mkstemp(suffix=".h", prefix=f"header_b{b_idx}_", dir="/tmp")
+        os.close(fd)
+        fd, b_path = tempfile.mkstemp(suffix=".cpp", prefix=f"benchmark_b{b_idx}_", dir="/tmp")
+        os.close(fd)
+        fd, e_path = tempfile.mkstemp(prefix=f"benchmark_b{b_idx}_", dir="/tmp")
+        os.close(fd)
+        print(h_path)
+        print(b_path)
+        print(e_path)
         batch_paths.append((h_path, b_path, e_path))
 
     # Generate header + benchmark .cpp for every batch.
@@ -814,6 +877,7 @@ def generate_and_run_benchmark(
             benchmark_iterations=benchmark_iterations,
             row_size=row_size,
             ele_per_iter_list=[codes_global[i].element_per_iter for i in batch],
+            rows_per_iter_list=[codes_global[i].rows_per_iter for i in batch],
         )
 
     # Compile every batch in parallel.
@@ -833,9 +897,7 @@ def generate_and_run_benchmark(
     for idx, maybe_res in enumerate(compile_results):
         assert maybe_res is not None
         if maybe_res.returncode != 0:
-            raise RuntimeError(
-                f"Benchmark execution failed: Compilation failed for batch {idx}: {maybe_res.stderr}"
-            )
+            raise RuntimeError(f"Benchmark execution failed: Compilation failed for batch {idx}: {maybe_res.stderr}")
 
     # Run runners sequentially so concurrent execution doesn't skew timing.
     parsed_outputs: List[Dict[str, Any]] = []
@@ -844,9 +906,7 @@ def generate_and_run_benchmark(
         _h_path, _b_path, e_path = batch_paths[idx]
         run_result = subprocess.run([os.path.abspath(e_path)], capture_output=True, text=True)
         if run_result.returncode != 0:
-            raise RuntimeError(
-                f"Benchmark execution failed for batch {idx}: {run_result.stderr}"
-            )
+            raise RuntimeError(f"Benchmark execution failed for batch {idx}: {run_result.stderr}")
         parsed = json.loads(run_result.stdout)
         validation = parsed.pop("validation", None)
         parsed_outputs.append(parsed)
