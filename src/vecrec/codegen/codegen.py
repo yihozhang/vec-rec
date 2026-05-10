@@ -49,8 +49,9 @@ class KernelProgram:
         text: str,
         element_per_iter: int,
         custom_semirings: Optional[Set[CustomSemiring]] = None,
-        rows_per_iter: int = 0,
+        rows_per_iter: int = 1,
     ):
+        assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
         self.text = text
         self.element_per_iter = element_per_iter
         self.rows_per_iter = rows_per_iter
@@ -108,8 +109,8 @@ class CodeGen:
     """ele_per_iter determines the number of elements to be processed within each element."""
 
     ele_per_iter: int
-    # rows_per_iter > 0 enables blocking: kernel.run() emits k rows per call,
-    # and operators (other than Repeater/RepeaterVec) are replicated per block-row.
+    # Block size: kernel.run() emits `rows_per_iter` rows per call, and operators
+    # (other than Repeater/RepeaterVec) are replicated per block-row. Always >= 1.
     rows_per_iter: int
     # mapping from a node to its register(s) and code information.
     # Cache key includes block_row so different replicas memoise independently.
@@ -145,10 +146,12 @@ class CodeGen:
     # Shared per-component RepeaterContext per RepeaterVec AST node (id-keyed).
     shared_repeatervec_contexts: Dict[int, List[str]]
 
-    def __init__(self, ele_per_iter: int = 16, rows_per_iter: Optional[int] = None):
-        self.ele_per_iter = ele_per_iter
+    def __init__(self, ele_per_iter_multiple: int = 2, rows_per_iter: Optional[int] = None):
+        assert ele_per_iter_multiple >= 1, "ele_per_iter_multiple must be >= 1"
+        if rows_per_iter is not None:
+            assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
+        self._ele_per_iter_multiple = ele_per_iter_multiple
         self._rows_per_iter_override = rows_per_iter
-        self.rows_per_iter = 0
         self.current_block_row = 0
         self.reg_counter = {}
         self.var_counter = 0
@@ -207,20 +210,19 @@ class CodeGen:
         # ele_per_iter must be divisible by every lane width in the tree.
         # Sub-expressions (e.g. Var inside TVKernel) may have wider lanes than the
         # top-level expression, so we scan the whole tree for the maximum.
-        # WindowMap outputs 2*K elements per run() call; do not clamp upward past that.
-        self.ele_per_iter = self._max_lanes_in_tree(expr) * 2
+        # The multiple controls how many lane-widths we pack per iteration; the
+        # default of 2 matches WindowMap's 2K-per-run output.
+        self.ele_per_iter = self._max_lanes_in_tree(expr) * self._ele_per_iter_multiple
 
         # Decide rows_per_iter (block size). User override > auto-detect.
         # Auto-detect: if expression contains Repeater/RepeaterVec, default to 2;
-        # otherwise 0 (no blocking, identical to legacy single-row codegen).
+        # otherwise 1 (no row aggregation, but still uses the blocked codegen).
         if self._rows_per_iter_override is not None:
             self.rows_per_iter = self._rows_per_iter_override
         else:
-            self.rows_per_iter = 2 if self._contains_repeater(expr) else 0
+            self.rows_per_iter = 2 if self._contains_repeater(expr) else 1
 
-        # Generate code per block-row. With rows_per_iter==0 we run once at
-        # block_row=0 and emit a single-pointer `run(out)` (legacy behaviour).
-        n_block_rows = max(1, self.rows_per_iter)
+        n_block_rows = self.rows_per_iter
         per_row_results: List[Tuple[List[int], Code]] = []
         for br in range(n_block_rows):
             self.current_block_row = br
@@ -249,26 +251,17 @@ class CodeGen:
         # Per-block-row output regs (each per_row_results[br][0] is a list of slice regs).
         n_out_slices = len(per_row_results[0][0])
 
-        if self.rows_per_iter == 0:
-            # Legacy single-row path: kernel.run(T* out) writes ele_per_iter elements.
-            run_signature = f"void run({result_vec_type} *out)"
-            memcpy_lines = new_line.join(
-                f"memcpy(out + {i}, reg_{result_vec_type}.data + {per_row_results[0][0][i]}, "
-                f"sizeof({result_vec_type}));"
-                for i in range(n_out_slices)
-            )
-        else:
-            # Blocked path: kernel.run(T** out_per_row) writes ele_per_iter elements
-            # per block-row into out_per_row[br].
-            run_signature = f"void run({result_vec_type} **out_per_row)"
-            memcpy_block = []
-            for br in range(n_block_rows):
-                for i in range(n_out_slices):
-                    memcpy_block.append(
-                        f"memcpy(out_per_row[{br}] + {i}, reg_{result_vec_type}.data + "
-                        f"{per_row_results[br][0][i]}, sizeof({result_vec_type}));"
-                    )
-            memcpy_lines = new_line.join(memcpy_block)
+        # kernel.run(T** out_per_row) writes ele_per_iter elements per block-row
+        # into out_per_row[br].
+        run_signature = f"void run({result_vec_type} **out_per_row)"
+        memcpy_block = []
+        for br in range(n_block_rows):
+            for i in range(n_out_slices):
+                memcpy_block.append(
+                    f"memcpy(out_per_row[{br}] + {i}, reg_{result_vec_type}.data + "
+                    f"{per_row_results[br][0][i]}, sizeof({result_vec_type}));"
+                )
+        memcpy_lines = new_line.join(memcpy_block)
 
         text = f"""
         struct {name} {{
@@ -676,10 +669,7 @@ class CodeGen:
                     self.rvar_inners.setdefault(prev_rows_var.name, {})[block_row] = list(g_regs)
 
                     regs = self._new_registers(vec_type, n_slices, n_rows)
-                    if self.rows_per_iter == 0:
-                        rep_template = f"Repeater<{vec_type}, {n_rows}>"
-                    else:
-                        rep_template = f"Repeater<{vec_type}, {n_rows}, {block_size}, {block_row}>"
+                    rep_template = f"Repeater<{vec_type}, {n_rows}, {block_size}, {block_row}>"
                     code = self._declare_node(
                         rep_template,
                         repeater_context,
@@ -691,26 +681,22 @@ class CodeGen:
                     # Register-reuse Mov overrides for in-block reads.
                     # base[0] = current block-row's body output; base[i] for i>0 with
                     # block_row-i >= 0 = body output of block-row (block_row - i).
-                    if self.rows_per_iter > 0:
-                        self._emit_repeater_movs(
-                            vec_type,
-                            n_slices,
-                            n_rows,
-                            block_row,
-                            regs,
-                            g_regs,
-                            self.rvar_inners[prev_rows_var.name],
-                        )
+                    self._emit_repeater_movs(
+                        vec_type,
+                        n_slices,
+                        n_rows,
+                        block_row,
+                        regs,
+                        g_regs,
+                        self.rvar_inners[prev_rows_var.name],
+                    )
 
                 case RVar2D(name):
                     block_row = self.current_block_row
                     block_size = self._block_size_template()
                     repeater_context, n_rows = self.var2d_context[name]
                     regs = self._new_registers(vec_type, n_slices, n_rows)
-                    if self.rows_per_iter == 0:
-                        s2d_template = f"Signal2D<{vec_type}, {n_rows}>"
-                    else:
-                        s2d_template = f"Signal2D<{vec_type}, {n_rows}, {block_size}, {block_row}>"
+                    s2d_template = f"Signal2D<{vec_type}, {n_rows}, {block_size}, {block_row}>"
                     code = self._declare_node(
                         s2d_template,
                         repeater_context,
@@ -722,7 +708,7 @@ class CodeGen:
                     # Mov overrides: Signal2D reads offset i+1 from block_row's
                     # current row → row R+block_row-(i+1). If block_row-(i+1) >= 0,
                     # that row was just produced inside this block.
-                    if self.rows_per_iter > 0 and name in self.rvar_inners:
+                    if name in self.rvar_inners:
                         inners_by_br = self.rvar_inners[name]
                         for s in range(n_slices):
                             for i in range(n_rows):
@@ -742,10 +728,7 @@ class CodeGen:
                     block_size = self._block_size_template()
                     regs = self._new_registers(vec_type, n_slices, n_rows)
                     zero_str = expr.element_type.val_to_str(ty.zero(), ty)
-                    if self.rows_per_iter == 0:
-                        is2d_template = f"InputSignal2D<{vec_type}, {n_rows}>"
-                    else:
-                        is2d_template = f"InputSignal2D<{vec_type}, {n_rows}, {block_size}, {block_row}>"
+                    is2d_template = f"InputSignal2D<{vec_type}, {n_rows}, {block_size}, {block_row}>"
                     code = self._declare_node(
                         is2d_template,
                         f"{name}, {name}_stride, {zero_str}",
@@ -913,7 +896,9 @@ class CodeGen:
                     regs = self._new_registers(vec_type, n_slices, n_vec)
                     run_args_list = []
                     for s in range(n_slices):
-                        kernel_bases = [self.mapping[(p[2], self.ele_per_iter, self.current_block_row)][0][s] for p in pairs]
+                        kernel_bases = [
+                            self.mapping[(p[2], self.ele_per_iter, self.current_block_row)][0][s] for p in pairs
+                        ]
                         v_kb = self._declare_array("int", kernel_bases if n_pairs > 0 else pad)
                         run_args_list.append([regs[s], v_kb, g_regs[s]])
 
@@ -1008,10 +993,7 @@ class CodeGen:
         comp_regs_list: List[List[int]] = []
         for i in range(n):
             comp_regs = self._new_registers(vec_type, n_slices, n_rows)
-            if self.rows_per_iter == 0:
-                rep_template = f"Repeater<{vec_type}, {n_rows}>"
-            else:
-                rep_template = f"Repeater<{vec_type}, {n_rows}, {block_size}, {block_row}>"
+            rep_template = f"Repeater<{vec_type}, {n_rows}, {block_size}, {block_row}>"
             comp_inner_regs = [body_regs[s] + i for s in range(n_slices)]
             self._declare_node(
                 rep_template,
@@ -1021,16 +1003,15 @@ class CodeGen:
                 vec_type,
             )
 
-            if self.rows_per_iter > 0:
-                self._emit_repeater_movs(
-                    vec_type,
-                    n_slices,
-                    n_rows,
-                    block_row,
-                    comp_regs,
-                    comp_inner_regs,
-                    self.rvar_inners[rv.prev_vars[i].name],
-                )
+            self._emit_repeater_movs(
+                vec_type,
+                n_slices,
+                n_rows,
+                block_row,
+                comp_regs,
+                comp_inner_regs,
+                self.rvar_inners[rv.prev_vars[i].name],
+            )
             comp_regs_list.append(comp_regs)
 
         self.rvec_comp_regs[(rv, block_row)] = comp_regs_list
@@ -1113,10 +1094,9 @@ class CodeGen:
         return regs, code
 
     def _block_size_template(self) -> int:
-        """Template parameter for `block_size`. We use 1 in the non-blocking
-        path (rows_per_iter == 0) so the templates fall back to their default
-        single-row specialisation; otherwise it's the user-visible block size."""
-        return self.rows_per_iter if self.rows_per_iter > 0 else 1
+        """Template parameter for `block_size`. Always equals `rows_per_iter`
+        (which is >= 1)."""
+        return self.rows_per_iter
 
     def _emit_repeater_movs(
         self,
@@ -1134,9 +1114,7 @@ class CodeGen:
         output if that row is in this block (block_row-i >= 0); otherwise the
         cache read from Repeater::run stays in place."""
         for s in range(n_slices):
-            self._declare_node(
-                f"Mov<{vec_type}>", "", [[regs[s] + 0, g_regs[s]]], vec_type, vec_type
-            )
+            self._declare_node(f"Mov<{vec_type}>", "", [[regs[s] + 0, g_regs[s]]], vec_type, vec_type)
             for i in range(1, n_rows):
                 src_br = block_row - i
                 if src_br >= 0 and src_br in inners_by_br:
@@ -1150,7 +1128,8 @@ class CodeGen:
 
     def _contains_repeater(self, expr: RecLang, visited: Optional[Set[int]] = None) -> bool:
         """True if the expression tree contains a Repeater or RepeaterVec node.
-        Used to auto-enable blocking when `rows_per_iter` is left unset."""
+        Used to pick the auto-detect default of `rows_per_iter` (2 for 2D
+        recurrences, 1 otherwise)."""
         if visited is None:
             visited = set()
         if id(expr) in visited:

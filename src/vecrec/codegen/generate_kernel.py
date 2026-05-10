@@ -85,7 +85,8 @@ def generate_benchmark(
         ele_per_iter_list = [max(16, expr.lanes) for expr in exprs]  # type: ignore
 
     if rows_per_iter_list is None:
-        rows_per_iter_list = [0] * len(exprs)
+        rows_per_iter_list = [1] * len(exprs)
+    assert all(rpi >= 1 for rpi in rows_per_iter_list), "rows_per_iter must be >= 1"
 
     benchmark_code = _generate_benchmark_code(
         all_vars,
@@ -213,78 +214,50 @@ def _generate_benchmark_code(
         benchmark_text += f"    // Benchmark {name}\n"
         benchmark_text += "    {\n"
 
-        if rpi == 0:
-            benchmark_text += "        // Warmup\n"
-            benchmark_text += "        {\n"
-            benchmark_text += f"            auto kernel = {name}({var_args});\n"
-            benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
-            benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type; {name}_vector_type out[{epi}/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
-            benchmark_text += "                kernel.run(out);\n"
-            benchmark_text += "            }\n"
-            benchmark_text += "        }\n\n"
+        benchmark_text += "        // Warmup\n"
+        benchmark_text += "        {\n"
+        benchmark_text += f"            auto kernel = {name}({var_args});\n"
+        benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
+        benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
+        benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
+        benchmark_text += f"                {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
+        benchmark_text += f"                {name}_vector_type* out_per_row[{rpi}] = {{\n"
+        for r in range(rpi):
+            benchmark_text += f"                    out_buf[{r}],\n"
+        benchmark_text += "                };\n"
+        benchmark_text += "                kernel.run(out_per_row);\n"
+        benchmark_text += "            }\n"
+        benchmark_text += "        }\n\n"
 
-            benchmark_text += "        // Timed run\n"
-            benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
-            benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
-            benchmark_text += f"            auto kernel = {name}({var_args});\n"
-            benchmark_text += "            int pos = 0;\n"
-            benchmark_text += "            while (pos < N) {\n"
-            benchmark_text += f"                using elt_type = typename ElementType<{name}_vector_type>::type;\n{name}_vector_type out[{epi}/(sizeof({name}_vector_type)/sizeof(elt_type))];\n"
-            benchmark_text += "                kernel.run(out);\n"
-            benchmark_text += f"                memcpy(&output_{name}[pos], out, sizeof(out));\n"
-            benchmark_text += f"                pos += {epi};\n"
-
-            benchmark_text += "                if (pos % row_size == 0) {\n"
-            benchmark_text += "                    kernel.reset_and_next_row();\n"
-            benchmark_text += "                }\n"
-            benchmark_text += "            }\n"
-            benchmark_text += "        }\n"
-            benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
-        else:
-            benchmark_text += "        // Warmup (blocked)\n"
-            benchmark_text += "        {\n"
-            benchmark_text += f"            auto kernel = {name}({var_args});\n"
-            benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
-            benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
-            benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
-            benchmark_text += f"                {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
-            benchmark_text += f"                {name}_vector_type* out_per_row[{rpi}] = {{\n"
-            for r in range(rpi):
-                benchmark_text += f"                    out_buf[{r}],\n"
-            benchmark_text += "                };\n"
-            benchmark_text += "                kernel.run(out_per_row);\n"
-            benchmark_text += "            }\n"
-            benchmark_text += "        }\n\n"
-
-            benchmark_text += "        // Timed run (blocked)\n"
-            benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
-            benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
-            benchmark_text += f"            auto kernel = {name}({var_args});\n"
-            benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
-            benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
-            benchmark_text += "            int row_base = 0;\n"
-            benchmark_text += "            while (row_base < N) {\n"
-            benchmark_text += "                int col = 0;\n"
-            benchmark_text += "                while (col < row_size) {\n"
-            benchmark_text += f"                    {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
-            benchmark_text += f"                    {name}_vector_type* out_per_row[{rpi}] = {{\n"
-            for r in range(rpi):
-                benchmark_text += f"                        out_buf[{r}],\n"
-            benchmark_text += "                    };\n"
-            benchmark_text += "                    kernel.run(out_per_row);\n"
-            benchmark_text += f"                    for (int r = 0; r < {rpi}; r++) {{\n"
-            benchmark_text += "                        int dst = row_base + r * row_size + col;\n"
-            benchmark_text += "                        if (dst >= N) break;\n"
-            benchmark_text += f"                        int copy_count = ((N - dst) < {epi}) ? (N - dst) : {epi};\n"
-            benchmark_text += f"                        memcpy(&output_{name}[dst], out_buf[r], sizeof({output_type.to_str()}) * copy_count);\n"
-            benchmark_text += "                    }\n"
-            benchmark_text += f"                    col += {epi};\n"
-            benchmark_text += "                }\n"
-            benchmark_text += f"                for (int r = 0; r < {rpi}; r++) kernel.reset_and_next_row();\n"
-            benchmark_text += f"                row_base += {rpi} * row_size;\n"
-            benchmark_text += "            }\n"
-            benchmark_text += "        }\n"
-            benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += "        // Timed run\n"
+        benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
+        benchmark_text += f"            auto kernel = {name}({var_args});\n"
+        benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
+        benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
+        benchmark_text += "            int row_base = 0;\n"
+        benchmark_text += "            while (row_base < N) {\n"
+        benchmark_text += "                int col = 0;\n"
+        benchmark_text += "                while (col < row_size) {\n"
+        benchmark_text += f"                    {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
+        benchmark_text += f"                    {name}_vector_type* out_per_row[{rpi}] = {{\n"
+        for r in range(rpi):
+            benchmark_text += f"                        out_buf[{r}],\n"
+        benchmark_text += "                    };\n"
+        benchmark_text += "                    kernel.run(out_per_row);\n"
+        benchmark_text += f"                    for (int r = 0; r < {rpi}; r++) {{\n"
+        benchmark_text += "                        int dst = row_base + r * row_size + col;\n"
+        benchmark_text += "                        if (dst >= N) break;\n"
+        benchmark_text += f"                        int copy_count = ((N - dst) < {epi}) ? (N - dst) : {epi};\n"
+        benchmark_text += f"                        memcpy(&output_{name}[dst], out_buf[r], sizeof({output_type.to_str()}) * copy_count);\n"
+        benchmark_text += "                    }\n"
+        benchmark_text += f"                    col += {epi};\n"
+        benchmark_text += "                }\n"
+        benchmark_text += f"                for (int r = 0; r < {rpi}; r++) kernel.reset_and_next_row();\n"
+        benchmark_text += f"                row_base += {rpi} * row_size;\n"
+        benchmark_text += "            }\n"
+        benchmark_text += "        }\n"
+        benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += "        \n"
         benchmark_text += "        // XOR sum to prevent optimization of output array\n"
         benchmark_text += "        uint64_t xor_sum = 0;\n"
@@ -563,8 +536,9 @@ def _generate_kernel_runner_code(
     kernel_name: str,
     header_path: str,
     ele_per_iter: int,
-    rows_per_iter: int = 0,
+    rows_per_iter: int = 1,
 ) -> str:
+    assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
     var_items = sorted(all_vars.items())
     var2d_items = sorted(all_vars2d.items())
 
@@ -655,51 +629,36 @@ def _generate_kernel_runner_code(
     text += f"    std::vector<{output_cpp_type}> output(N);\n\n"
 
     text += "    auto start = std::chrono::high_resolution_clock::now();\n"
-    if rows_per_iter == 0:
-        # Legacy single-row loop.
-        text += "    int pos = 0;\n"
-        text += "    while (pos < N) {\n"
-        text += f"        using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
-        text += f"        {kernel_name}_vector_type out[{ele_per_iter}/(sizeof({kernel_name}_vector_type)/sizeof(elt_type))];\n"
-        text += "        kernel.run(out);\n"
-        text += f"        const int copy_count = (N - pos) < {ele_per_iter} ? (N - pos) : {ele_per_iter};\n"
-        text += f"        std::memcpy(output.data() + pos, &out, sizeof({output_cpp_type}) * copy_count);\n"
-        text += f"        pos += {ele_per_iter};\n"
-        text += "        if (pos % row_size == 0) {\n"
-        text += "            kernel.reset_and_next_row();\n"
-        text += "        }\n"
-        text += "    }\n"
-    else:
-        # Blocked loop: process rows_per_iter rows per kernel.run call.
-        # `row_base` is the element index of the first row in the current block;
-        # `col` scans the columns of one row; we advance `row_base` by k*row_size
-        # after each block of k rows is fully scanned.
-        k = rows_per_iter
-        text += f"    using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
-        text += f"    constexpr int vec_lanes = sizeof({kernel_name}_vector_type) / sizeof(elt_type);\n"
-        text += "    int row_base = 0;\n"
-        text += "    while (row_base < N) {\n"
-        text += "        int col = 0;\n"
-        text += "        while (col < row_size) {\n"
-        text += f"            {kernel_name}_vector_type out_buf[{k}][{ele_per_iter}/vec_lanes];\n"
-        text += f"            {kernel_name}_vector_type* out_per_row[{k}] = {{\n"
-        for r in range(k):
-            text += f"                out_buf[{r}],\n"
-        text += "            };\n"
-        text += "            kernel.run(out_per_row);\n"
-        text += f"            for (int r = 0; r < {k}; r++) {{\n"
-        text += "                int dst = row_base + r * row_size + col;\n"
-        text += "                if (dst >= N) break;\n"
-        text += f"                int copy_count = ((N - dst) < {ele_per_iter}) ? (N - dst) : {ele_per_iter};\n"
-        text += (
-            f"                std::memcpy(output.data() + dst, out_buf[r], sizeof({output_cpp_type}) * copy_count);\n"
-        )
-        text += "            }\n"
-        text += f"            col += {ele_per_iter};\n"
-        text += "        }\n"
-        text += f"        for (int r = 0; r < {k}; r++) kernel.reset_and_next_row();\n"
-        text += f"        row_base += {k} * row_size;\n"
-        text += "    }\n"
+    # Process rows_per_iter rows per kernel.run call.
+    # `row_base` is the element index of the first row in the current block;
+    # `col` scans the columns of one row; we advance `row_base` by k*row_size
+    # after each block of k rows is fully scanned.
+    k = rows_per_iter
+    text += f"    using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
+    text += f"    constexpr int vec_lanes = sizeof({kernel_name}_vector_type) / sizeof(elt_type);\n"
+    text += "    int row_base = 0;\n"
+    text += "    while (row_base < N) {\n"
+    text += "        int col = 0;\n"
+    text += "        while (col < row_size) {\n"
+    text += f"            {kernel_name}_vector_type out_buf[{k}][{ele_per_iter}/vec_lanes];\n"
+    text += f"            {kernel_name}_vector_type* out_per_row[{k}] = {{\n"
+    for r in range(k):
+        text += f"                out_buf[{r}],\n"
+    text += "            };\n"
+    text += "            kernel.run(out_per_row);\n"
+    text += f"            for (int r = 0; r < {k}; r++) {{\n"
+    text += "                int dst = row_base + r * row_size + col;\n"
+    text += "                if (dst >= N) break;\n"
+    text += f"                int copy_count = ((N - dst) < {ele_per_iter}) ? (N - dst) : {ele_per_iter};\n"
+    text += (
+        f"                std::memcpy(output.data() + dst, out_buf[r], sizeof({output_cpp_type}) * copy_count);\n"
+    )
+    text += "            }\n"
+    text += f"            col += {ele_per_iter};\n"
+    text += "        }\n"
+    text += f"        for (int r = 0; r < {k}; r++) kernel.reset_and_next_row();\n"
+    text += f"        row_base += {k} * row_size;\n"
+    text += "    }\n"
     text += "    auto end = std::chrono::high_resolution_clock::now();\n"
     text += "\n"
 
