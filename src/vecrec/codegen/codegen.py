@@ -672,8 +672,8 @@ class CodeGen:
                     rep_template = f"Repeater<{vec_type}, {n_rows}, {block_size}, {block_row}>"
                     code = self._declare_node(
                         rep_template,
-                        repeater_context,
-                        [[regs[i], g_regs[i]] for i in range(n_slices)],
+                        "",
+                        [[regs[i], g_regs[i], repeater_context] for i in range(n_slices)],
                         vec_type,
                         vec_type,
                     )
@@ -699,8 +699,8 @@ class CodeGen:
                     s2d_template = f"Signal2D<{vec_type}, {n_rows}, {block_size}, {block_row}>"
                     code = self._declare_node(
                         s2d_template,
-                        repeater_context,
-                        [[r] for r in regs],
+                        "",
+                        [[r, repeater_context] for r in regs],
                         vec_type,
                         vec_type,
                     )
@@ -997,8 +997,8 @@ class CodeGen:
             comp_inner_regs = [body_regs[s] + i for s in range(n_slices)]
             self._declare_node(
                 rep_template,
-                contexts[i],
-                [[comp_regs[s], comp_inner_regs[s]] for s in range(n_slices)],
+                "",
+                [[comp_regs[s], comp_inner_regs[s], contexts[i]] for s in range(n_slices)],
                 vec_type,
                 vec_type,
             )
@@ -1205,14 +1205,16 @@ class CodeGen:
         return var
 
     def _declare_repeater_context(self, vec_type: str, zero_str: str, n_rows: int) -> str:
-        # The input and output type of RepeaterContext are bogus, they are here to generate a parameter for `.run()` calls.
+        # RepeaterContext is held by value in the kernel struct; it has no run() method
+        # and is passed by reference into Signal2D/Repeater run() calls. Its
+        # reset_and_next_row() is invoked alongside other nodes via the value field.
         return self._declare_node(
-            f"RepeaterContext<{vec_type}, {n_rows}>*",
-            f"new RepeaterContext<{vec_type}, {n_rows}>(row_size, {zero_str})",
-            [[]],
+            f"RepeaterContext<{vec_type}, {n_rows}>",
+            f"row_size, {zero_str}",
+            [],
             vec_type,
             vec_type,
-            True,
+            False,
         )
 
     def _declare_node(

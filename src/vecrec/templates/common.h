@@ -674,15 +674,43 @@ struct RepeaterContext {
     int width;
     elt_type *buffer;
     int current_row;
+    // When you write a value, the old value gets evicted, yet 
+    // Repeater still needs to return it.
+    vec_type overwritten_value;
 
     RepeaterContext() = delete;
     RepeaterContext(int row_size, elt_type zero_value) : width(row_size), current_row(0) {
-        buffer = new (std::align_val_t(32)) elt_type[n_rows * width];
-        for (int i = 0; i < n_rows * width; i++) {
+        buffer = new (std::align_val_t(32)) elt_type[(n_rows - 1) * width];
+        for (int i = 0; i < (n_rows - 1) * width; i++) {
             buffer[i] = zero_value;
         }
     }
 
+    // Block-aware get: read from the row at offset `row_offset` relative to the
+    // logical "current row" of block-row `block_row`.
+    vec_type get_at(int row_offset, int col, int block_row, bool after_write) {
+        int row_idx = (current_row + block_row - row_offset + 2 * (n_rows - 1)) % (n_rows - 1);
+        if (row_offset == n_rows - 1 && after_write) {
+            return overwritten_value;
+        }
+        vec_type result;
+        memcpy(&result, &buffer[row_idx * width + col], sizeof(vec_type));
+        return result;
+    }
+
+    // Block-aware set: write to the row at offset `block_row` relative to the
+    // current row (i.e. the slot that becomes (current_row + block_row) mod n_rows).
+    void set_at(vec_type value, int col, int block_row) {
+        int row_idx = (current_row + block_row) % (n_rows - 1);
+        memcpy(&overwritten_value, &buffer[row_idx * width + col], sizeof(vec_type));
+        memcpy(&buffer[row_idx * width + col], &value, sizeof(vec_type));
+    }
+
+    void reset_and_next_row() {
+        current_row = (current_row + 1) % (n_rows - 1);
+    }
+
+    
     RepeaterContext(const RepeaterContext &) = delete;
     RepeaterContext &operator=(const RepeaterContext &) = delete;
 
@@ -705,44 +733,6 @@ struct RepeaterContext {
     ~RepeaterContext() {
         delete[] buffer;
     }
-
-    // Get the value at the given row offset and explicit column
-    vec_type get(int row_offset, int col) {
-        int row_idx = (current_row - row_offset + n_rows) % n_rows;
-        vec_type result;
-        memcpy(&result, &buffer[row_idx * width + col], sizeof(vec_type));
-        return result;
-    }
-
-    // Store a value in the current row at an explicit column
-    void set(vec_type value, int col) {
-        memcpy(&buffer[current_row * width + col], &value, sizeof(vec_type));
-    }
-
-    // Block-aware get: read from the row at offset `row_offset` relative to the
-    // logical "current row" of block-row `block_row`.
-    vec_type get_at(int row_offset, int col, int block_row) {
-        int row_idx = (current_row + block_row - row_offset + 2 * n_rows) % n_rows;
-        vec_type result;
-        memcpy(&result, &buffer[row_idx * width + col], sizeof(vec_type));
-        return result;
-    }
-
-    // Block-aware set: write to the row at offset `block_row` relative to the
-    // current row (i.e. the slot that becomes (current_row + block_row) mod n_rows).
-    void set_at(vec_type value, int col, int block_row) {
-        int row_idx = (current_row + block_row) % n_rows;
-        memcpy(&buffer[row_idx * width + col], &value, sizeof(vec_type));
-    }
-
-    template <typename Reg_t>
-    inline __attribute__((always_inline)) void run(Reg_t &_reg) {
-        // no-op: column tracking is now done per-call in Signal2D and Repeater
-    }
-
-    void reset_and_next_row() {
-        current_row = (current_row + 1) % n_rows;
-    }
 };
 
 template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
@@ -750,23 +740,21 @@ struct Signal2D {
     using elt_type = typename ElementType<vec_type>::type;
     constexpr static int lanes = vec_lanes_of(vec_type{});
 
-    RepeaterContext<vec_type, n_rows + 1> *context;
     int my_col;
 
-    Signal2D() = delete;
-    Signal2D(RepeaterContext<vec_type, n_rows + 1> *ctx) : context(ctx), my_col(-lanes) {}
+    Signal2D() : my_col(0) {}
 
     template <typename Reg_t>
-    inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
-        my_col += lanes;
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, RepeaterContext<vec_type, n_rows + 1> &context) {
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             asm volatile("" :::);
-            reg[base + i] = context->get_at(i + 1, my_col, block_row);
+            reg[base + i] = context.get_at(i + 1, my_col, block_row, false);
         }
+        my_col += lanes;
     }
 
     void reset_and_next_row() {
-        my_col = -lanes;
+        my_col = 0;
     }
 };
 
@@ -825,38 +813,31 @@ struct InputSignal2D {
     }
 };
 
-// template <typename vec_type, int n_rows>
-// auto make_input_signal2d(int base, const typename ElementType<vec_type>::type *data, int stride, typename ElementType<vec_type>::type zero) {
-//     return InputSignal2D<vec_type, n_rows>(base, data, stride, zero);
-// }
-
 template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
 struct Repeater {
     using elt_type = typename ElementType<vec_type>::type;
     constexpr static int vec_lanes = vec_lanes_of(vec_type{});
 
-    RepeaterContext<vec_type, n_rows> *context;
     int my_col;
 
-    Repeater() = delete;
-    Repeater(RepeaterContext<vec_type, n_rows> *ctx) : context(ctx), my_col(-vec_lanes) {}
+    Repeater() : my_col(0) {}
 
     template <typename Reg_t>
-    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int inner) {
-        my_col += vec_lanes;
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int inner, RepeaterContext<vec_type, n_rows> &context) {
         vec_type curr_output = reg[inner];
         // Skip the cache write for the first (block_size - n_rows) block-rows,
         // since their values are dead before any future block reads them.
-        if constexpr (block_row >= block_size - n_rows) {
-            context->set_at(curr_output, my_col, block_row);
+        if constexpr (block_row > block_size - n_rows) {
+            context.set_at(curr_output, my_col, block_row);
         }
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
-            reg[base + i] = context->get_at(i, my_col, block_row);
+            reg[base + i] = context.get_at(i, my_col, block_row, true);
         }
+        my_col += vec_lanes;
     }
 
     void reset_and_next_row() {
-        my_col = -vec_lanes;
+        my_col = 0;
     }
 };
 
