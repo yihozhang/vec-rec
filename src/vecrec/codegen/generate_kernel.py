@@ -691,8 +691,7 @@ def generate_kernel_executable(
     binary output array. The returned KernelExecutable handles Python/NumPy
     translation and subprocess execution.
     """
-    if compiler_flags is None:
-        compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
+    compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."] + (compiler_flags or [])
 
     fd, header_path = tempfile.mkstemp(suffix=".h", prefix="header_", dir="/tmp")
     os.close(fd)
@@ -781,8 +780,7 @@ def generate_and_run_benchmark(
             - 'error': stderr if any errors occurred
             - 'return_code': return code from benchmark execution
     """
-    if compiler_flags is None:
-        compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."]
+    compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."] + (compiler_flags or [])
 
     assert len(exprs) > 0, "At least one expression must be provided"
     assert schedules_per_runner >= 1, "schedules_per_runner must be at least 1"
