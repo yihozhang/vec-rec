@@ -75,13 +75,13 @@ def _run_blocked_vs_baseline(
     n_input_rows: int = 16,
     seed: int = 0,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Build two copies of the same expression, compile one without blocking
-    and one with the requested block size, and return both outputs on the same
-    input."""
+    """Build two copies of the same expression, compile one with rows_per_iter=1
+    (no in-block predecessors, so Mov overrides only forward base[0]) and one
+    with the requested block size, and return both outputs on the same input."""
     expr_baseline = builder()
     expr_blocked = builder()
 
-    runner_baseline = generate_kernel_executable(CodeGen(rows_per_iter=0), expr_baseline)
+    runner_baseline = generate_kernel_executable(CodeGen(rows_per_iter=1), expr_baseline)
     runner_blocked = generate_kernel_executable(CodeGen(rows_per_iter=rows_per_iter), expr_blocked)
 
     inp = _make_input(n_input_rows, seed=seed)
@@ -130,9 +130,9 @@ def test_blocking_auto_detect_k2() -> None:
     assert program.rows_per_iter == 2, f"Expected auto k=2, got {program.rows_per_iter}"
 
 
-def test_blocking_disabled_for_non_repeater() -> None:
-    """Pure Convolve2D over Var2D contains no Repeater after lowering, so
-    rows_per_iter should remain 0 (legacy path)."""
+def test_blocking_default_k_for_non_repeater() -> None:
+    """Pure Convolve2D over Var2D contains no Repeater after lowering, so the
+    auto-detect default for rows_per_iter is 1 (single-row block)."""
     with with_types(Type.Arith, ElementType.Float):
         var2d = Var2D("img")
         expr: SignalExpr = Convolve2D(TIKernel2D([[1.0, 2.0], [3.0, 4.0]]), var2d)
@@ -142,7 +142,7 @@ def test_blocking_disabled_for_non_repeater() -> None:
 
     cg = CodeGen()
     program = cg.generate(expr, "k0")
-    assert program.rows_per_iter == 0
+    assert program.rows_per_iter == 1
 
 
 def test_blocking_3x3_k2() -> None:
@@ -159,7 +159,7 @@ def test_blocking_3x3_k2() -> None:
 
 if __name__ == "__main__":
     test_blocking_auto_detect_k2()
-    test_blocking_disabled_for_non_repeater()
+    test_blocking_default_k_for_non_repeater()
     test_blocking_basic_k2_n2()
     test_blocking_skip_writes_k4_n2()
     test_blocking_3x3_k2()

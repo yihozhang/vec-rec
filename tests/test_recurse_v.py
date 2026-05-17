@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 from vecrec import CodeGen, generate_and_run_benchmark
 from vecrec.codegen import generate_kernel_executable
 from vecrec.expr import (
     KernelMatrix,
+    SignalExpr,
     SignalVector,
     RecurseV,
     ConvolveV,
@@ -304,9 +308,15 @@ def test_recurse_convolve_v() -> None:
     h2_in = np.random.uniform(-1.0, 1.0, n).astype(np.float32)
     solution = reference(h1_in, h2_in)
 
-    for idx, sched in enumerate(runnable):
+    def _compile_and_run(sched: SignalExpr) -> np.ndarray:
         runner = generate_kernel_executable(CodeGen(), sched)
         output, _ = runner.run({"h1": h1_in, "h2": h2_in})
+        return output
+
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 1) as ex:
+        outputs = list(ex.map(_compile_and_run, runnable))
+
+    for idx, output in enumerate(outputs):
         assert output.shape == (n,)
         assert np.allclose(output, solution, atol=1e-6), (
             f"Schedule {idx}: mismatch\nGot:      {output[:8]}\nExpected: {solution[:8]}"
