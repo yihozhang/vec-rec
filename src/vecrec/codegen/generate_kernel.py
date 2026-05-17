@@ -751,6 +751,7 @@ def generate_and_run_benchmark(
     compiler_flags: Optional[List[str]] = None,
     row_size: int = 1024,
     schedules_per_runner: int = 5,
+    parallel_compile: Optional[bool] = None,
 ) -> dict:
     """
     Generate, compile, and run a benchmark for the given kernels.
@@ -773,6 +774,11 @@ def generate_and_run_benchmark(
         compiler_flags: Additional compiler flags (default: ["-std=c++20", "-O3", "-march=native", "-I", "."])
         row_size: Number of elements per row (used to call reset_and_next_row at row boundaries)
         schedules_per_runner: Maximum schedules per runner (k0 always included)
+        parallel_compile: If True, compile batches in parallel. If False, compile
+            sequentially. If None (default), reads env var VECREC_PARALLEL_COMPILE
+            (set to "0" to disable); defaults to parallel. Sequential mode is
+            useful when many benchmarks already run concurrently (e.g. pytest -n),
+            to avoid oversubscribing the CPU.
 
     Returns:
         A dictionary containing:
@@ -837,18 +843,26 @@ def generate_and_run_benchmark(
             rows_per_iter_list=[codes_global[i].rows_per_iter for i in batch],
         )
 
-    # Compile every batch in parallel.
+    # Compile every batch — in parallel by default, sequentially when requested.
     def _compile(idx: int) -> Tuple[int, subprocess.CompletedProcess]:
         h_path, b_path, e_path = batch_paths[idx]
         cmd = [compiler] + compiler_flags + [b_path, "-o", e_path]
         return idx, subprocess.run(cmd, capture_output=True, text=True)
 
-    max_workers = min(len(batches), os.cpu_count() or 1)
+    if parallel_compile is None:
+        parallel_compile = os.environ.get("VECREC_PARALLEL_COMPILE", "1") != "0"
+
     compile_results: List[Optional[subprocess.CompletedProcess]] = [None] * len(batches)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(_compile, i) for i in range(len(batches))]
-        for fut in concurrent.futures.as_completed(futures):
-            idx, res = fut.result()
+    if parallel_compile:
+        max_workers = min(len(batches), os.cpu_count() or 1)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_compile, i) for i in range(len(batches))]
+            for fut in concurrent.futures.as_completed(futures):
+                idx, res = fut.result()
+                compile_results[idx] = res
+    else:
+        for i in range(len(batches)):
+            idx, res = _compile(i)
             compile_results[idx] = res
 
     for idx, maybe_res in enumerate(compile_results):
