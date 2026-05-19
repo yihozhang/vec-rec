@@ -7,4 +7,5 @@ __all__ = [
     "instantiate_kernels",
     "generate_kernel_executable",
     "generate_and_run_benchmark",
+    "sweep_codegen_setup",
 ]

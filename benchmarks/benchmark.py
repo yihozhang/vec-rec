@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from abc import ABC, abstractmethod
 from typing import Any
 
 import numpy as np
 
-from vecrec.codegen import CodeGen, generate_and_run_benchmark, generate_kernel_executable
+from vecrec.codegen import (
+    CodeGen,
+    generate_and_run_benchmark,
+    generate_kernel_executable,
+    sweep_codegen_setup,
+)
 from vecrec.expr.base import SignalExpr, SignalExpr2D
 from vecrec.expr.pretty import pp
 from vecrec.optimize import get_candidate_schedules
@@ -31,6 +37,11 @@ class BenchmarkResult:
     ref_error: str  # empty on success
     best_error: str  # empty on success
     best_schedule_pp: str  # pp() of the fastest schedule
+    best_ele_per_iter_multiple: int  # codegen ele_per_iter_multiple found by sweep
+    best_rows_per_iter: int  # codegen rows_per_iter found by sweep
+    # One entry per top schedule swept, in descending initial-throughput order.
+    # Each entry: {"schedule": pp, "is_best": bool, "timings": {"epi,rpi": elapsed_us | None}}.
+    sweep_timings: list[dict[str, Any]]
 
 
 # ── Base class ────────────────────────────────────────────────────────────────
@@ -96,7 +107,11 @@ class Benchmark(ABC):
         """
         ...
 
-    def verify_schedule(self, expr: SignalExpr | SignalExpr2D) -> tuple[bool, str]:
+    def verify_schedule(
+        self,
+        expr: SignalExpr | SignalExpr2D,
+        codegen: CodeGen | None = None,
+    ) -> tuple[bool, str]:
         """
         Verify a schedule by running generate_kernel_executable and comparing to
         _python_reference on auto-generated random inputs.
@@ -104,7 +119,8 @@ class Benchmark(ABC):
         Returns (ok, error_message).
         """
         try:
-            codegen = self.build_codegen()
+            if codegen is None:
+                codegen = self.build_codegen()
             runner = generate_kernel_executable(codegen, expr, row_size=256)
 
             n_1d = runner.row_size  # 1024 by default
@@ -161,21 +177,52 @@ class Benchmark(ABC):
             sum([v is True or (isinstance(v, int) and v >= 256) for v in validation_raw.values()])
         ) > 0.5 * len(validation_raw)
 
-        # Find best (fastest) schedule: highest throughput
         timing_keys = [k for k in output if k != "validation"]
-        best_key = max(timing_keys, key=lambda k: output[k])
-        best_idx = int(best_key[1:])  # "k3" → 3
-        best_expr = schedules[best_idx]
-
-        # Build timing dict keyed by pretty-printed expression
+        # Build timing dict keyed by pretty-printed expression (used in the
+        # returned report regardless of how the sweep refines the choice).
         timing = {pp(schedules[int(k[1:])]): output[k] for k in timing_keys}
 
-        # Verify reference (k0) and best schedule against Python reference
+        # Sweep codegen setup on the top max(2, ceil(0.1 * n)) schedules — these
+        # are the candidates worth the extra compile budget — to find the best
+        # (schedule, ele_per_iter_multiple, rows_per_iter).
+        n = len(schedules)
+        n_top = min(n, max(2, math.ceil(0.1 * n)))
+        sorted_keys = sorted(timing_keys, key=lambda k: output[k], reverse=True)
+        top_keys = sorted_keys[:n_top]
+        top_indices = [int(k[1:]) for k in top_keys]
+        top_exprs = [schedules[i] for i in top_indices]
+
+        sweep_results = sweep_codegen_setup(top_exprs)
+
+        best_local_idx, best_result = min(
+            enumerate(sweep_results),
+            key=lambda kv: kv[1]["best_elapsed_us"],
+        )
+        best_idx = top_indices[best_local_idx]
+        best_expr = schedules[best_idx]
+        best_epi = best_result["best_ele_per_iter_multiple"]
+        best_rpi = best_result["best_rows_per_iter"]
+
+        # Expose the full sweep grid, one entry per swept schedule (kept as a
+        # list because two distinct schedules can pretty-print identically).
+        sweep_timings: list[dict[str, Any]] = []
+        for local_idx, sched_idx in enumerate(top_indices):
+            sweep_timings.append(
+                {
+                    "schedule": pp(schedules[sched_idx]),
+                    "is_best": local_idx == best_local_idx,
+                    "timings": {
+                        f"{epi},{rpi}": t
+                        for (epi, rpi), t in sweep_results[local_idx]["timings"].items()
+                    },
+                }
+            )
+
+        # Verify reference (k0) with the default codegen, and the best schedule
+        # with the codegen that the sweep picked.
         ref_ok, ref_err = self.verify_schedule(schedules[0])
-        if best_idx == 0:
-            best_ok, best_err = ref_ok, ref_err
-        else:
-            best_ok, best_err = self.verify_schedule(best_expr)
+        best_codegen = CodeGen(ele_per_iter_multiple=best_epi, rows_per_iter=best_rpi)
+        best_ok, best_err = self.verify_schedule(best_expr, codegen=best_codegen)
 
         return BenchmarkResult(
             name=self.name,
@@ -189,6 +236,9 @@ class Benchmark(ABC):
             ref_error=ref_err,
             best_error=best_err,
             best_schedule_pp=pp(best_expr),
+            best_ele_per_iter_multiple=best_epi,
+            best_rows_per_iter=best_rpi,
+            sweep_timings=sweep_timings,
         )
 
 

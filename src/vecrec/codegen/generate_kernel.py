@@ -16,6 +16,7 @@ __all__ = [
     "instantiate_kernels",
     "generate_kernel_executable",
     "generate_and_run_benchmark",
+    "sweep_codegen_setup",
 ]
 TEMPLATE = files("vecrec.templates") / "common.h"
 
@@ -677,19 +678,22 @@ def _generate_kernel_runner_code(
     return text
 
 
-def generate_kernel_executable(
-    codegen: CodeGen,
-    expr: SignalExpr | SignalExpr2D,
+def _build_kernel_executable(
+    code: KernelProgram,
+    all_vars: Dict[str, ElementType],
+    all_vars2d: Dict[str, ElementType],
+    output_type: ElementType,
+    kernel_name: str = "k0",
     compiler: str = "clang++",
     compiler_flags: Optional[List[str]] = None,
     row_size: int = 1024,
+    quiet: bool = False,
 ) -> KernelExecutable:
-    """
-    Generate and compile a single-kernel executable for Python interop.
-
-    The generated executable consumes raw binary input arrays and writes a raw
-    binary output array. The returned KernelExecutable handles Python/NumPy
-    translation and subprocess execution.
+    """Workhorse for turning an already-generated KernelProgram into a runnable
+    KernelExecutable. Writes the header, emits the runner C++ source, compiles
+    it, and returns the wrapper. The caller is responsible for invoking
+    `codegen.generate(...)` and `codegen.collect_input_variables(...)` to
+    produce `code`, `all_vars`, and `all_vars2d`.
     """
     compiler_flags = ["-std=c++20", "-O3", "-march=native", "-I", "."] + (compiler_flags or [])
 
@@ -702,15 +706,12 @@ def generate_kernel_executable(
     fd, executable_path = tempfile.mkstemp(prefix="kernel_runner_", dir="/tmp")
     os.close(fd)
 
-    kernel_name = "k0"
-    code = codegen.generate(expr, kernel_name)
     instantiate_kernels(header_path, [code])
 
-    all_vars, all_vars2d = codegen.collect_input_variables(expr)
     runner_code = _generate_kernel_runner_code(
         all_vars=all_vars,
         all_vars2d=all_vars2d,
-        output_type=expr.element_type,
+        output_type=output_type,
         kernel_name=kernel_name,
         header_path=header_path,
         ele_per_iter=code.element_per_iter,
@@ -718,7 +719,8 @@ def generate_kernel_executable(
     )
     with open(runner_path, "w") as f:
         f.write(runner_code)
-    print(runner_path)
+    if not quiet:
+        print(runner_path)
 
     compile_cmd = [compiler] + compiler_flags + [runner_path, "-o", executable_path]
     compile_result = subprocess.run(
@@ -734,7 +736,36 @@ def generate_kernel_executable(
         variable_order=sorted(all_vars.keys()),
         variable_types=all_vars,
         vars2d_info=all_vars2d,
+        output_type=output_type,
+        row_size=row_size,
+    )
+
+
+def generate_kernel_executable(
+    codegen: CodeGen,
+    expr: SignalExpr | SignalExpr2D,
+    compiler: str = "clang++",
+    compiler_flags: Optional[List[str]] = None,
+    row_size: int = 1024,
+) -> KernelExecutable:
+    """
+    Generate and compile a single-kernel executable for Python interop.
+
+    The generated executable consumes raw binary input arrays and writes a raw
+    binary output array. The returned KernelExecutable handles Python/NumPy
+    translation and subprocess execution.
+    """
+    kernel_name = "k0"
+    code = codegen.generate(expr, kernel_name)
+    all_vars, all_vars2d = codegen.collect_input_variables(expr)
+    return _build_kernel_executable(
+        code=code,
+        all_vars=all_vars,
+        all_vars2d=all_vars2d,
         output_type=expr.element_type,
+        kernel_name=kernel_name,
+        compiler=compiler,
+        compiler_flags=compiler_flags,
         row_size=row_size,
     )
 
@@ -907,3 +938,167 @@ def generate_and_run_benchmark(
         "error": "",
         "return_code": 0,
     }
+
+
+def _sample_random(elt: ElementType, shape: Tuple[int, ...], rng: np.random.Generator) -> np.ndarray:
+    """Generate random input data appropriate for the given element type."""
+    match elt:
+        case ElementType.Float:
+            return rng.uniform(-1.0, 1.0, shape).astype(np.float32)
+        case ElementType.I32:
+            return rng.integers(-1000, 1000, size=shape, dtype=np.int32)
+        case ElementType.I64:
+            return rng.integers(0, 1000, size=shape, dtype=np.int64)
+        case ElementType.I8:
+            return rng.integers(-1, 1, size=shape, dtype=np.int8)
+
+
+def sweep_codegen_setup(
+    exprs: Sequence[Union[SignalExpr, SignalExpr2D]],
+    ele_per_iter_multiples: Sequence[int] = (1, 2, 4),
+    rows_per_iter_options: Sequence[int] = (1, 2, 4),
+    compiler: str = "clang++",
+    compiler_flags: Optional[List[str]] = None,
+    row_size: int = 1024,
+    n_timing_runs: int = 3,
+    n_warmup_runs: int = 1,
+    input_n_1d: int = 1 << 17,
+    input_n_rows_2d: int = 64,
+    parallel_compile: Optional[bool] = None,
+) -> List[Dict[str, Any]]:
+    """Sweep CodeGen.ele_per_iter_multiple and rows_per_iter for each schedule.
+
+    For each input expression, every combination of ``ele_per_iter_multiples`` and
+    ``rows_per_iter_options`` is independently produced with a fresh
+    ``CodeGen(ele_per_iter_multiple=epi, rows_per_iter=rpi)`` and compiled via
+    the same workhorse used by ``generate_kernel_executable``. Each compiled
+    runner is invoked ``n_timing_runs`` times (preceded by ``n_warmup_runs``
+    warmup invocations) and the minimum reported kernel ``elapsed_us`` is kept.
+    Combinations that fail codegen, compilation, or execution are recorded as
+    ``None`` and skipped when picking the best setup.
+
+    Returns:
+        A list (one entry per input expression) of dicts with keys:
+          - "best_ele_per_iter_multiple": int
+          - "best_rows_per_iter": int
+          - "best_elapsed_us": float (``inf`` if every combination failed)
+          - "timings": dict[(epi, rpi)] -> Optional[float] elapsed_us
+    """
+    assert len(exprs) > 0, "At least one expression must be provided"
+
+    if parallel_compile is None:
+        parallel_compile = os.environ.get("VECREC_PARALLEL_COMPILE", "1") != "0"
+
+    # Build the list of pending (expr_idx, epi, rpi) compilations. Codegen
+    # failures are recorded as missing entries so the timing dict ends up
+    # reporting None for them.
+    pending: List[Tuple[int, int, int, KernelProgram, Dict[str, ElementType], Dict[str, ElementType], ElementType]] = []
+    for expr_idx, expr in enumerate(exprs):
+        for epi in ele_per_iter_multiples:
+            for rpi in rows_per_iter_options:
+                try:
+                    cg = CodeGen(ele_per_iter_multiple=epi, rows_per_iter=rpi)
+                    code = cg.generate(expr, "k0")
+                    all_vars, all_vars2d = cg.collect_input_variables(expr)
+                except Exception:
+                    continue
+                pending.append((expr_idx, epi, rpi, code, all_vars, all_vars2d, expr.element_type))
+
+    # Compile every pending combination — in parallel by default. Failures are
+    # captured per-combo so a single bad config doesn't abort the whole sweep.
+    def _do_compile(idx: int) -> Tuple[int, Optional[KernelExecutable]]:
+        _, _, _, code, all_vars, all_vars2d, output_type = pending[idx]
+        try:
+            ke = _build_kernel_executable(
+                code=code,
+                all_vars=all_vars,
+                all_vars2d=all_vars2d,
+                output_type=output_type,
+                kernel_name="k0",
+                compiler=compiler,
+                compiler_flags=compiler_flags,
+                row_size=row_size,
+                quiet=True,
+            )
+            return idx, ke
+        except Exception:
+            return idx, None
+
+    executables: List[Optional[KernelExecutable]] = [None] * len(pending)
+    if parallel_compile and len(pending) > 1:
+        max_workers = min(len(pending), os.cpu_count() or 1)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_do_compile, i) for i in range(len(pending))]
+            for fut in concurrent.futures.as_completed(futures):
+                idx, ke = fut.result()
+                executables[idx] = ke
+    else:
+        for i in range(len(pending)):
+            idx, ke = _do_compile(i)
+            executables[idx] = ke
+
+    # Build inputs once per expression — variable structure depends on the
+    # expression, not on epi/rpi — and reuse across that expression's combos.
+    inputs_per_expr: Dict[int, Dict[str, np.ndarray]] = {}
+    for idx, item in enumerate(pending):
+        expr_idx = item[0]
+        if expr_idx in inputs_per_expr or executables[idx] is None:
+            continue
+        runner = executables[idx]
+        assert runner is not None
+        rng = np.random.default_rng(0)
+        inputs: Dict[str, np.ndarray] = {}
+        for var in runner.variable_order:
+            inputs[var] = _sample_random(runner.variable_types[var], (input_n_1d,), rng)
+        for var in runner.vars2d_order:
+            inputs[var] = _sample_random(runner.vars2d_info[var], (input_n_rows_2d, input_n_1d), rng)
+        inputs_per_expr[expr_idx] = inputs
+
+    # Time each successfully compiled executable. Runs are sequential so they
+    # don't contend for cores and skew timing.
+    elapsed: List[Optional[float]] = [None] * len(pending)
+    for idx, item in enumerate(pending):
+        ke = executables[idx]
+        if ke is None:
+            continue
+        run_inputs = inputs_per_expr.get(item[0])
+        if run_inputs is None:
+            continue
+        try:
+            for _ in range(n_warmup_runs):
+                ke.run(run_inputs)
+            best: Optional[float] = None
+            for _ in range(n_timing_runs):
+                _, us = ke.run(run_inputs)
+                best = us if best is None else min(best, us)
+            elapsed[idx] = best
+        except Exception:
+            elapsed[idx] = None
+
+    # Aggregate per-expression results.
+    results: List[Dict[str, Any]] = []
+    for expr_idx in range(len(exprs)):
+        timings: Dict[Tuple[int, int], Optional[float]] = {
+            (epi, rpi): None for epi in ele_per_iter_multiples for rpi in rows_per_iter_options
+        }
+        for idx, item in enumerate(pending):
+            if item[0] == expr_idx:
+                timings[(item[1], item[2])] = elapsed[idx]
+        finite = [(key, t) for key, t in timings.items() if t is not None]
+        if finite:
+            best_key, best_us = min(finite, key=lambda kv: kv[1])
+            best_epi, best_rpi = best_key
+            best_elapsed = float(best_us)
+        else:
+            best_epi, best_rpi = ele_per_iter_multiples[0], rows_per_iter_options[0]
+            best_elapsed = float("inf")
+        results.append(
+            {
+                "best_ele_per_iter_multiple": best_epi,
+                "best_rows_per_iter": best_rpi,
+                "best_elapsed_us": best_elapsed,
+                "timings": timings,
+            }
+        )
+
+    return results

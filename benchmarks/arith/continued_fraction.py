@@ -62,14 +62,19 @@ class ContinuedFractionBenchmark(Benchmark):
         # Not used directly — verify_schedule is overridden below.
         raise AssertionError("ContinuedFractionBenchmark uses a custom verify_schedule")
 
-    def verify_schedule(self, expr: SignalExpr | SignalExpr2D) -> tuple[bool, str]:
+    def verify_schedule(
+        self,
+        expr: SignalExpr | SignalExpr2D,
+        codegen: CodeGen | None = None,
+    ) -> tuple[bool, str]:
         """
         Verify using the Python continued-fraction reference:
           f[i] = a[i] + b[i] / f[i-1]
         as in the original continued-fraction.py.
         """
         try:
-            codegen = CodeGen()
+            if codegen is None:
+                codegen = CodeGen()
             runner = generate_kernel_executable(codegen, expr)
 
             rng = np.random.default_rng(42)
