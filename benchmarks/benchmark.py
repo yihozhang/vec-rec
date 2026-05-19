@@ -184,12 +184,16 @@ class Benchmark(ABC):
 
         # Sweep codegen setup on the top max(2, ceil(0.1 * n)) schedules — these
         # are the candidates worth the extra compile budget — to find the best
-        # (schedule, ele_per_iter_multiple, rows_per_iter).
+        # (schedule, ele_per_iter_multiple, rows_per_iter). Schedule 0 is the
+        # reference baseline and is always included so it gets a fair shot
+        # against the optimized schedules at non-default (epi, rpi).
         n = len(schedules)
         n_top = min(n, max(2, math.ceil(0.1 * n)))
         sorted_keys = sorted(timing_keys, key=lambda k: output[k], reverse=True)
         top_keys = sorted_keys[:n_top]
         top_indices = [int(k[1:]) for k in top_keys]
+        if 0 not in top_indices:
+            top_indices.append(0)
         top_exprs = [schedules[i] for i in top_indices]
 
         sweep_results = sweep_codegen_setup(top_exprs)
