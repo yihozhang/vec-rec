@@ -504,15 +504,29 @@ class CodeGen:
                     )
                 case Impulse(value):
                     regs = self._new_registers(vec_type, n_slices)
-                    value_str = expr.element_type.val_to_str(value, ty)
                     zero_str = expr.element_type.val_to_str(ty.zero(), ty)
-                    code = self._declare_node(
-                        f"Signal1DImpulse<{vec_type}>",
-                        f"{value_str}, {zero_str}",
-                        [[r] for r in regs],
-                        vec_type,
-                        vec_type,
-                    )
+                    # Impulse fires exactly once globally at lane 0 of time 0.
+                    # With rows_per_iter > 1, each block-row gets its own state, so
+                    # only block_row 0 emits the real Signal1DImpulse; block_row > 0
+                    # (logically row 1, 2, … within the first block) must emit the
+                    # semiring zero so the impulse does not fire again.
+                    if block_row == 0:
+                        value_str = expr.element_type.val_to_str(value, ty)
+                        code = self._declare_node(
+                            f"Signal1DImpulse<{vec_type}>",
+                            f"{value_str}, {zero_str}",
+                            [[r] for r in regs],
+                            vec_type,
+                            vec_type,
+                        )
+                    else:
+                        code = self._declare_node(
+                            f"Signal1DConstant<{vec_type}>",
+                            zero_str,
+                            [[r] for r in regs],
+                            vec_type,
+                            vec_type,
+                        )
                 case Var(name):
                     regs = self._new_registers(vec_type, n_slices)
                     code = self._declare_node(

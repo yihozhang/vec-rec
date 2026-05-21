@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Sequence, overload, cast
+from typing import List, Optional, Sequence, overload, cast
 import copy
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
@@ -469,6 +469,54 @@ class PushDownConvertLanesImpl(Transform):
     def relane(self, expr: RecLang, target: int) -> RecLang:
         return self._relane(expr, target, {})
 
+    def _external_2d_lanes(self, expr: SignalExpr2D, subst: dict[str, RecLang]) -> Optional[int]:
+        """If `expr` is a 2D node bound by an external Repeater/RepeaterVec — i.e.
+        an RVar2D not in `subst`, or a Signal2DAt rooted at a RepeaterVec whose
+        prev_vars aren't in `subst` — return its native lanes (the binder's
+        cache width, which can't be changed here). Otherwise return None.
+
+        Example (affine-gap):
+
+            μ(fv1_0, fv1_1, fv1_2).
+                ( M,                                # comp 0, body at 8 lanes
+                  I,                                # comp 1, body at 8 lanes
+                  rec([-∞,-1], [-∞,-12] × M') )    # comp 2, Recurse forces 1 lane
+
+        The Recurse on comp 2 has time-delay 1, so AnnotateLanes inserts a
+        ConvertLanes(M'@8 → 1) around its g. PushDownConvertLanes then tries
+        to push that adapter into M', which mentions fv1_0/fv1_1/fv1_2 via
+        Ith(rvar, 0). Those RVar2D nodes are bound by the surrounding
+        RepeaterVec — *not* by anything we're relane'ing — so their names are
+        absent from `subst`. The cache they read is laid out at the outer
+        RepeaterVec's 8 lanes; we can't reread it at 1 lane.
+
+        For `Ith(rvar_fv1_0, 0)` with `subst = {}` this returns 8, signalling
+        the caller (the `Ith` branch of `_relane`) to keep the Ith at 8 lanes
+        and wrap the result in a 1D ConvertLanes(_ → 1) — analogous to how
+        Recurse is treated as a fixed barrier. If instead we were inside the
+        RepeaterVec's own `_relane` (which adds the freshly-relane'd prev_vars
+        to `subst`), `fv1_0` would be in `subst` and this returns None, so
+        the normal push-down proceeds."""
+        if isinstance(expr, RVar2D):
+            if expr.name not in subst:
+                return expr.lanes
+            return None
+        if isinstance(expr, Signal2DAt):
+            inner = expr.a
+            if isinstance(inner, RepeaterVec) and all(pv.name not in subst for pv in inner.prev_vars):
+                return expr.lanes
+            return None
+        return None
+
+    def _external_vec_lanes(self, expr: SignalVectorExpr, subst: dict[str, RecLang]) -> Optional[int]:
+        """SignalVector inside a RepeaterVec body is bound externally when none
+        of the enclosing RepeaterVec's prev_vars are in `subst`. We don't have
+        a direct handle on the binder here, but in practice this case only
+        arises when VectorAt is read from a SignalVector that we shouldn't
+        be reaching during relane — be conservative and treat all non-leaf
+        SignalVectorExpr as relane'able."""
+        return None
+
     def _relane(self, expr: RecLang, target: int, subst: dict[str, RecLang]) -> RecLang:
         # Fast path: subtree already at target lanes and not an adapter.
         if expr.lanes == target and not isinstance(expr, (ConvertLanes, KConvertLanes, ConvertLanesV)):
@@ -488,11 +536,31 @@ class PushDownConvertLanesImpl(Transform):
             if isinstance(expr, Convolve2D):
                 raise AssertionError("Convolve2D should have been eliminated")
             if isinstance(expr, Ith):
+                # An RVar2D / Signal2DAt rooted in a RepeaterVec whose binder
+                # lies outside this subtree is a fixed barrier — its cache
+                # layout was fixed at the binder's lanes and can't be reread
+                # at a different width. Keep the Ith at the inner's native
+                # lanes and wrap with ConvertLanes when target differs
+                # (analogous to how Recurse is handled).
+                natural_2d = self._external_2d_lanes(expr.a, subst)
+                if natural_2d is not None:
+                    new_ith = Ith(expr.a, expr.i)
+                    new_ith.lanes = natural_2d
+                    if natural_2d == target:
+                        return new_ith
+                    return _wrap_signal(new_ith, target)
                 new_inner_2d = cast(SignalExpr2D, self._relane(expr.a, target, subst))
                 new_ith = Ith(new_inner_2d, expr.i)
                 new_ith.lanes = target
                 return new_ith
             if isinstance(expr, VectorAt):
+                natural_v = self._external_vec_lanes(expr.a, subst)
+                if natural_v is not None:
+                    new_vec_at = VectorAt(expr.a, expr.i)
+                    new_vec_at.lanes = natural_v
+                    if natural_v == target:
+                        return new_vec_at
+                    return _wrap_signal(new_vec_at, target)
                 new_inner_v = cast(SignalVectorExpr, self._relane(expr.a, target, subst))
                 new_vec_at = VectorAt(new_inner_v, expr.i)
                 new_vec_at.lanes = target
