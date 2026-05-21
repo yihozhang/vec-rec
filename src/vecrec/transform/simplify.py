@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Sequence, overload
+from typing import List, Sequence, cast, overload
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
 from vecrec.expr.base import SignalExpr2D
@@ -71,6 +71,15 @@ class ConstantFoldId(Transform):
                 return [b]
             case _:
                 return []
+
+    def apply_kernel(self, expr: KernelExpr) -> Sequence[KernelExpr]:
+        # A TVKernel whose entries are all Num-constants is really a TIKernel;
+        # canonicalize so the TI-only rewrites (Dilate, DilateTrop, Delay, …)
+        # can match.
+        if isinstance(expr, TVKernel) and all(isinstance(d, Num) for d in expr.data):
+            values = [cast(Num, d).value for d in expr.data]
+            return [TIKernel(values, expr.ty, expr.element_type)]
+        return []
 
 class ConstantFoldConvolve(Transform):
     """Constant fold convolution of kernels."""
