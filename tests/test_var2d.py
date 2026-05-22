@@ -29,7 +29,7 @@ def test_var2d_ith_compiles_and_runs() -> None:
 
     runner = generate_kernel_executable(CodeGen(), expr)
     input = np.random.rand(4, 1024).astype(np.float32)
-    output, _ = runner.run(input)
+    output, _, _ = runner.run(input)
     assert np.allclose(output, input.flatten(), atol=1e-6)
 
 
@@ -43,7 +43,7 @@ def test_var2d_generates_input_signal2d() -> None:
 
     runner = generate_kernel_executable(CodeGen(), expr)
     input = np.random.rand(4, 1024).astype(np.float32)
-    output, _ = runner.run(input)
+    output, _, _ = runner.run(input)
     assert np.allclose(output[1024:], input[:-1].flatten(), atol=1e-6)
 
 
@@ -74,7 +74,7 @@ def test_var2d_with_convolve2d_compiles_and_runs() -> None:
     runner = generate_kernel_executable(CodeGen(), expr)
 
     input = np.random.rand(4, 1024).astype(np.float32)
-    output, _ = runner.run(input)
+    output, _, _ = runner.run(input)
 
     def causal_conv_1d(row: np.ndarray, taps: list[float]) -> np.ndarray:
         result = np.zeros_like(row)
@@ -121,7 +121,7 @@ def test_var2d_alongside_var1d() -> None:
     img = np.random.rand(H, W).astype(np.float32)
     bias = np.random.rand(H * W).astype(np.float32)
 
-    output, _ = runner.run({"img": img, "bias": bias})
+    output, _, _ = runner.run({"img": img, "bias": bias})
     expected = img.flatten() + bias
     assert np.allclose(output, expected, atol=1e-6)
 
@@ -147,7 +147,7 @@ def test_var2d_kernel_executable_ith_row() -> None:
     rng = np.random.default_rng(42)
     img_in = rng.uniform(-1.0, 1.0, size=(H, W)).astype(np.float32)
 
-    output, elapsed_us = runner.run({"img": img_in})
+    output, elapsed_us, _ = runner.run({"img": img_in})
 
     # All H rows produce output
     N = H * W

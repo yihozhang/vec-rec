@@ -210,7 +210,7 @@ def _result_to_json(result: BenchmarkResult) -> dict[str, Any]:
         "best_throughput_mbs": best_mb,
         "best_ele_per_iter_multiple": result.best_ele_per_iter_multiple,
         "best_rows_per_iter": result.best_rows_per_iter,
-        "sweep_timings_us": result.sweep_timings,
+        "sweep_timings_mbs": result.sweep_timings,
         "schedules": schedules,
         "validation_ok": result.validation_ok,
         "validation_detail": {k: v for k, v in result.validation_detail.items()},
@@ -279,17 +279,17 @@ def _print_result(result: BenchmarkResult, verbose: bool) -> None:
             print(f"    {mb:>10.2f} MB/s  {sched_pp}{marker}")
 
         if result.sweep_timings:
-            print("  Sweep timings (kernel elapsed_us, lower is better):")
+            print("  Sweep throughputs (MB/s, higher is better):")
             best_key = f"{result.best_ele_per_iter_multiple},{result.best_rows_per_iter}"
             for entry in result.sweep_timings:
                 sched_pp = entry["schedule"]
                 is_winning_sched = bool(entry.get("is_best"))
                 print(f"    {sched_pp}{' *' if is_winning_sched else ''}")
-                for cfg, us in entry["timings"].items():
+                for cfg, mbs in entry["throughputs_mbs"].items():
                     epi, rpi = cfg.split(",")
                     marker = " *" if is_winning_sched and cfg == best_key else ""
-                    us_str = f"{us:>10.2f} us" if us is not None else f"{'FAIL':>13}"
-                    print(f"      epi={epi}, rpi={rpi}: {us_str}{marker}")
+                    mbs_str = f"{mbs:>10.2f} MB/s" if mbs is not None else f"{'FAIL':>15}"
+                    print(f"      epi={epi}, rpi={rpi}: {mbs_str}{marker}")
 
     # Cross-schedule validation
     val_status = "PASS" if result.validation_ok else "FAIL"

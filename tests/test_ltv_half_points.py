@@ -118,7 +118,7 @@ def test_dilate_ltv_half_points_correctness() -> None:
     b_in = rng.uniform(-0.3, 0.3, n).astype(np.float32)
     g_in = rng.uniform(-1.0, 1.0, n).astype(np.float32)
 
-    output, _ = runner.run({"a": a_in, "b": b_in, "g": g_in})
+    output, _, _ = runner.run({"a": a_in, "b": b_in, "g": g_in})
     reference = _reference_ltv2(a_in, b_in, g_in)
 
     assert output.shape == (n,), f"Shape mismatch: {output.shape} vs {(n,)}"

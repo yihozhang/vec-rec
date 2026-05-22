@@ -8,7 +8,7 @@ the type mismatch, rather than generating make_ith_row<vec_type_r>(make_signal2d
 
 from vecrec.expr.base import SignalExpr, Type, with_types
 from vecrec.expr.pretty import pp
-from vecrec.expr.signal import Var, RVar2D
+from vecrec.expr.signal import Var2D, RVar2D
 from vecrec.expr.signal_ops import Convolve, Ith, Recurse, Repeater, SAdd
 from vecrec.expr.kernel import TIKernel
 from vecrec.util import ElementType, get_native_bits
@@ -28,11 +28,11 @@ def test_repeater_recurse_lane_mismatch() -> None:
         # Kernel with time delay = 4 → Recurse.lanes = 4 when max_lanes = 16
         feedback_kernel = TIKernel([0, 0, 0, 0, 1.8, -0.9])
         row_kernel = TIKernel([1.0])
-        g = Var("x")
+        g = Var2D("x")
 
         def make_inner(rvar: RVar2D) -> SignalExpr:
             prev_row = Ith(rvar, 0)
-            return Recurse(feedback_kernel, SAdd(g, Convolve(row_kernel, prev_row)))
+            return Recurse(feedback_kernel, SAdd(g.at(0), Convolve(row_kernel, prev_row)))
 
         repeater = Repeater(make_inner)
 

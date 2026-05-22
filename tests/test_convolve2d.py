@@ -2,7 +2,7 @@
 
 from vecrec.expr.base import SignalExpr, SignalExpr2D, Type, with_types
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
-from vecrec.expr.signal import Var, RVar2D, Num
+from vecrec.expr.signal import Var2D, RVar2D, Num
 from vecrec.expr.signal_ops import Convolve2D, Ith, Repeater, SAdd
 from vecrec.util import ElementType, get_native_bits
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
@@ -18,12 +18,12 @@ def test_convolve2d_ti_kernel() -> None:
             [1.0 / 6, 1.0 / 6, 1.0 / 6],
         ]
         kernel2d = TIKernel2D(kernel_data)
-        g = Var("g")
+        g = Var2D("g")
 
         # Create a Repeater with a RVar2D signal
         def repeater_func(prev_rows: RVar2D) -> SignalExpr:
             # Create a Convolve2D that convolves the 2D kernel with previous rows
-            conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
+            conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g.at(0))
             return conv2d
 
         repeater: SignalExpr
@@ -64,12 +64,12 @@ def test_convolve2d_tv_kernel() -> None:
             [Num(3.0), Num(4.0)],
         ]
         kernel2d = TVKernel2D(kernel_data)
-        g = Var("g")
+        g = Var2D("g")
 
         # Create a Repeater with a RVar2D signal
         def repeater_func(prev_rows: RVar2D) -> SignalExpr:
             # Create a Convolve2D that convolves the 2D kernel with previous rows
-            conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
+            conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g.at(0))
             return conv2d
 
         repeater: SignalExpr2D
@@ -107,11 +107,11 @@ def test_convolve2d_single_row() -> None:
             [1.0, 2.0, 3.0],
         ]
         kernel2d = TIKernel2D(kernel_data)
-        g = Var("g")
+        g = Var2D("g")
 
         # Create a Repeater with a RVar2D signal
         def repeater_func(prev_rows: RVar2D) -> SignalExpr:
-            conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g)
+            conv2d = SAdd(Convolve2D(kernel2d, prev_rows), g.at(0))
             return conv2d
 
         repeater: SignalExpr2D

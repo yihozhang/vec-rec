@@ -179,7 +179,7 @@ def test_recurse_v_mutual_f_correctness() -> None:
 
     for idx, sched in enumerate(runnable):
         runner = generate_kernel_executable(CodeGen(), sched)
-        output, _ = runner.run({"h1": h1, "h2": h2})
+        output, _, _ = runner.run({"h1": h1, "h2": h2})
         assert output.shape == (n,)
         assert output.dtype == np.float32
         assert np.allclose(output, f_ref, atol=1e-5), (
@@ -202,7 +202,7 @@ def test_recurse_v_mutual_g_correctness() -> None:
 
     for idx, sched in enumerate(runnable):
         runner = generate_kernel_executable(CodeGen(), sched)
-        output, _ = runner.run({"h1": h1, "h2": h2})
+        output, _, _ = runner.run({"h1": h1, "h2": h2})
         assert output.shape == (n,)
         assert output.dtype == np.float32
         assert np.allclose(output, g_ref, atol=1e-5), (
@@ -263,7 +263,7 @@ def test_convolve_v_correctness_identity() -> None:
 
     for idx, sched in enumerate(runnable):
         runner = generate_kernel_executable(CodeGen(), sched)
-        output, _ = runner.run({"x": x_in, "y": y_in})
+        output, _, _ = runner.run({"x": x_in, "y": y_in})
         assert output.shape == (n,)
         assert np.allclose(output, x_in, atol=1e-6), (
             f"Schedule {idx}: identity mismatch\nGot:      {output[:8]}\nExpected: {x_in[:8]}"
@@ -310,7 +310,7 @@ def test_recurse_convolve_v() -> None:
 
     def _compile_and_run(sched: SignalExpr) -> np.ndarray:
         runner = generate_kernel_executable(CodeGen(), sched)
-        output, _ = runner.run({"h1": h1_in, "h2": h2_in})
+        output, _, _ = runner.run({"h1": h1_in, "h2": h2_in})
         return output
 
     with ThreadPoolExecutor(max_workers=os.cpu_count() or 1) as ex:
@@ -349,7 +349,7 @@ def test_ltv_mutual_all_schedules_correct() -> None:
 
     for idx, sched in enumerate(runnable_f0):
         runner = generate_kernel_executable(CodeGen(), sched)
-        output, _ = runner.run(inputs)
+        output, _, _ = runner.run(inputs)
         assert output.shape == (n,), f"Schedule {idx} (f0): wrong shape {output.shape}"
         assert np.allclose(output, f_ref, atol=1e-4), (
             f"Schedule {idx} (f0): mismatch\nGot:      {output[:4]}\nExpected: {f_ref[:4]}"
@@ -357,7 +357,7 @@ def test_ltv_mutual_all_schedules_correct() -> None:
 
     for idx, sched in enumerate(runnable_f1):
         runner = generate_kernel_executable(CodeGen(), sched)
-        output, _ = runner.run(inputs)
+        output, _, _ = runner.run(inputs)
         assert output.shape == (n,), f"Schedule {idx} (f1): wrong shape {output.shape}"
         assert np.allclose(output, g_ref, atol=1e-4), (
             f"Schedule {idx} (f1): mismatch\nGot:      {output[:4]}\nExpected: {g_ref[:4]}"

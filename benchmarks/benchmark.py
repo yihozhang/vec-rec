@@ -138,7 +138,7 @@ class Benchmark(ABC):
             else:
                 n_out = n_1d
 
-            kernel_out, _ = runner.run(inputs)
+            kernel_out, _, _ = runner.run(inputs)
             expected = self._python_reference(inputs, n_out)
 
             # Trim to the shorter of the two (handles any alignment/padding differences)
@@ -198,9 +198,9 @@ class Benchmark(ABC):
 
         sweep_results = sweep_codegen_setup(top_exprs)
 
-        best_local_idx, best_result = min(
+        best_local_idx, best_result = max(
             enumerate(sweep_results),
-            key=lambda kv: kv[1]["best_elapsed_us"],
+            key=lambda kv: kv[1]["best_throughput_mbs"],
         )
         best_idx = top_indices[best_local_idx]
         best_expr = schedules[best_idx]
@@ -209,15 +209,17 @@ class Benchmark(ABC):
 
         # Expose the full sweep grid, one entry per swept schedule (kept as a
         # list because two distinct schedules can pretty-print identically).
+        # Throughput (MB/s) is what we report — higher is better, and it's
+        # dimensionally meaningful across schedules with different output sizes.
         sweep_timings: list[dict[str, Any]] = []
         for local_idx, sched_idx in enumerate(top_indices):
             sweep_timings.append(
                 {
                     "schedule": pp(schedules[sched_idx]),
                     "is_best": local_idx == best_local_idx,
-                    "timings": {
+                    "throughputs_mbs": {
                         f"{epi},{rpi}": t
-                        for (epi, rpi), t in sweep_results[local_idx]["timings"].items()
+                        for (epi, rpi), t in sweep_results[local_idx]["throughputs_mbs"].items()
                     },
                 }
             )

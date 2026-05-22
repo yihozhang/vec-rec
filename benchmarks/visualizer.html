@@ -122,9 +122,31 @@
   table.sched td.num { font-variant-numeric: tabular-nums; text-align: right; }
   table.sched tr.best td { background: rgba(110,168,254,0.05); }
   table.sched tr.best td:first-child::before { content: "★ "; color: var(--accent); }
+  table.sched td.cell-best { color: var(--good); font-weight: 600; }
+  table.sched td.cell-sched-best { color: var(--accent); }
+  table.sched td.cell-na { color: var(--muted); }
   .bar { display: inline-block; height: 8px; background: var(--bar-bg); border-radius: 3px; overflow: hidden;
          width: 100%; max-width: 220px; vertical-align: middle; }
   .bar > span { display: block; height: 100%; background: var(--bar-fg); }
+  .setup-badge { font-size: 11px; padding: 2px 7px; border-radius: 4px; background: rgba(110,168,254,0.10); color: var(--accent); }
+  .speedup-badge { font-size: 12px; padding: 2px 8px; border-radius: 4px; background: rgba(74,222,128,0.10); color: var(--good); font-variant-numeric: tabular-nums; }
+  .speedup-badge.slow { background: rgba(248,113,113,0.10); color: var(--bad); }
+  .speedup-badge.flat { background: rgba(148,163,184,0.10); color: var(--muted); }
+
+  .chart-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 18px; }
+  .chart-card h3 { margin: 0 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .chart-row { display: grid; grid-template-columns: minmax(0, 240px) 1fr 80px; gap: 10px; align-items: center;
+               padding: 3px 0; font-size: 12.5px; }
+  .chart-row.compare { grid-template-columns: minmax(0, 240px) 1fr 80px 1fr 80px; }
+  .chart-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .chart-bar { background: var(--bar-bg); border-radius: 3px; height: 10px; overflow: hidden; }
+  .chart-bar > span { display: block; height: 100%; background: var(--bar-fg); }
+  .chart-bar.b > span { background: var(--good); }
+  .chart-val { text-align: right; font-variant-numeric: tabular-nums; }
+  .chart-val.muted { color: var(--muted); }
+  .chart-axis { display: grid; grid-template-columns: minmax(0, 240px) 1fr 80px; gap: 10px; padding-top: 4px;
+                border-top: 1px dashed #222a3a; margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .chart-axis.compare { grid-template-columns: minmax(0, 240px) 1fr 80px 1fr 80px; }
 
   .compare-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
   .compare-pair .side { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
@@ -293,6 +315,144 @@ function el(tag, attrs = {}, ...children) {
 
 function fmtMB(x) { return x == null ? "—" : x.toLocaleString(undefined, { maximumFractionDigits: 2 }); }
 function fmtPct(x) { const sign = x > 0 ? "+" : ""; return `${sign}${x.toFixed(1)}%`; }
+// ── Sweep helpers ──────────────────────────────────────────────────────────
+// Each schedule's sweep entry exposes `throughputs_mbs` keyed "epi,rpi" — the
+// kernel runner reports throughput directly so the visualizer just reads it.
+function sweepInfo(b) {
+  const info = { byPp: new Map(), columnKeys: [], hasData: false };
+  const entries = b && b.sweep_timings_mbs;
+  if (!entries || !entries.length) return info;
+  info.hasData = true;
+  const keySet = new Set();
+  for (const entry of entries) {
+    const throughputs = entry.throughputs_mbs || {};
+    Object.keys(throughputs).forEach(k => keySet.add(k));
+    let bestKey = null, bestMbs = -Infinity;
+    for (const [k, v] of Object.entries(throughputs)) {
+      if (v != null && v > bestMbs) { bestMbs = v; bestKey = k; }
+    }
+    // Two distinct schedules can pretty-print identically; prefer the entry
+    // flagged is_best on collision so the displayed setup matches the winner.
+    const existing = info.byPp.get(entry.schedule);
+    if (!existing || (entry.is_best && !existing.isBest)) {
+      info.byPp.set(entry.schedule, {
+        bestSetup: bestKey,
+        bestMbs: bestKey != null ? bestMbs : null,
+        throughputs,
+        isBest: !!entry.is_best,
+      });
+    }
+  }
+  info.columnKeys = [...keySet].sort((a, c) => {
+    const [ae, ar] = a.split(",").map(Number);
+    const [ce, cr] = c.split(",").map(Number);
+    return ae - ce || ar - cr;
+  });
+  return info;
+}
+
+function effectiveThroughput(sched, info) {
+  const s = info && info.byPp.get(sched.schedule);
+  return s && s.bestMbs != null ? s.bestMbs : sched.throughput_mbs;
+}
+
+function bestEffectiveThroughput(b) {
+  const info = sweepInfo(b);
+  let best = 0;
+  for (const s of (b.schedules || [])) {
+    const eff = effectiveThroughput(s, info);
+    if (eff > best) best = eff;
+  }
+  return best || (b.best_throughput_mbs ?? 0);
+}
+
+// The baseline is the original (un-transformed) schedule: by construction
+// schedules[0] and its pp matches original_expr. Use swept throughput when the
+// sweep ran for it, otherwise fall back to the pre-sweep throughput.
+function baselineThroughput(b) {
+  const schedules = b.schedules || [];
+  if (!schedules.length) return null;
+  const orig = b.original_expr;
+  const info = sweepInfo(b);
+  const baseSched = (orig && schedules.find(s => s.schedule === orig)) || schedules[0];
+  return effectiveThroughput(baseSched, info);
+}
+
+// Speedup of the optimal schedule (best swept setup) over the baseline (also
+// at its best swept setup). Returns null when either side is missing.
+function benchSpeedup(b) {
+  const baseline = baselineThroughput(b);
+  const best = bestEffectiveThroughput(b);
+  if (baseline == null || baseline <= 0 || !best) return null;
+  return best / baseline;
+}
+
+function speedupClass(x) {
+  if (x == null) return "flat";
+  if (x > 1.05) return "";
+  if (x < 0.95) return "slow";
+  return "flat";
+}
+
+function fmtSpeedup(x) { return x == null ? "—" : `${x.toFixed(2)}×`; }
+
+function speedupChart(items, title) {
+  // items: [{ name, speedup }]
+  const card = el("div", { class: "chart-card" });
+  if (title) card.appendChild(el("h3", {}, title));
+  const valid = items.filter(it => it.speedup != null && isFinite(it.speedup));
+  if (!valid.length) {
+    card.appendChild(el("div", { style: "color:var(--muted); font-size:13px" }, "No speedup data available."));
+    return card;
+  }
+  const maxS = Math.max(1, ...valid.map(i => i.speedup));
+  for (const it of items) {
+    const s = it.speedup;
+    const pct = (s != null && isFinite(s)) ? Math.min(100, (s / maxS) * 100) : 0;
+    card.appendChild(el("div", { class: "chart-row" },
+      el("span", { class: "chart-name mono" }, it.name),
+      el("div", { class: "chart-bar" }, el("span", { style: `width:${pct.toFixed(1)}%` })),
+      el("span", { class: `chart-val mono ${s == null ? "muted" : ""}` }, fmtSpeedup(s)),
+    ));
+  }
+  card.appendChild(el("div", { class: "chart-axis" },
+    el("span", {}, ""),
+    el("span", {}, `0× ${" ".repeat(20)} ${maxS.toFixed(2)}×`),
+    el("span", {}, ""),
+  ));
+  return card;
+}
+
+function speedupCompareChart(items) {
+  // items: [{ name, aSpeedup, bSpeedup }]
+  const card = el("div", { class: "chart-card" });
+  card.appendChild(el("h3", {}, "Speedup over baseline — A (blue) vs B (green)"));
+  const allVals = items.flatMap(i => [i.aSpeedup, i.bSpeedup]).filter(v => v != null && isFinite(v));
+  if (!allVals.length) {
+    card.appendChild(el("div", { style: "color:var(--muted); font-size:13px" }, "No speedup data available."));
+    return card;
+  }
+  const maxS = Math.max(1, ...allVals);
+  for (const it of items) {
+    const aPct = (it.aSpeedup != null && isFinite(it.aSpeedup)) ? Math.min(100, it.aSpeedup / maxS * 100) : 0;
+    const bPct = (it.bSpeedup != null && isFinite(it.bSpeedup)) ? Math.min(100, it.bSpeedup / maxS * 100) : 0;
+    card.appendChild(el("div", { class: "chart-row compare" },
+      el("span", { class: "chart-name mono" }, it.name),
+      el("div", { class: "chart-bar" }, el("span", { style: `width:${aPct.toFixed(1)}%` })),
+      el("span", { class: `chart-val mono ${it.aSpeedup == null ? "muted" : ""}` }, fmtSpeedup(it.aSpeedup)),
+      el("div", { class: "chart-bar b" }, el("span", { style: `width:${bPct.toFixed(1)}%` })),
+      el("span", { class: `chart-val mono ${it.bSpeedup == null ? "muted" : ""}` }, fmtSpeedup(it.bSpeedup)),
+    ));
+  }
+  card.appendChild(el("div", { class: "chart-axis compare" },
+    el("span", {}, ""),
+    el("span", {}, `A — max ${maxS.toFixed(2)}×`),
+    el("span", {}, ""),
+    el("span", {}, `B — max ${maxS.toFixed(2)}×`),
+    el("span", {}, ""),
+  ));
+  return card;
+}
 
 function metaCard(label, name, payload) {
   const md = (payload && payload.metadata) || {};
@@ -317,6 +477,13 @@ function renderSingle(file) {
     return;
   }
 
+  const items = benches
+    .filter(b => !b.error)
+    .map(b => ({ name: b.name, speedup: benchSpeedup(b) }));
+  if (items.length) {
+    root.appendChild(speedupChart(items, "Speedup of best schedule over baseline (both at best swept setup)"));
+  }
+
   for (const b of benches) root.appendChild(renderBenchCard(b));
 }
 
@@ -335,10 +502,19 @@ function renderBenchCard(b) {
   }
 
   const card = el("div", { class: "bench" });
+  const info = sweepInfo(b);
+  const bestThr = bestEffectiveThroughput(b);
+  const baseline = baselineThroughput(b);
+  const speedup = benchSpeedup(b);
+  const setupTxt = (b.best_ele_per_iter_multiple != null && b.best_rows_per_iter != null)
+    ? `epi=${b.best_ele_per_iter_multiple}, rpi=${b.best_rows_per_iter}`
+    : null;
   const header = el("div", { class: "bench-header" },
     el("span", { class: "name" }, b.name),
     el("span", { class: "desc" }, b.description || ""),
-    el("span", { class: "mono", style: "color:var(--muted); font-size:12px" }, `${fmtMB(b.best_throughput_mbs)} MB/s`),
+    el("span", { class: "mono", style: "color:var(--muted); font-size:12px" }, `${fmtMB(bestThr)} MB/s`),
+    speedup != null && el("span", { class: `speedup-badge mono ${speedupClass(speedup)}`, title: `vs baseline ${fmtMB(baseline)} MB/s` }, fmtSpeedup(speedup)),
+    setupTxt && el("span", { class: "setup-badge mono" }, setupTxt),
     !b.validation_ok && el("span", { class: "badge fail" }, "validation"),
     !b.ref_verified && el("span", { class: "badge fail" }, "ref"),
     !b.best_verified && el("span", { class: "badge fail" }, "best"),
@@ -352,34 +528,84 @@ function renderBenchCard(b) {
       el("div", { class: "val mono expr" }, b.original_expr || "")
     ),
     el("div", { class: "row" },
-      el("div", { class: "lbl" }, `Schedules (${(b.schedules||[]).length}, sorted by throughput)`),
-      schedulesTable(b.schedules || [])
+      el("div", { class: "lbl" },
+        info.hasData
+          ? `Schedules (${(b.schedules||[]).length}; throughput = best swept setup when available)`
+          : `Schedules (${(b.schedules||[]).length}, sorted by throughput)`),
+      schedulesTable(b.schedules || [], info)
+    ),
+    info.hasData && el("div", { class: "row" },
+      el("div", { class: "lbl" }, "Sweep grid — throughput (MB/s) at (epi, rpi); higher is better"),
+      sweepGridTable(b, info)
     )
   );
   card.appendChild(body);
   return card;
 }
 
-function schedulesTable(schedules) {
-  const sorted = [...schedules].sort((x, y) => y.throughput_mbs - x.throughput_mbs);
-  const tbl = el("table", { class: "sched" },
-    el("thead", {},
-      el("tr", {},
-        el("th", {}, "Schedule"),
-        el("th", { class: "num" }, "MB/s"),
-        el("th", { class: "num" }, "Rel"),
-        el("th", {}, ""),
-      )
-    )
+function schedulesTable(schedules, info) {
+  info = info || { byPp: new Map(), hasData: false };
+  const augmented = schedules.map(s => {
+    const sw = info.byPp.get(s.schedule) || null;
+    const eff = sw && sw.bestMbs != null ? sw.bestMbs : s.throughput_mbs;
+    return { s, sw, eff };
+  });
+  augmented.sort((a, b) => b.eff - a.eff);
+  const maxEff = augmented.length ? augmented[0].eff : 0;
+
+  const headRow = el("tr", {},
+    el("th", {}, "Schedule"),
+    el("th", { class: "num" }, info.hasData ? "Default MB/s" : "MB/s"),
   );
+  if (info.hasData) {
+    headRow.appendChild(el("th", { class: "num" }, "Swept MB/s"));
+    headRow.appendChild(el("th", {}, "Best setup"));
+  }
+  headRow.appendChild(el("th", { class: "num" }, "Rel"));
+  headRow.appendChild(el("th", {}, ""));
+
+  const tbl = el("table", { class: "sched" }, el("thead", {}, headRow));
   const tbody = el("tbody");
-  for (const s of sorted) {
+  for (const { s, sw, eff } of augmented) {
+    const rel = maxEff > 0 ? eff / maxEff : 0;
     const tr = el("tr", { class: s.is_best ? "best" : "" },
       el("td", { class: "mono" }, s.schedule),
       el("td", { class: "num mono" }, fmtMB(s.throughput_mbs)),
-      el("td", { class: "num mono" }, (s.relative_to_best ?? 0).toFixed(3)),
-      el("td", {}, bar(s.relative_to_best ?? 0))
     );
+    if (info.hasData) {
+      tr.appendChild(el("td", { class: "num mono" + (sw && sw.bestMbs != null ? "" : " cell-na") },
+        sw && sw.bestMbs != null ? fmtMB(sw.bestMbs) : "—"));
+      tr.appendChild(el("td", { class: "mono", style: "font-size:12px; color:var(--muted)" },
+        sw && sw.bestSetup ? sw.bestSetup : "—"));
+    }
+    tr.appendChild(el("td", { class: "num mono" }, rel.toFixed(3)));
+    tr.appendChild(el("td", {}, bar(rel)));
+    tbody.appendChild(tr);
+  }
+  tbl.appendChild(tbody);
+  return tbl;
+}
+
+function sweepGridTable(b, info) {
+  const headRow = el("tr", {}, el("th", {}, "Schedule"));
+  for (const k of info.columnKeys) {
+    headRow.appendChild(el("th", { class: "num" }, k));
+  }
+  const tbl = el("table", { class: "sched" }, el("thead", {}, headRow));
+  const tbody = el("tbody");
+  for (const entry of (b.sweep_timings_mbs || [])) {
+    const sw = info.byPp.get(entry.schedule);
+    const bestKey = sw && sw.bestSetup;
+    const tr = el("tr", { class: entry.is_best ? "best" : "" },
+      el("td", { class: "mono" }, entry.schedule),
+    );
+    for (const k of info.columnKeys) {
+      const t = (entry.throughputs_mbs || {})[k];
+      let cls = "num mono";
+      if (t == null) cls += " cell-na";
+      else if (k === bestKey) cls += entry.is_best ? " cell-best" : " cell-sched-best";
+      tr.appendChild(el("td", { class: cls }, fmtMB(t)));
+    }
     tbody.appendChild(tr);
   }
   tbl.appendChild(tbody);
@@ -399,14 +625,17 @@ function indexBenches(payload) {
 }
 
 function compareEntry(a, b) {
-  const aBest = a.best_throughput_mbs ?? 0;
-  const bBest = b.best_throughput_mbs ?? 0;
+  const aInfo = sweepInfo(a);
+  const bInfo = sweepInfo(b);
+  const aBest = bestEffectiveThroughput(a);
+  const bBest = bestEffectiveThroughput(b);
   const deltaPct = aBest > 0 ? (bBest - aBest) / aBest * 100 : 0;
-  const aSchedMap = new Map((a.schedules || []).map(s => [s.schedule, s.throughput_mbs]));
-  const bSchedMap = new Map((b.schedules || []).map(s => [s.schedule, s.throughput_mbs]));
+  const aSchedMap = new Map((a.schedules || []).map(s => [s.schedule, effectiveThroughput(s, aInfo)]));
+  const bSchedMap = new Map((b.schedules || []).map(s => [s.schedule, effectiveThroughput(s, bInfo)]));
   return {
     name: a.name,
     a, b,
+    aInfo, bInfo,
     aBest, bBest,
     deltaPct,
     schedule_changed: a.best_schedule !== b.best_schedule,
@@ -451,6 +680,15 @@ function renderCompare(fileA, fileB) {
     tile(unchanged, "unchanged"),
     tile(schedChanged, "schedule changed", "warn"),
   ));
+
+  const speedupItems = cmps.map(c => ({
+    name: c.name,
+    aSpeedup: benchSpeedup(c.a),
+    bSpeedup: benchSpeedup(c.b),
+  }));
+  if (speedupItems.length) {
+    root.appendChild(speedupCompareChart(speedupItems));
+  }
 
   // Sort
   const sorted = [...cmps];
@@ -501,10 +739,14 @@ function tile(num, lbl, cls) {
 function renderCompareCard(c) {
   const card = el("div", { class: "bench" });
   const deltaCls = c.deltaPct > 0 ? "good" : c.deltaPct < 0 ? "bad" : "zero";
+  const aSpeedup = benchSpeedup(c.a);
+  const bSpeedup = benchSpeedup(c.b);
   const header = el("div", { class: "bench-header" },
     el("span", { class: "name" }, c.name),
     el("span", { class: "desc mono", style: "color:var(--muted); font-size:12px" },
       `${fmtMB(c.aBest)} → ${fmtMB(c.bBest)} MB/s`),
+    (aSpeedup != null || bSpeedup != null) && el("span", { class: "mono", style: "color:var(--muted); font-size:12px" },
+      `${fmtSpeedup(aSpeedup)} → ${fmtSpeedup(bSpeedup)}`),
     el("span", { class: `delta ${deltaCls} mono` }, fmtPct(c.deltaPct)),
     el("span", { class: `badge ${c.schedule_changed ? "changed" : "same"}` },
       c.schedule_changed ? "schedule changed" : "same schedule"),
@@ -541,16 +783,35 @@ function renderCompareCard(c) {
   }
 
   body.appendChild(el("div", { class: "row" },
-    el("div", { class: "lbl" }, "All schedules — A"),
-    schedulesTable(c.a.schedules || [])
+    el("div", { class: "lbl" }, sideLbl("All schedules — A", c.a)),
+    schedulesTable(c.a.schedules || [], c.aInfo)
   ));
+  if (c.aInfo && c.aInfo.hasData) {
+    body.appendChild(el("div", { class: "row" },
+      el("div", { class: "lbl" }, "Sweep grid — A (throughput MB/s)"),
+      sweepGridTable(c.a, c.aInfo)
+    ));
+  }
   body.appendChild(el("div", { class: "row" },
-    el("div", { class: "lbl" }, "All schedules — B"),
-    schedulesTable(c.b.schedules || [])
+    el("div", { class: "lbl" }, sideLbl("All schedules — B", c.b)),
+    schedulesTable(c.b.schedules || [], c.bInfo)
   ));
+  if (c.bInfo && c.bInfo.hasData) {
+    body.appendChild(el("div", { class: "row" },
+      el("div", { class: "lbl" }, "Sweep grid — B (throughput MB/s)"),
+      sweepGridTable(c.b, c.bInfo)
+    ));
+  }
 
   card.appendChild(body);
   return card;
+}
+
+function sideLbl(label, bench) {
+  if (bench && bench.best_ele_per_iter_multiple != null && bench.best_rows_per_iter != null) {
+    return `${label} (best setup: epi=${bench.best_ele_per_iter_multiple}, rpi=${bench.best_rows_per_iter})`;
+  }
+  return label;
 }
 
 // ── Top-level render ────────────────────────────────────────────────────────

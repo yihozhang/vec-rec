@@ -9,6 +9,7 @@ import numpy as np
 import os
 import subprocess
 import tempfile
+import warnings
 from importlib.resources import files
 
 __all__ = [
@@ -439,7 +440,7 @@ class KernelExecutable:
         inputs_2d = {k: v for k, v in inputs.items() if k in all_2d}
         return inputs_1d, inputs_2d
 
-    def run(self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]) -> tuple[np.ndarray, float]:
+    def run(self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]) -> tuple[np.ndarray, float, float]:
         inputs_1d, inputs_2d = self._normalize_inputs(inputs)
 
         n: Optional[int] = None
@@ -518,15 +519,16 @@ class KernelExecutable:
                 raise RuntimeError(f"Failed to parse runner output as JSON: {result.stdout}") from exc
 
             elapsed_us = float(metadata["elapsed_us"])
+            throughput_mbs = float(metadata.get("throughput_mbs", 0.0))
 
             output_dtype = _numpy_dtype_for_element_type(self.output_type)
             output = np.fromfile(output_path, dtype=output_dtype, count=n)
             if int(output.shape[0]) != n:
                 raise RuntimeError(f"Output size mismatch: expected {n}, got {output.shape[0]}")
 
-            return output, elapsed_us
+            return output, elapsed_us, throughput_mbs
 
-    def __call__(self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]) -> tuple[np.ndarray, float]:
+    def __call__(self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]) -> tuple[np.ndarray, float, float]:
         return self.run(inputs)
 
 
@@ -671,7 +673,21 @@ def _generate_kernel_runner_code(
     text += "\n"
 
     text += "    auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();\n"
-    text += '    std::cout << "{\\"elapsed_us\\":" << elapsed_us << "}" << std::endl;\n'
+    # Throughput in MB/s = (bytes touched per kernel invocation) / elapsed_seconds / 1e6.
+    # Bytes touched = N elements * (sum of sizeof for every 1D input, every 2D input, and the output).
+    sizeof_terms = [f"sizeof({elt.to_str()})" for _, elt in var_items + var2d_items]
+    sizeof_terms.append(f"sizeof({output_cpp_type})")
+    bytes_per_iter_expr = " + ".join(sizeof_terms)
+    text += (
+        "    const double bytes_per_iter = "
+        f"static_cast<double>(N) * static_cast<double>({bytes_per_iter_expr});\n"
+    )
+    text += "    const double elapsed_seconds = static_cast<double>(elapsed_us) / 1e6;\n"
+    text += "    const double throughput_mbs = elapsed_seconds > 0.0 ? bytes_per_iter / elapsed_seconds / 1e6 : 0.0;\n"
+    text += (
+        '    std::cout << "{\\"elapsed_us\\":" << elapsed_us'
+        ' << ",\\"throughput_mbs\\":" << throughput_mbs << "}" << std::endl;\n'
+    )
     text += "    return 0;\n"
     text += "}\n"
 
@@ -771,7 +787,7 @@ def generate_kernel_executable(
 
 
 def generate_and_run_benchmark(
-    codegen: CodeGen,
+    codegen: Union[CodeGen, Sequence[CodeGen]],
     exprs: Sequence[SignalExpr | SignalExpr2D],
     include_correctness_check: bool = True,
     correctness_tolerance: float = 1e-3,
@@ -787,6 +803,10 @@ def generate_and_run_benchmark(
     """
     Generate, compile, and run a benchmark for the given kernels.
 
+    ``codegen`` may be either a single ``CodeGen`` (applied to every expression)
+    or a sequence of ``CodeGen`` instances parallel to ``exprs`` (used by the
+    sweep to vary ``(ele_per_iter_multiple, rows_per_iter)`` per kernel).
+
     The schedules are split into batches of size ``schedules_per_runner``
     (each batch always includes the reference schedule k0). Every batch is
     compiled into its own runner; runners are compiled in parallel. After
@@ -794,7 +814,8 @@ def generate_and_run_benchmark(
     batches agree on a common k0 throughput, anchored to batch 0's k0.
 
     Args:
-        codegen: CodeGen instance used to generate the kernels
+        codegen: CodeGen instance, or one per expression. The first kernel (k0)
+            is the cross-schedule correctness reference.
         exprs: List of signal expressions corresponding to each kernel
         include_correctness_check: If True, adds correctness checking code
         correctness_tolerance: Tolerance for floating point comparisons in correctness checking
@@ -823,8 +844,17 @@ def generate_and_run_benchmark(
     assert schedules_per_runner >= 1, "schedules_per_runner must be at least 1"
 
     n_exprs = len(exprs)
+    if isinstance(codegen, CodeGen):
+        codegens: List[CodeGen] = [codegen] * n_exprs
+    else:
+        codegens = list(codegen)
+        assert len(codegens) == n_exprs, (
+            f"codegens length {len(codegens)} != exprs length {n_exprs}"
+        )
     kernel_names_global = [f"k{i}" for i in range(n_exprs)]
-    codes_global = [codegen.generate(expr, name) for expr, name in zip(exprs, kernel_names_global)]
+    codes_global = [
+        cg.generate(expr, name) for cg, expr, name in zip(codegens, exprs, kernel_names_global)
+    ]
 
     # Build batches. Each batch holds at most ``schedules_per_runner`` kernels,
     # and always includes k0 so its measured throughput can anchor normalization.
@@ -859,7 +889,9 @@ def generate_and_run_benchmark(
         h_path, b_path, _e_path = batch_paths[b_idx]
         instantiate_kernels(h_path, [codes_global[i] for i in batch])
         generate_benchmark(
-            codegen=codegen,
+            # collect_input_variables doesn't depend on per-instance codegen state,
+            # so picking the codegen of the batch's first kernel is fine.
+            codegen=codegens[batch[0]],
             exprs=[exprs[i] for i in batch],
             kernel_names=[kernel_names_global[i] for i in batch],
             kernel_header_path=h_path,
@@ -940,19 +972,6 @@ def generate_and_run_benchmark(
     }
 
 
-def _sample_random(elt: ElementType, shape: Tuple[int, ...], rng: np.random.Generator) -> np.ndarray:
-    """Generate random input data appropriate for the given element type."""
-    match elt:
-        case ElementType.Float:
-            return rng.uniform(-1.0, 1.0, shape).astype(np.float32)
-        case ElementType.I32:
-            return rng.integers(-1000, 1000, size=shape, dtype=np.int32)
-        case ElementType.I64:
-            return rng.integers(0, 1000, size=shape, dtype=np.int64)
-        case ElementType.I8:
-            return rng.integers(-1, 1, size=shape, dtype=np.int8)
-
-
 def sweep_codegen_setup(
     exprs: Sequence[Union[SignalExpr, SignalExpr2D]],
     ele_per_iter_multiples: Sequence[int] = (1, 2, 4),
@@ -960,144 +979,170 @@ def sweep_codegen_setup(
     compiler: str = "clang++",
     compiler_flags: Optional[List[str]] = None,
     row_size: int = 1024,
-    n_timing_runs: int = 3,
-    n_warmup_runs: int = 1,
-    input_n_1d: int = 1 << 17,
-    input_n_rows_2d: int = 64,
+    input_size: int = 1 << 20,
+    warmup_iterations: int = 10,
+    benchmark_iterations: int = 100,
+    schedules_per_runner: int = 5,
     parallel_compile: Optional[bool] = None,
 ) -> List[Dict[str, Any]]:
-    """Sweep CodeGen.ele_per_iter_multiple and rows_per_iter for each schedule.
+    """Sweep ``CodeGen.ele_per_iter_multiple`` and ``rows_per_iter`` per schedule.
 
-    For each input expression, every combination of ``ele_per_iter_multiples`` and
-    ``rows_per_iter_options`` is independently produced with a fresh
-    ``CodeGen(ele_per_iter_multiple=epi, rows_per_iter=rpi)`` and compiled via
-    the same workhorse used by ``generate_kernel_executable``. Each compiled
-    runner is invoked ``n_timing_runs`` times (preceded by ``n_warmup_runs``
-    warmup invocations) and the minimum reported kernel ``elapsed_us`` is kept.
-    Combinations that fail codegen, compilation, or execution are recorded as
-    ``None`` and skipped when picking the best setup.
+    For each input expression we time a grid of ``(epi, rpi)`` configurations
+    using the same ``generate_and_run_benchmark`` machinery as the headline
+    benchmark numbers — so the swept throughputs are directly comparable to the
+    default-codegen number. Within each expression's grid, the ``(2, 1)`` cell
+    is placed first and used as the in-C++ cross-schedule correctness
+    reference (k0); any other cell whose output diverges from k0 is dropped
+    and cannot win the "best" selection.
 
     Returns:
         A list (one entry per input expression) of dicts with keys:
           - "best_ele_per_iter_multiple": int
           - "best_rows_per_iter": int
-          - "best_elapsed_us": float (``inf`` if every combination failed)
-          - "timings": dict[(epi, rpi)] -> Optional[float] elapsed_us
+          - "best_throughput_mbs": float (``0`` if every combination failed)
+          - "throughputs_mbs": dict[(epi, rpi)] -> Optional[float] MB/s
+          - "validations": dict[(epi, rpi)] -> True | int (mismatch idx) | None
     """
     assert len(exprs) > 0, "At least one expression must be provided"
 
-    if parallel_compile is None:
-        parallel_compile = os.environ.get("VECREC_PARALLEL_COMPILE", "1") != "0"
-
-    # Build the list of pending (expr_idx, epi, rpi) compilations. Codegen
-    # failures are recorded as missing entries so the timing dict ends up
-    # reporting None for them.
-    pending: List[Tuple[int, int, int, KernelProgram, Dict[str, ElementType], Dict[str, ElementType], ElementType]] = []
-    for expr_idx, expr in enumerate(exprs):
-        for epi in ele_per_iter_multiples:
-            for rpi in rows_per_iter_options:
-                try:
-                    cg = CodeGen(ele_per_iter_multiple=epi, rows_per_iter=rpi)
-                    code = cg.generate(expr, "k0")
-                    all_vars, all_vars2d = cg.collect_input_variables(expr)
-                except Exception:
-                    continue
-                pending.append((expr_idx, epi, rpi, code, all_vars, all_vars2d, expr.element_type))
-
-    # Compile every pending combination — in parallel by default. Failures are
-    # captured per-combo so a single bad config doesn't abort the whole sweep.
-    def _do_compile(idx: int) -> Tuple[int, Optional[KernelExecutable]]:
-        _, _, _, code, all_vars, all_vars2d, output_type = pending[idx]
+    # Per-expression, decide which rpi values are even worth trying. A "truly
+    # 1D" expression (one with any 1D Var leaf) does not support row blocking:
+    # Signal1D has no per-row offset, so rpi > 1 would silently produce wrong
+    # output and CodeGen.generate refuses to emit it. Skip those combos so
+    # they don't pollute the result with FAIL cells.
+    rpi_options_per_expr: List[Sequence[int]] = []
+    for expr in exprs:
         try:
-            ke = _build_kernel_executable(
-                code=code,
-                all_vars=all_vars,
-                all_vars2d=all_vars2d,
-                output_type=output_type,
-                kernel_name="k0",
+            vars_1d_probe, _ = CodeGen().collect_input_variables(expr)
+        except Exception:
+            vars_1d_probe = {}
+        rpi_options_per_expr.append(
+            rows_per_iter_options if len(vars_1d_probe) == 0 else (1,)
+        )
+
+    # k0 is the (epi=2, rpi=1) cell — the default CodeGen() — so it carries
+    # the same configuration the rest of the pipeline already verifies as
+    # correct. Build the ordered cell list per expression with k0 first.
+    def _ordered_cells(expr_rpis: Sequence[int]) -> List[Tuple[int, int]]:
+        k0 = (2, 1)
+        rest = [
+            (epi, rpi)
+            for epi in ele_per_iter_multiples
+            for rpi in expr_rpis
+            if (epi, rpi) != k0
+        ]
+        return [k0] + rest if 1 in expr_rpis else rest
+
+    results: List[Dict[str, Any]] = []
+    for expr_idx, expr in enumerate(exprs):
+        expr_rpis = rpi_options_per_expr[expr_idx]
+        cells = _ordered_cells(expr_rpis)
+
+        # Build a CodeGen per cell. Skip cells whose codegen errors (e.g.,
+        # rpi-vs-1D-Var check inside CodeGen.generate).
+        good_cells: List[Tuple[int, int]] = []
+        good_codegens: List[CodeGen] = []
+        for epi, rpi in cells:
+            try:
+                cg = CodeGen(ele_per_iter_multiple=epi, rows_per_iter=rpi)
+                cg.generate(expr, "k_probe")  # cheap test compile of the AST
+            except Exception:
+                continue
+            # Re-instantiate so each cell has a fresh codegen (`generate` is
+            # stateful — it mutates internal counters/mappings).
+            good_codegens.append(CodeGen(ele_per_iter_multiple=epi, rows_per_iter=rpi))
+            good_cells.append((epi, rpi))
+
+        throughputs: Dict[Tuple[int, int], Optional[float]] = {
+            cell: None for cell in cells
+        }
+        validations: Dict[Tuple[int, int], Any] = {cell: None for cell in cells}
+
+        if not good_cells:
+            results.append(
+                {
+                    "best_ele_per_iter_multiple": ele_per_iter_multiples[0],
+                    "best_rows_per_iter": expr_rpis[0],
+                    "best_throughput_mbs": 0.0,
+                    "throughputs_mbs": throughputs,
+                    "validations": validations,
+                }
+            )
+            continue
+
+        # Run the bundled benchmark. The first cell (k0) acts as the in-C++
+        # cross-schedule reference. include_correctness_check=True emits the
+        # validation pairs we need to enforce strict matching below.
+        try:
+            raw = generate_and_run_benchmark(
+                codegen=good_codegens,
+                exprs=[expr] * len(good_codegens),
+                include_correctness_check=True,
+                input_size=input_size,
+                warmup_iterations=warmup_iterations,
+                benchmark_iterations=benchmark_iterations,
                 compiler=compiler,
                 compiler_flags=compiler_flags,
                 row_size=row_size,
-                quiet=True,
+                schedules_per_runner=schedules_per_runner,
+                parallel_compile=parallel_compile,
             )
-            return idx, ke
-        except Exception:
-            return idx, None
-
-    executables: List[Optional[KernelExecutable]] = [None] * len(pending)
-    if parallel_compile and len(pending) > 1:
-        max_workers = min(len(pending), os.cpu_count() or 1)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_do_compile, i) for i in range(len(pending))]
-            for fut in concurrent.futures.as_completed(futures):
-                idx, ke = fut.result()
-                executables[idx] = ke
-    else:
-        for i in range(len(pending)):
-            idx, ke = _do_compile(i)
-            executables[idx] = ke
-
-    # Build inputs once per expression — variable structure depends on the
-    # expression, not on epi/rpi — and reuse across that expression's combos.
-    inputs_per_expr: Dict[int, Dict[str, np.ndarray]] = {}
-    for idx, item in enumerate(pending):
-        expr_idx = item[0]
-        if expr_idx in inputs_per_expr or executables[idx] is None:
+        except Exception as exc:
+            warnings.warn(
+                f"sweep_codegen_setup: bundled benchmark failed for expression "
+                f"{expr_idx}: {exc}. All sweep cells for this expression will be "
+                "marked as failed."
+            )
+            results.append(
+                {
+                    "best_ele_per_iter_multiple": ele_per_iter_multiples[0],
+                    "best_rows_per_iter": expr_rpis[0],
+                    "best_throughput_mbs": 0.0,
+                    "throughputs_mbs": throughputs,
+                    "validations": validations,
+                }
+            )
             continue
-        runner = executables[idx]
-        assert runner is not None
-        rng = np.random.default_rng(0)
-        inputs: Dict[str, np.ndarray] = {}
-        for var in runner.variable_order:
-            inputs[var] = _sample_random(runner.variable_types[var], (input_n_1d,), rng)
-        for var in runner.vars2d_order:
-            inputs[var] = _sample_random(runner.vars2d_info[var], (input_n_rows_2d, input_n_1d), rng)
-        inputs_per_expr[expr_idx] = inputs
 
-    # Time each successfully compiled executable. Runs are sequential so they
-    # don't contend for cores and skew timing.
-    elapsed: List[Optional[float]] = [None] * len(pending)
-    for idx, item in enumerate(pending):
-        ke = executables[idx]
-        if ke is None:
-            continue
-        run_inputs = inputs_per_expr.get(item[0])
-        if run_inputs is None:
-            continue
-        try:
-            for _ in range(n_warmup_runs):
-                ke.run(run_inputs)
-            best: Optional[float] = None
-            for _ in range(n_timing_runs):
-                _, us = ke.run(run_inputs)
-                best = us if best is None else min(best, us)
-            elapsed[idx] = best
-        except Exception:
-            elapsed[idx] = None
+        output = raw.get("output", {})
+        cell_validations = output.get("validation", {}) if isinstance(output, dict) else {}
+        for i, cell in enumerate(good_cells):
+            kname = f"k{i}"
+            thr = output.get(kname)
+            # k0 is the reference — never has its own validation entry.
+            if i == 0:
+                val: Any = True
+            else:
+                val = cell_validations.get(kname)
+            validations[cell] = val
+            if thr is None:
+                continue
+            # Strict: any cell whose output disagrees with k0 (val is not True)
+            # is dropped from the throughput map and cannot win.
+            if i != 0 and val is not True:
+                warnings.warn(
+                    f"sweep_codegen_setup: cell {cell} for expression {expr_idx} "
+                    f"diverged from k0 at index {val}; dropping its throughput."
+                )
+                continue
+            throughputs[cell] = float(thr)
 
-    # Aggregate per-expression results.
-    results: List[Dict[str, Any]] = []
-    for expr_idx in range(len(exprs)):
-        timings: Dict[Tuple[int, int], Optional[float]] = {
-            (epi, rpi): None for epi in ele_per_iter_multiples for rpi in rows_per_iter_options
-        }
-        for idx, item in enumerate(pending):
-            if item[0] == expr_idx:
-                timings[(item[1], item[2])] = elapsed[idx]
-        finite = [(key, t) for key, t in timings.items() if t is not None]
+        finite = [(k, v) for k, v in throughputs.items() if v is not None]
         if finite:
-            best_key, best_us = min(finite, key=lambda kv: kv[1])
+            best_key, best_mbs_val = max(finite, key=lambda kv: kv[1])
             best_epi, best_rpi = best_key
-            best_elapsed = float(best_us)
+            best_throughput = float(best_mbs_val)
         else:
-            best_epi, best_rpi = ele_per_iter_multiples[0], rows_per_iter_options[0]
-            best_elapsed = float("inf")
+            best_epi, best_rpi = ele_per_iter_multiples[0], expr_rpis[0]
+            best_throughput = 0.0
+
         results.append(
             {
                 "best_ele_per_iter_multiple": best_epi,
                 "best_rows_per_iter": best_rpi,
-                "best_elapsed_us": best_elapsed,
-                "timings": timings,
+                "best_throughput_mbs": best_throughput,
+                "throughputs_mbs": throughputs,
+                "validations": validations,
             }
         )
 

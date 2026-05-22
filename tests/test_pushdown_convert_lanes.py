@@ -15,6 +15,7 @@ from vecrec.expr import (
     TIKernel,
     Type,
     Var,
+    Var2D,
     with_types,
 )
 from vecrec.expr.base import RecLang
@@ -92,11 +93,11 @@ def test_pushdown_through_recurse_under_repeater_runs() -> None:
     with with_types(Type.Arith, ElementType.Float):
         feedback = TIKernel([0, 0, 0, 0, 1.8, -0.9])  # time delay 4
         row_kernel = TIKernel([1.0])
-        g = Var("x")
+        g = Var2D("x")
 
         def make_inner(rvar):
             prev_row = Ith(rvar, 0)
-            return Recurse(feedback, SAdd(g, Convolve(row_kernel, prev_row)))
+            return Recurse(feedback, SAdd(g.at(0), Convolve(row_kernel, prev_row)))
 
         repeater = Repeater(make_inner)
 

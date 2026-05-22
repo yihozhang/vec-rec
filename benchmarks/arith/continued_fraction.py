@@ -83,7 +83,7 @@ class ContinuedFractionBenchmark(Benchmark):
             b_in = rng.uniform(-1.0, 1.0, size=n).astype(np.float32)
 
             # Runner receives a[1:] and b[1:] (first element is used as initial condition)
-            output, _ = runner.run({"a": a_in[1:], "b": b_in[1:]})
+            output, _, _ = runner.run({"a": a_in[1:], "b": b_in[1:]})
 
             f_expected = np.zeros(n, dtype=np.float32)
             f_expected[0] = 1.0

@@ -3,7 +3,7 @@
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr
 from vecrec.expr.kernel import TIKernel2D
-from vecrec.expr.signal import Var, Var2D
+from vecrec.expr.signal import Var2D
 from vecrec.expr.signal_ops import Convolve, Convolve2D, Ith, Repeater, SAdd
 from vecrec.factorize import factorize_kernel2d
 from vecrec.codegen import CodeGen, generate_and_run_benchmark
@@ -131,10 +131,10 @@ def test_factorize2d_codegen():
     with with_types(Type.Arith, ElementType.Float):
         # separable 3×3 box kernel
         kernel = TIKernel2D([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]])
-        g = Var("g")
+        g = Var2D("g")
 
         def repeater_func(prev_rows):
-            return SAdd(Convolve2D(kernel, prev_rows), g)
+            return SAdd(Convolve2D(kernel, prev_rows), g.at(0))
 
         expr: SignalExpr = Ith(Repeater(repeater_func), 0)
 

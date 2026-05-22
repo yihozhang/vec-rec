@@ -83,7 +83,7 @@ def test_generate_kernel_executable_roundtrip() -> None:
     runner = generate_kernel_executable(codegen, results[0])
 
     x = np.linspace(-1.0, 1.0, num=513, dtype=np.float32)
-    output, elapsed_us = runner.run(x)
+    output, elapsed_us, _ = runner.run(x)
 
     assert output.shape == x.shape
     assert output.dtype == np.float32
@@ -117,7 +117,7 @@ def test_generate_kernel_executable_fibonacci_sum() -> None:
     x = np.zeros(n, dtype=np.int64)
     x[0] = 1
 
-    output, elapsed_us = runner.run(x)
+    output, elapsed_us, _ = runner.run(x)
 
     fib_expected = np.zeros(n, dtype=np.int64)
     fib_expected[0] = 1
@@ -155,7 +155,7 @@ def test_generate_kernel_executable_continued_fraction() -> None:
     b_in = np.random.uniform(-1.0, 1.0, size=n).astype(np.float32)
     a_in[0] = 0.0
     b_in[0] = 0.0
-    output, elapsed_us = runner.run({"a": a_in[1:], "b": b_in[1:]})
+    output, elapsed_us, _ = runner.run({"a": a_in[1:], "b": b_in[1:]})
 
     f_expected = np.zeros(n, dtype=np.float32)
     f_expected[0] = 1.0
@@ -190,7 +190,7 @@ def test_common_subexpression_convolve_div() -> None:
     rng = np.random.default_rng(42)
     x_in = rng.uniform(-1.0, 1.0, size=n).astype(np.float32)
 
-    output, _ = runner.run(x_in)
+    output, _, _ = runner.run(x_in)
 
     # Reference: pad with zeros on the left for the delay
     x_padded = np.concatenate([[0.0], x_in]).astype(np.float32)

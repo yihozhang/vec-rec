@@ -85,8 +85,8 @@ def _run_blocked_vs_baseline(
     runner_blocked = generate_kernel_executable(CodeGen(rows_per_iter=rows_per_iter), expr_blocked)
 
     inp = _make_input(n_input_rows, seed=seed)
-    out_baseline, _ = runner_baseline.run(inp)
-    out_blocked, _ = runner_blocked.run(inp)
+    out_baseline, _, _ = runner_baseline.run(inp)
+    out_blocked, _, _ = runner_blocked.run(inp)
     return out_baseline, out_blocked
 
 
@@ -121,28 +121,25 @@ def test_blocking_skip_writes_k4_n2() -> None:
     )
 
 
-def test_blocking_auto_detect_k2() -> None:
-    """Default CodeGen() should auto-enable k=2 blocking when the expression
-    contains a Repeater (Recurse2D lowers to Repeater)."""
+def test_blocking_default_k_is_1() -> None:
+    """Default CodeGen() now leaves rows_per_iter=1 regardless of whether the
+    expression contains a Repeater. Row blocking is an opt-in optimization the
+    sweep tries explicitly; auto-enabling it on Repeater presence was unsafe
+    because a Repeater with a 1D Var leaf would silently miscompute."""
     expr = _build_recurse2d_2x2()
     cg = CodeGen()
     program = cg.generate(expr, "k0")
-    assert program.rows_per_iter == 2, f"Expected auto k=2, got {program.rows_per_iter}"
+    assert program.rows_per_iter == 1, f"Expected default k=1, got {program.rows_per_iter}"
 
-
-def test_blocking_default_k_for_non_repeater() -> None:
-    """Pure Convolve2D over Var2D contains no Repeater after lowering, so the
-    auto-detect default for rows_per_iter is 1 (single-row block)."""
     with with_types(Type.Arith, ElementType.Float):
         var2d = Var2D("img")
-        expr: SignalExpr = Convolve2D(TIKernel2D([[1.0, 2.0], [3.0, 4.0]]), var2d)
-    expr = Preorder(Try(Eliminate2DKernels())).apply_generic(expr)[0]
-    expr = InferNRows().apply_generic(expr)[0]
-    expr = AnnotateLanes(get_native_bits()).apply_generic(expr)[0]
+        expr2: SignalExpr = Convolve2D(TIKernel2D([[1.0, 2.0], [3.0, 4.0]]), var2d)
+    expr2 = Preorder(Try(Eliminate2DKernels())).apply_generic(expr2)[0]
+    expr2 = InferNRows().apply_generic(expr2)[0]
+    expr2 = AnnotateLanes(get_native_bits()).apply_generic(expr2)[0]
 
-    cg = CodeGen()
-    program = cg.generate(expr, "k0")
-    assert program.rows_per_iter == 1
+    program2 = CodeGen().generate(expr2, "k0")
+    assert program2.rows_per_iter == 1
 
 
 def test_blocking_3x3_k2() -> None:
@@ -158,8 +155,7 @@ def test_blocking_3x3_k2() -> None:
 
 
 if __name__ == "__main__":
-    test_blocking_auto_detect_k2()
-    test_blocking_default_k_for_non_repeater()
+    test_blocking_default_k_is_1()
     test_blocking_basic_k2_n2()
     test_blocking_skip_writes_k4_n2()
     test_blocking_3x3_k2()

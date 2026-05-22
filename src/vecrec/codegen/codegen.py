@@ -214,13 +214,33 @@ class CodeGen:
         # default of 2 matches WindowMap's 2K-per-run output.
         self.ele_per_iter = self._max_lanes_in_tree(expr) * self._ele_per_iter_multiple
 
-        # Decide rows_per_iter (block size). User override > auto-detect.
-        # Auto-detect: if expression contains Repeater/RepeaterVec, default to 2;
-        # otherwise 1 (no row aggregation, but still uses the blocked codegen).
+        # Decide rows_per_iter (block size). User override > default.
+        # Default is 1 (single-row blocks). Row blocking (rpi > 1) is an opt-in
+        # optimization the sweep tries explicitly for expressions whose inputs
+        # are all 2D; we no longer auto-enable it based on Repeater presence
+        # alone, because a Repeater with a 1D Var leaf is also unsafe at rpi>1.
         if self._rows_per_iter_override is not None:
             self.rows_per_iter = self._rows_per_iter_override
         else:
-            self.rows_per_iter = 2 if self._contains_repeater(expr) else 1
+            self.rows_per_iter = 1
+
+        # Row blocking (rpi > 1) with any 1D Var input is unsafe — even inside
+        # a Repeater. The Signal1D reader has no block-row offset and its
+        # reset_and_next_row is a no-op, so the k replicas all start at &data[0]
+        # and advance identically. Each pair of consecutive logical rows ends
+        # up reading the same physical chunk of data, producing silently wrong
+        # output. Use Var2D (which lowers to the block-row-aware InputSignal2D)
+        # if you need per-row inputs at rpi > 1.
+        if self.rows_per_iter > 1:
+            vars_1d_check, _ = self.collect_input_variables(expr)
+            if vars_1d_check:
+                raise ValueError(
+                    f"rows_per_iter={self.rows_per_iter} with 1D Var inputs "
+                    f"{sorted(vars_1d_check.keys())} is unsafe: Signal1D is not "
+                    "block-row aware, so the k replicas would re-read the same "
+                    "offsets and silently produce wrong output. Convert the 1D Vars "
+                    "to Var2D, or use rows_per_iter=1."
+                )
 
         n_block_rows = self.rows_per_iter
         per_row_results: List[Tuple[List[int], Code]] = []
