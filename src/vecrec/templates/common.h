@@ -893,10 +893,10 @@ struct Repeater {
 SConvolveOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 // SConvolveOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
 SConvolveOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SConvolveOp(TropMax, std::numeric_limits<elt_type>::lowest() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 // Saturating variants for int8: use min/2 sentinel and saturating add to prevent overflow
 SConvolveOp(TropMinSat, std::numeric_limits<elt_type>::max() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::lowest() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 #define SRecurseOp(suffix, zero_init, mul_op, add_op)                                                  \
     template <typename vec_type, int taps, const int idxs[taps]>                                       \
@@ -946,9 +946,9 @@ SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, aut
 SRecurseOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 // SRecurseOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
 SRecurseOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SRecurseOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseOp(TropMax, std::numeric_limits<elt_type>::lowest() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 SRecurseOp(TropMinSat, std::numeric_limits<elt_type>::max() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SRecurseOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseOp(TropMaxSat, std::numeric_limits<elt_type>::lowest() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 // SRecurseV: vectorised n-component IIR recurrence.
 //
