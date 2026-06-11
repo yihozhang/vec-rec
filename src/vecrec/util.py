@@ -13,6 +13,7 @@ class ElementType(Enum):
     I32 = 2
     I64 = 4
     I8 = 8
+    I16 = 16
 
     def bit_width(self) -> int:
         match self:
@@ -24,6 +25,8 @@ class ElementType(Enum):
                 return 64
             case ElementType.I8:
                 return 8
+            case ElementType.I16:
+                return 16
 
     def to_str(self) -> str:
         match self:
@@ -35,6 +38,8 @@ class ElementType(Enum):
                 return "int64_t"
             case ElementType.I8:
                 return "int8_t"
+            case ElementType.I16:
+                return "int16_t"
 
     def val_to_str(self, val: float, ty: "Type | None" = None) -> str:
         # Handle infinity for tropical types
@@ -48,6 +53,8 @@ class ElementType(Enum):
             elif self == ElementType.I8:
                 # Use /2 (not /8) as sentinel; saturating arithmetic prevents overflow
                 return "(INT8_MIN/2)" if val < 0 else "(INT8_MAX/2)"
+            elif self == ElementType.I16:
+                return "(INT16_MIN/2)" if val < 0 else "(INT16_MAX/2)"
 
         # Regular value handling
         match self:
@@ -58,6 +65,8 @@ class ElementType(Enum):
             case ElementType.I64:
                 return str(int(val))
             case ElementType.I8:
+                return str(int(val))
+            case ElementType.I16:
                 return str(int(val))
 
 

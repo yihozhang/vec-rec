@@ -34,6 +34,13 @@ typedef int8_t int8_vec16 __attribute__((ext_vector_type(16)));
 typedef int8_t int8_vec32 __attribute__((ext_vector_type(32)));
 typedef int8_t int8_vec64 __attribute__((ext_vector_type(64)));
 
+typedef int16_t int16_vec1;
+typedef int16_t int16_vec2  __attribute__((ext_vector_type(2)));
+typedef int16_t int16_vec4  __attribute__((ext_vector_type(4)));
+typedef int16_t int16_vec8  __attribute__((ext_vector_type(8)));
+typedef int16_t int16_vec16 __attribute__((ext_vector_type(16)));
+typedef int16_t int16_vec32 __attribute__((ext_vector_type(32)));
+
 constexpr int vec_lanes_of(float) { return 1; }
 constexpr int vec_lanes_of(float_vec2) { return 2; }
 constexpr int vec_lanes_of(float_vec4) { return 4; }
@@ -58,6 +65,13 @@ constexpr int vec_lanes_of(int8_vec8)  { return 8; }
 constexpr int vec_lanes_of(int8_vec16) { return 16; }
 constexpr int vec_lanes_of(int8_vec32) { return 32; }
 constexpr int vec_lanes_of(int8_vec64) { return 64; }
+
+constexpr int vec_lanes_of(int16_t)      { return 1; }
+constexpr int vec_lanes_of(int16_vec2)   { return 2; }
+constexpr int vec_lanes_of(int16_vec4)   { return 4; }
+constexpr int vec_lanes_of(int16_vec8)   { return 8; }
+constexpr int vec_lanes_of(int16_vec16)  { return 16; }
+constexpr int vec_lanes_of(int16_vec32)  { return 32; }
 
 #include <cmath>
 template <typename Vec>
@@ -186,6 +200,31 @@ struct ElementType<int8_vec32> {
 template <>
 struct ElementType<int8_vec64> {
     using type = int8_t;
+};
+
+template <>
+struct ElementType<int16_t> {
+    using type = int16_t;
+};
+template <>
+struct ElementType<int16_vec2> {
+    using type = int16_t;
+};
+template <>
+struct ElementType<int16_vec4> {
+    using type = int16_t;
+};
+template <>
+struct ElementType<int16_vec8> {
+    using type = int16_t;
+};
+template <>
+struct ElementType<int16_vec16> {
+    using type = int16_t;
+};
+template <>
+struct ElementType<int16_vec32> {
+    using type = int16_t;
 };
 
 inline std::string string_of(float_vec4 x) {
@@ -340,6 +379,13 @@ EXTRACT_SLICE_4(int8_vec4)
 EXTRACT_SLICE_8(int8_vec8)
 EXTRACT_SLICE_16(int8_vec16)
 
+// int16 extract_slice instantiations (≤ 16 lane macros already defined above)
+EXTRACT_SLICE_1(int16_vec1)
+EXTRACT_SLICE_2(int16_vec2)
+EXTRACT_SLICE_4(int16_vec4)
+EXTRACT_SLICE_8(int16_vec8)
+EXTRACT_SLICE_16(int16_vec16)
+
 // EXTRACT_SLICE_32 and EXTRACT_SLICE_64 for int8_vec32 / int8_vec64
 #define EXTRACT_SLICE_32(type_vec32)                                                                                                              \
     inline type_vec32 extract_slice(type_vec32 a, type_vec32 b, int offset) {                                                                     \
@@ -456,6 +502,7 @@ EXTRACT_SLICE_16(int8_vec16)
     }
 
 EXTRACT_SLICE_32(int8_vec32)
+EXTRACT_SLICE_32(int16_vec32)
 EXTRACT_SLICE_64(int8_vec64)
 
 // from https://stackoverflow.com/questions/37602057/why-isnt-a-for-loop-a-compile-time-expression
@@ -547,6 +594,13 @@ EXTRACT_SUB_VECTOR4(int8_vec4)
 EXTRACT_SUB_VECTOR8(int8_vec8)
 EXTRACT_SUB_VECTOR16(int8_vec16)
 EXTRACT_SUB_VECTOR32(int8_vec32)
+
+EXTRACT_SUB_VECTOR1(int16_t)
+EXTRACT_SUB_VECTOR2(int16_vec2)
+EXTRACT_SUB_VECTOR4(int16_vec4)
+EXTRACT_SUB_VECTOR8(int16_vec8)
+EXTRACT_SUB_VECTOR16(int16_vec16)
+EXTRACT_SUB_VECTOR32(int16_vec32)
 
 template <typename vec_type, int N>
 struct Reg {
@@ -1351,6 +1405,7 @@ template <> struct Zip2<vec_type> { \
 
 VECREC_DEFINE_UNZIP2_ZIP2_K1(float_vec1)
 VECREC_DEFINE_UNZIP2_ZIP2_K1(int8_vec1)
+VECREC_DEFINE_UNZIP2_ZIP2_K1(int16_vec1)
 VECREC_DEFINE_UNZIP2_ZIP2_K1(int32_vec1)
 VECREC_DEFINE_UNZIP2_ZIP2_K1(int64_vec1)
 #undef VECREC_DEFINE_UNZIP2_ZIP2_K1
@@ -1382,6 +1437,7 @@ template <> struct Zip2<vec_type> { \
 
 VECREC_DEFINE_UNZIP2_ZIP2_K2(float_vec2)
 VECREC_DEFINE_UNZIP2_ZIP2_K2(int8_vec2)
+VECREC_DEFINE_UNZIP2_ZIP2_K2(int16_vec2)
 VECREC_DEFINE_UNZIP2_ZIP2_K2(int32_vec2)
 VECREC_DEFINE_UNZIP2_ZIP2_K2(int64_vec2)
 #undef VECREC_DEFINE_UNZIP2_ZIP2_K2
@@ -1413,6 +1469,7 @@ template <> struct Zip2<vec_type> { \
 
 VECREC_DEFINE_UNZIP2_ZIP2_K4(float_vec4)
 VECREC_DEFINE_UNZIP2_ZIP2_K4(int8_vec4)
+VECREC_DEFINE_UNZIP2_ZIP2_K4(int16_vec4)
 VECREC_DEFINE_UNZIP2_ZIP2_K4(int32_vec4)
 VECREC_DEFINE_UNZIP2_ZIP2_K4(int64_vec4)
 #undef VECREC_DEFINE_UNZIP2_ZIP2_K4
@@ -1444,6 +1501,7 @@ template <> struct Zip2<vec_type> { \
 
 VECREC_DEFINE_UNZIP2_ZIP2_K8(float_vec8)
 VECREC_DEFINE_UNZIP2_ZIP2_K8(int8_vec8)
+VECREC_DEFINE_UNZIP2_ZIP2_K8(int16_vec8)
 VECREC_DEFINE_UNZIP2_ZIP2_K8(int32_vec8)
 VECREC_DEFINE_UNZIP2_ZIP2_K8(int64_vec8)
 #undef VECREC_DEFINE_UNZIP2_ZIP2_K8
@@ -1479,6 +1537,7 @@ template <> struct Zip2<vec_type> { \
 
 VECREC_DEFINE_UNZIP2_ZIP2_K16(float_vec16)
 VECREC_DEFINE_UNZIP2_ZIP2_K16(int8_vec16)
+VECREC_DEFINE_UNZIP2_ZIP2_K16(int16_vec16)
 VECREC_DEFINE_UNZIP2_ZIP2_K16(int32_vec16)
 #undef VECREC_DEFINE_UNZIP2_ZIP2_K16
 
@@ -1516,6 +1575,7 @@ template <> struct Zip2<vec_type> { \
 };
 
 VECREC_DEFINE_UNZIP2_ZIP2_K32(int8_vec32)
+VECREC_DEFINE_UNZIP2_ZIP2_K32(int16_vec32)
 #undef VECREC_DEFINE_UNZIP2_ZIP2_K32
 
 // K=64 specializations (int8_vec64)
