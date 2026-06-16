@@ -69,7 +69,12 @@ from trop.second_order_tv_trop import (
 from trop.needleman_wunsch import NeedlemanWunschBenchmark
 from trop.distance_transform import DistanceTransformBenchmark
 from trop.affine_gap import AffineGapBenchmark
+from trop.morph_dilate_erode import MorphDilate1DBenchmark, MorphErode1DBenchmark, MorphDilate2DBenchmark
 from arith.min_max_sat_dp import MinMaxSatDPBenchmark
+from arith.sosfilt_butterworth import SosfiltButterworthBenchmark, SosfiltfiltButterworthBenchmark
+from arith.garch import GARCHBenchmark
+from arith.domain_transform import DomainTransformBenchmark
+from arith.online_mean import OnlineMeanBenchmark
 
 REGISTRY: list[Benchmark] = []
 
@@ -101,6 +106,14 @@ REGISTRY.extend(
         MutualRecurseTIFBenchmark(),
         MutualRecurseTIGBenchmark(),
         MinMaxSatDPBenchmark(),
+        MorphDilate1DBenchmark(),
+        MorphErode1DBenchmark(),
+        MorphDilate2DBenchmark(),
+        SosfiltButterworthBenchmark(),
+        SosfiltfiltButterworthBenchmark(),
+        GARCHBenchmark(),
+        DomainTransformBenchmark(),
+        OnlineMeanBenchmark(),
     ]
 )
 
