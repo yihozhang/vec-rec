@@ -69,6 +69,7 @@ from trop.second_order_tv_trop import (
 from trop.needleman_wunsch import NeedlemanWunschBenchmark
 from trop.distance_transform import DistanceTransformBenchmark
 from trop.affine_gap import AffineGapBenchmark
+from trop.smith_waterman import SmithWatermanBenchmark, SmithWatermanTracebackBenchmark
 from arith.min_max_sat_dp import MinMaxSatDPBenchmark
 
 REGISTRY: list[Benchmark] = []
@@ -98,6 +99,8 @@ REGISTRY.extend(
         DistanceTransformBenchmark(),
         NeedlemanWunschBenchmark(),
         AffineGapBenchmark(),
+        SmithWatermanBenchmark(),
+        SmithWatermanTracebackBenchmark(),
         MutualRecurseTIFBenchmark(),
         MutualRecurseTIGBenchmark(),
         MinMaxSatDPBenchmark(),

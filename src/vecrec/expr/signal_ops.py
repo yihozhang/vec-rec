@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import reduce
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from vecrec.expr.signal import RVar2D, RVec2D
 from vecrec.util import ElementType
@@ -75,6 +75,64 @@ class Convolve(SignalExpr):
         ), f"ElementType mismatch in Convolve: {a.element_type} vs {b.element_type}"
         self.a = a
         self.b = b
+
+
+@dataclass(unsafe_hash=True)
+class SelectMax(SignalExpr):
+    """Argmax selection over n candidate value signals.
+
+    Reduces a fixed list of candidate value signals to the integer ``label`` of
+    the candidate that achieves the (tropical) max at each position. Used to
+    build a traceback / pointer stream alongside a max recurrence: the value
+    recurrence computes the max; ``SelectMax`` computes which candidate won.
+
+    Reduction semantics ("take the latest best, or take i"): scanning candidates
+    left to right, the running best starts at candidate 0 (with ``labels[0]``).
+    For each later candidate ``k`` with value ``v_k``::
+
+        if v_k > best:  best = v_k; idx = labels[k]
+        else:           keep best and idx
+
+    The strict ``>`` makes earlier candidates win ties, giving a deterministic
+    argmax. Only defined for idempotent-add (tropical) semirings.
+    """
+
+    values: Tuple[SignalExpr, ...]
+    labels: Tuple[int, ...]
+    __match_args__ = ("values", "labels")
+
+    def __init__(self, values: Sequence[SignalExpr], labels: Sequence[int]) -> None:
+        values_t = tuple(values)
+        labels_t = tuple(labels)
+        assert len(values_t) > 0, "SelectMax requires at least one candidate"
+        assert len(values_t) == len(
+            labels_t
+        ), f"SelectMax: values/labels length mismatch: {len(values_t)} vs {len(labels_t)}"
+        ty = values_t[0].ty
+        element_type = values_t[0].element_type
+        assert ty.is_add_idempotent(), "SelectMax is only defined for idempotent-add (tropical) semirings"
+        assert all(v.ty == ty for v in values_t), "All SelectMax candidates must have the same type"
+        assert all(
+            v.element_type == element_type for v in values_t
+        ), "All SelectMax candidates must have the same element_type"
+        super().__init__(ty, element_type)
+        self.values = values_t
+        self.labels = labels_t
+
+    def children(
+        self,
+    ) -> List[
+        KernelExpr | SignalExpr | KernelExpr2D | SignalExpr2D | KernelMatrixExpr | SignalVectorExpr | SignalExpr2DVec
+    ]:
+        return list(self.values)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SelectMax):
+            return False
+        return self.lanes == other.lanes and self.values == other.values and self.labels == other.labels
+
+    def __repr__(self) -> str:
+        return f"SelectMax({self.values}, {self.labels})"
 
 
 @dataclass(unsafe_hash=True)
