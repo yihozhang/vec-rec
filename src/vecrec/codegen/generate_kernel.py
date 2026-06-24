@@ -165,6 +165,7 @@ def _generate_benchmark_code(
     all_elt_types = list(all_vars.values()) + list(all_vars2d.values())
     needs_float = any(elt_type == ElementType.Float for elt_type in all_elt_types)
     needs_int8 = any(elt_type == ElementType.I8 for elt_type in all_elt_types)
+    needs_int16 = any(elt_type == ElementType.I16 for elt_type in all_elt_types)
     needs_int32 = any(elt_type == ElementType.I32 for elt_type in all_elt_types)
     needs_int64 = any(elt_type == ElementType.I64 for elt_type in all_elt_types)
 
@@ -172,6 +173,8 @@ def _generate_benchmark_code(
         benchmark_text += "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
     if needs_int8:
         benchmark_text += "    std::uniform_int_distribution<int32_t> int8_dis(-1, 1);\n"
+    if needs_int16:
+        benchmark_text += "    std::uniform_int_distribution<int32_t> int16_dis(-10, 10);\n"
     if needs_int32:
         benchmark_text += "    std::uniform_int_distribution<int32_t> int32_dis(-1000, 1000);\n"
     if needs_int64:
@@ -186,6 +189,8 @@ def _generate_benchmark_code(
             benchmark_text += f"        {var}[i] = float_dis(gen);\n"
         elif elt_type == ElementType.I8:
             benchmark_text += f"        {var}[i] = static_cast<int8_t>(int8_dis(gen));\n"
+        elif elt_type == ElementType.I16:
+            benchmark_text += f"        {var}[i] = static_cast<int16_t>(int16_dis(gen));\n"
         elif elt_type == ElementType.I32:
             benchmark_text += f"        {var}[i] = int32_dis(gen);\n"
         else:  # I64
@@ -231,9 +236,11 @@ def _generate_benchmark_code(
         benchmark_text += "            }\n"
         benchmark_text += "        }\n\n"
 
-        benchmark_text += "        // Timed run\n"
-        benchmark_text += "        auto start = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += "        // Timed run (one wall-clock sample per iteration)\n"
+        benchmark_text += "        std::vector<double> samples_us;\n"
+        benchmark_text += "        samples_us.reserve(static_cast<std::size_t>(iterations));\n"
         benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
+        benchmark_text += "            auto start = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += f"            auto kernel = {name}({var_args});\n"
         benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
         benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
@@ -258,8 +265,10 @@ def _generate_benchmark_code(
         benchmark_text += f"                for (int r = 0; r < {rpi}; r++) kernel.reset_and_next_row();\n"
         benchmark_text += f"                row_base += {rpi} * row_size;\n"
         benchmark_text += "            }\n"
+        benchmark_text += "            auto end = std::chrono::high_resolution_clock::now();\n"
+        benchmark_text += "            samples_us.push_back(static_cast<double>(\n"
+        benchmark_text += "                std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()));\n"
         benchmark_text += "        }\n"
-        benchmark_text += "        auto end = std::chrono::high_resolution_clock::now();\n"
         benchmark_text += "        \n"
         benchmark_text += "        // XOR sum to prevent optimization of output array\n"
         benchmark_text += "        uint64_t xor_sum = 0;\n"
@@ -269,13 +278,24 @@ def _generate_benchmark_code(
         benchmark_text += f"        volatile uint64_t xor_result_{name} = xor_sum;  // Prevent optimization\n"
         benchmark_text += f"        (void)xor_result_{name};\n"
         benchmark_text += "        \n"
-        benchmark_text += "        const double elapsed_seconds = std::chrono::duration<double>(end - start).count();\n"
-        benchmark_text += "        const double throughput_gbps = (bytes_per_iteration * static_cast<double>(iterations)) / elapsed_seconds / 1e6;\n"
+        benchmark_text += "        double elapsed_seconds = 0.0;\n"
+        benchmark_text += "        for (double sample_us : samples_us) elapsed_seconds += sample_us / 1e6;\n"
+        benchmark_text += "        const double throughput_gbps = elapsed_seconds > 0.0\n"
+        benchmark_text += "            ? (bytes_per_iteration * static_cast<double>(iterations)) / elapsed_seconds / 1e6\n"
+        benchmark_text += "            : 0.0;\n"
         # Deciding if we need to generate the trailing comma
         if i == len(kernel_names) - 1 and not (include_correctness_check and len(kernel_names) > 1):
-            benchmark_text += f'        std::cout << "  \\"{name}\\": " << throughput_gbps << "\\n";\n'
+            benchmark_text += f'        std::cout << "  \\"{name}\\": {{\\"throughput_mbs\\":" << throughput_gbps << ",\\"samples_us\\":[";\n'
         else:
-            benchmark_text += f'        std::cout << "  \\"{name}\\": " << throughput_gbps << ",\\n";\n'
+            benchmark_text += f'        std::cout << "  \\"{name}\\": {{\\"throughput_mbs\\":" << throughput_gbps << ",\\"samples_us\\":[";\n'
+        benchmark_text += "        for (std::size_t si = 0; si < samples_us.size(); ++si) {\n"
+        benchmark_text += '            if (si) std::cout << ",";\n'
+        benchmark_text += "            std::cout << samples_us[si];\n"
+        benchmark_text += "        }\n"
+        if i == len(kernel_names) - 1 and not (include_correctness_check and len(kernel_names) > 1):
+            benchmark_text += '        std::cout << "]}" << "\\n";\n'
+        else:
+            benchmark_text += '        std::cout << "]}" << ",\\n";\n'
         benchmark_text += "    }\n\n"
 
     # Add correctness checking if requested
@@ -309,6 +329,16 @@ int arrays_equal(const std::vector<float>& a, const std::vector<float>& b, float
 }}
 
 int arrays_equal(const std::vector<int8_t>& a, const std::vector<int8_t>& b) {{
+    if (a.size() != b.size()) return -1;
+    for (size_t i = 0; i < a.size(); i++) {{
+        if (a[i] != b[i]) {{
+            return i;
+        }}
+    }}
+    return a.size();
+}}
+
+int arrays_equal(const std::vector<int16_t>& a, const std::vector<int16_t>& b) {{
     if (a.size() != b.size()) return -1;
     for (size_t i = 0; i < a.size(); i++) {{
         if (a[i] != b[i]) {{
@@ -382,6 +412,8 @@ def _numpy_dtype_for_element_type(element_type: ElementType) -> np.dtype:
             return np.dtype(np.int64)
         case ElementType.I8:
             return np.dtype(np.int8)
+        case ElementType.I16:
+            return np.dtype(np.int16)
 
 
 class KernelExecutable:
@@ -946,20 +978,42 @@ def generate_and_run_benchmark(
         parsed_outputs.append(parsed)
         parsed_validations.append(validation if validation is not None else {})
 
+    def _kernel_throughput_mbs(value: Any) -> float:
+        if isinstance(value, dict):
+            return float(value["throughput_mbs"])
+        return float(value)
+
+    def _kernel_samples_seconds(value: Any) -> List[float]:
+        if not isinstance(value, dict):
+            return []
+        return [float(s) / 1e6 for s in value.get("samples_us", [])]
+
     # Normalize: anchor every batch's reported throughputs to batch 0's k0,
     # so that all batches agree on the same k0 number and the rest scale with it.
-    anchor_k0 = float(parsed_outputs[0]["k0"])
+    anchor_k0 = _kernel_throughput_mbs(parsed_outputs[0]["k0"])
     aggregated: Dict[str, float] = {"k0": anchor_k0}
+    aggregated_timing: Dict[str, Dict[str, Any]] = {}
     aggregated_validation: Dict[str, Any] = {}
     for parsed, validation in zip(parsed_outputs, parsed_validations):
-        local_k0 = float(parsed["k0"])
+        local_k0 = _kernel_throughput_mbs(parsed["k0"])
         scale = (anchor_k0 / local_k0) if local_k0 != 0.0 else 1.0
-        for kname, throughput in parsed.items():
+        for kname, value in parsed.items():
             if kname == "k0":
+                samples = _kernel_samples_seconds(value)
+                if samples:
+                    aggregated_timing.setdefault(kname, {"samples": samples})
                 continue
-            aggregated[kname] = float(throughput) * scale
+            aggregated[kname] = _kernel_throughput_mbs(value) * scale
+            samples = _kernel_samples_seconds(value)
+            if samples:
+                aggregated_timing[kname] = {"samples": samples}
         for kname, val in validation.items():
             aggregated_validation.setdefault(kname, val)
+
+    # k0 timing comes from batch 0 only (anchor batch).
+    k0_samples = _kernel_samples_seconds(parsed_outputs[0]["k0"])
+    if k0_samples:
+        aggregated_timing["k0"] = {"samples": k0_samples}
 
     aggregated_sorted: Dict[str, Any] = dict(sorted(aggregated.items(), key=lambda item: item[1]))
     if aggregated_validation:
@@ -967,6 +1021,7 @@ def generate_and_run_benchmark(
 
     return {
         "output": aggregated_sorted,
+        "timing": aggregated_timing,
         "error": "",
         "return_code": 0,
     }

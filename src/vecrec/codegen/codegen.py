@@ -1218,6 +1218,8 @@ class CodeGen:
                 return f"int64_vec{lanes}"
             case ElementType.I8:
                 return f"int8_vec{lanes}"
+            case ElementType.I16:
+                return f"int16_vec{lanes}"
 
     def _new_register(self, vec_type: str, n: int = 1) -> int:
         curr = self.reg_counter.get(vec_type, 0)
@@ -1273,8 +1275,8 @@ class CodeGen:
         if isinstance(ty, CustomSemiring):
             self.custom_semirings.add(ty)
             return ty.name
-        # int8 tropical ops use saturating addition to prevent overflow
-        if element_type == ElementType.I8:
+        # int8/int16 tropical ops use saturating addition to prevent overflow
+        if element_type in (ElementType.I8, ElementType.I16):
             if ty is Type.Arith:
                 return ""
             elif ty is Type.TropMax:
