@@ -1130,6 +1130,47 @@ struct Tuple {
     void reset_and_next_row() {}
 };
 
+// SelectMax##suffix: argmax/argmin selection over n candidate registers.
+//
+// Template parameters:
+//   vec_type      – SIMD vector element type (output stores the winning label)
+//   n             – number of candidate value signals
+//   labels[n]     – integer label emitted for each candidate (compile-time)
+//
+// run(reg, base, srcs[n]):
+//   – reads candidate values from reg[srcs[0..n-1]]
+//   – scans candidates left→right keeping a running best value and its label
+//   – `better_op(cand, best)` is the strict comparison that decides whether the
+//     new candidate beats the running best; strict comparison means earlier
+//     candidates win ties (deterministic argmax: "keep latest best, or take i")
+//   – `reduce_op` folds the running best (max for TropMax, min for TropMin)
+//   – writes the winning label (splat across lanes) to reg[base]
+#define SelectMaxOp(suffix, better_op, reduce_op)                                                  \
+    template <typename vec_type, int n, const int labels[n]>                                       \
+    struct SelectMax##suffix {                                                                     \
+        using elt_type = typename ElementType<vec_type>::type;                                     \
+        SelectMax##suffix() = default;                                                             \
+        template <typename Reg_t>                                                                  \
+        inline __attribute__((always_inline)) void run(Reg_t &reg, int base, const int srcs[n]) {  \
+            vec_type best = reg[srcs[0]];                                                          \
+            vec_type idx = (elt_type)labels[0];                                                    \
+            _Pragma("unroll") for (int k = 1; k < n; k++) {                                        \
+                vec_type cand = reg[srcs[k]];                                                      \
+                auto mask = better_op(cand, best);                                                 \
+                vec_type lbl = (elt_type)labels[k];                                                \
+                idx = mask ? lbl : idx;                                                            \
+                best = reduce_op(best, cand);                                                      \
+            }                                                                                      \
+            reg[base] = idx;                                                                       \
+        }                                                                                          \
+        void reset_and_next_row() {}                                                               \
+    };
+
+SelectMaxOp(TropMax, [](auto cand, auto best) { return cand > best; }, [](auto a, auto b) { return __builtin_elementwise_max(a, b); });
+SelectMaxOp(TropMin, [](auto cand, auto best) { return cand < best; }, [](auto a, auto b) { return __builtin_elementwise_min(a, b); });
+SelectMaxOp(TropMaxSat, [](auto cand, auto best) { return cand > best; }, [](auto a, auto b) { return __builtin_elementwise_max(a, b); });
+SelectMaxOp(TropMinSat, [](auto cand, auto best) { return cand < best; }, [](auto a, auto b) { return __builtin_elementwise_min(a, b); });
+
 template <typename vec_type_in, typename vec_type_out, int taps>
 struct KConvertN2One {
     constexpr static int lanes_in = vec_lanes_of(vec_type_in{});
