@@ -34,6 +34,7 @@ __all__ = [
     "SNeg",
     "Convolve",
     "Convolve2D",
+    "SelectMax",
     "Recurse",
     "Recurse2D",
     "Var",

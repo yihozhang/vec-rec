@@ -15,6 +15,7 @@ from vecrec.expr.signal_ops import (
     SNeg,
     Convolve,
     Convolve2D,
+    SelectMax,
     Recurse,
     Recurse2D,
     ConvertLanes,
@@ -56,6 +57,8 @@ def _prec(expr: RecLang) -> int:
             return _PREC_UNARY
         case Convolve() | Convolve2D() | KConvolve():
             return _PREC_MUL
+        case SelectMax():
+            return _PREC_ATOM
         case PointwiseMul() | PointwiseDiv():
             return _PREC_MUL - 5
         case SAdd() | SSub() | KAdd() | KSub():
@@ -204,6 +207,11 @@ def _fmt_one(
         case Convolve2D(a, b):
             p = _PREC_MUL
             return f"{w(a, p)} × {w(b, p)}"
+
+        # --- Selection / argmax ---
+        case SelectMax(values, labels):
+            parts = ", ".join(f"{fmt(v)}@{lbl}" for v, lbl in zip(values, labels))
+            return f"argmax({parts})"
 
         # --- Recurrences ---
         case Recurse(a, g):

@@ -13,7 +13,7 @@ from vecrec.expr.base import (
     SignalExpr2DVec,
 )
 from vecrec.expr.signal import RVar2D, Var2D, ComputedSignal2D
-from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring
+from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring, SelectMax
 from vecrec.expr.signal_vec import VectorAt
 from . import Transform, _dedup_exprs
 from typing import Callable
@@ -256,6 +256,10 @@ class Preorder(Transform):
                     # Special handling for VectorAt to preserve the integer index
                     for new_vec_a in self.apply_generic(a):
                         results.append(VectorAt(new_vec_a, i).with_lanes(expr.lanes))
+                case SelectMax(values, labels):
+                    # Preserve the integer labels (not AST children).
+                    for new_values in itertools.product(*[self.apply_generic(v) for v in values]):
+                        results.append(SelectMax(list(new_values), labels).with_lanes(expr.lanes))
                 case WMVar():
                     results.append(expr)
                 case WindowMap():
@@ -486,6 +490,12 @@ class Postorder(Transform):
                 ]
             case VectorAt(a, i):
                 results = [VectorAt(new_vec_a, i).with_lanes(expr.lanes) for new_vec_a in self.apply_generic(a)]
+            case SelectMax(values, labels):
+                # Preserve the integer labels (not AST children).
+                results = [
+                    SelectMax(list(new_values), labels).with_lanes(expr.lanes)
+                    for new_values in itertools.product(*[self.apply_signal(v) for v in values])
+                ]
             case WMVar():
                 results = [expr]
             case WindowMap():

@@ -627,6 +627,28 @@ class CodeGen:
                         vec_type,
                         vec_type,
                     )
+                case SelectMax(values, labels):
+                    # Argmax selection: emit one SelectMax<sem> node per slice.
+                    # Each candidate value occupies one register; the labels are
+                    # a compile-time template array, the candidate source regs a
+                    # runtime array (same idiom as Tuple/SignalVector).
+                    n_cand = len(values)
+                    val_regs = [self.generate_signal(v)[0] for v in values]
+                    labels_var = self._declare_array("int", list(labels))
+                    regs = self._new_registers(vec_type, n_slices)
+                    sem_suffix = self.get_sem_suffix(ty, element_type)
+                    run_args_list = []
+                    for s in range(n_slices):
+                        src_var = self._declare_array("int", [val_regs[j][s] for j in range(n_cand)])
+                        run_args_list.append([regs[s], src_var])
+                    code = self._declare_node(
+                        f"SelectMax{sem_suffix}<{vec_type}, {n_cand}, {labels_var}>",
+                        "",
+                        run_args_list,
+                        vec_type,
+                        vec_type,
+                    )
+
                 case Recurse(a, g):
                     time_delay, a = a.time_delay(expr.lanes)
                     assert time_delay == a.lanes

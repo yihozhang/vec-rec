@@ -5,7 +5,7 @@ from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr, SignalExpr2DVec
 from vecrec.expr.signal import RVar2D, Var2D, ComputedSignal2D
-from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring
+from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring, SelectMax
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.expr.signal_vec import VectorAt, RecurseV, ConvolveV, SignalVector
 from vecrec.expr.kernel_matrix import KernelMatrix
@@ -306,6 +306,16 @@ class AnnotateLanes(Transform):
             new_cs.lanes = target_lanes
             return [new_cs]
 
+        if isinstance(expr, SelectMax):
+            # Pointwise selection: annotate every candidate at max lanes and
+            # rebuild explicitly so the integer labels are preserved (the
+            # generic type(expr)(*args) path cannot pass labels).
+            lanes = self.max_lanes(element_type)
+            new_values = [self.convert_lanes(self.apply_signal(v)[0], lanes) for v in expr.values]
+            new_sel = SelectMax(new_values, expr.labels)
+            new_sel.lanes = lanes
+            return [new_sel]
+
         if isinstance(expr, VectorAt) and isinstance(expr.a, WindowMapVec):
             wmv = expr.a
             # Discover K from the body (same pattern as WindowMap).
@@ -537,6 +547,11 @@ class PushDownConvertLanesImpl(Transform):
                 return new_cs
             if isinstance(expr, Recurse):
                 return expr if expr.lanes == target else _wrap_signal(expr, target)
+            if isinstance(expr, SelectMax):
+                new_vals = [cast(SignalExpr, self._relane(v, target, subst)) for v in expr.values]
+                new_sel = SelectMax(new_vals, expr.labels)
+                new_sel.lanes = target
+                return new_sel
             if isinstance(expr, Convolve2D):
                 raise AssertionError("Convolve2D should have been eliminated")
             if isinstance(expr, Ith):

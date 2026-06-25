@@ -263,3 +263,4 @@ def _sample(elt: ElementType, shape: tuple[int, ...]) -> np.ndarray:
             return np.random.randint(0, 1000, shape, dtype=np.int64)
         case ElementType.I8:
             return np.random.randint(-1, 1, shape, dtype=np.int8)
+    raise ValueError(f"Unsupported element type {elt}")
