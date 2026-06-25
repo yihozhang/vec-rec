@@ -28,21 +28,26 @@ template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
 struct MatchSignal2D {
     using elt_type = typename ElementType<vec_type>::type;
     static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
-    const elt_type *s1; const elt_type *s2; int stride;
+    const int8_t *s1; const int8_t *s2; int stride;
     elt_type match_cost, mismatch_cost; int current_row, my_col;
     MatchSignal2D() = delete;
-    MatchSignal2D(const elt_type *s1, const elt_type *s2, int stride,
+    MatchSignal2D(const int8_t *s1, const int8_t *s2, int stride,
                   elt_type m, elt_type mm)
         : s1(s1), s2(s2), stride(stride), match_cost(m), mismatch_cost(mm),
           current_row(block_row), my_col(0) {}
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
-        vec_type s2v; memcpy(&s2v, s2 + my_col, sizeof(vec_type));
+        vec_type s2v;
+        if constexpr (lanes == 1) {
+            s2v = (elt_type)s2[my_col];
+        } else {
+            _Pragma("unroll") for (int k = 0; k < lanes; k++) s2v[k] = (elt_type)s2[my_col + k];
+        }
         const vec_type mv = match_cost;
         const vec_type mmv = mismatch_cost;
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             int r = current_row - i;
-            elt_type a = (r >= 0) ? s1[r] : (elt_type)(-1);
+            elt_type a = (r >= 0) ? (elt_type)s1[r] : (elt_type)(-1);
             vec_type av = a;
             reg[base + i] = (av == s2v) ? mv : mmv;
         }
@@ -53,9 +58,9 @@ struct MatchSignal2D {
 """
 
 SETUP = (
-    f"std::vector<int32_t> s1(N / row_size), s2(row_size);\n"
-    f"for (int i = 0; i < N / row_size; i++) s1[i] = i % {ALPHA};\n"
-    f"for (int j = 0; j < row_size; j++) s2[j] = j % {ALPHA};\n"
+    f"std::vector<int8_t> s1(N / row_size), s2(row_size);\n"
+    f"for (int i = 0; i < N / row_size; i++) s1[i] = (int8_t)(i % {ALPHA});\n"
+    f"for (int j = 0; j < row_size; j++) s2[j] = (int8_t)(j % {ALPHA});\n"
 )
 
 

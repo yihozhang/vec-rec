@@ -41,11 +41,11 @@ _BOUND = int(np.iinfo(np.int32).max // 8)
 MATCH_SIGNAL_PRELUDE = r"""
 template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
 struct MatchSignal2D {
-    using elt_type = typename ElementType<vec_type>::type;
+    using elt_type = typename ElementType<vec_type>::type;   // cost type (e.g. int32)
     static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
 
-    const elt_type *s1;   // row-indexed
-    const elt_type *s2;   // column-indexed, length >= stride
+    const int8_t *s1;   // row-indexed characters
+    const int8_t *s2;   // column-indexed characters, length >= stride
     int stride;
     elt_type match_cost;
     elt_type mismatch_cost;
@@ -53,7 +53,7 @@ struct MatchSignal2D {
     int my_col;
 
     MatchSignal2D() = delete;
-    MatchSignal2D(const elt_type *s1, const elt_type *s2, int stride,
+    MatchSignal2D(const int8_t *s1, const int8_t *s2, int stride,
                   elt_type match_cost, elt_type mismatch_cost)
         : s1(s1), s2(s2), stride(stride),
           match_cost(match_cost), mismatch_cost(mismatch_cost),
@@ -61,13 +61,19 @@ struct MatchSignal2D {
 
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
+        // Widen the int8 characters of s2[my_col .. my_col+lanes) into the cost-typed
+        // lane vector so the comparison/blend happens at the cost element width.
         vec_type s2v;
-        memcpy(&s2v, s2 + my_col, sizeof(vec_type));   // unaligned-safe load
+        if constexpr (lanes == 1) {
+            s2v = (elt_type)s2[my_col];
+        } else {
+            _Pragma("unroll") for (int k = 0; k < lanes; k++) s2v[k] = (elt_type)s2[my_col + k];
+        }
         const vec_type mv = match_cost;                // scalar broadcast to all lanes
         const vec_type mmv = mismatch_cost;
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             int r = current_row - i;
-            elt_type a = (r >= 0) ? s1[r] : (elt_type)(-1);
+            elt_type a = (r >= 0) ? (elt_type)s1[r] : (elt_type)(-1);
             vec_type av = a;                           // scalar broadcast to all lanes
             reg[base + i] = (av == s2v) ? mv : mmv;
         }
@@ -84,9 +90,9 @@ struct MatchSignal2D {
 # Allocate + fill the two 1D strings from a deterministic formula so the Python reference
 # can reproduce them exactly. Emitted once in driver scope; `N` and `row_size` are in scope.
 MATCH_SIGNAL_SETUP = (
-    f"std::vector<int32_t> s1(N / row_size), s2(row_size);\n"
-    f"for (int i = 0; i < N / row_size; i++) s1[i] = i % {ALPHA};\n"
-    f"for (int j = 0; j < row_size; j++) s2[j] = j % {ALPHA};\n"
+    f"std::vector<int8_t> s1(N / row_size), s2(row_size);\n"
+    f"for (int i = 0; i < N / row_size; i++) s1[i] = (int8_t)(i % {ALPHA});\n"
+    f"for (int j = 0; j < row_size; j++) s2[j] = (int8_t)(j % {ALPHA});\n"
 )
 
 
