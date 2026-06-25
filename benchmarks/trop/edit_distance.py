@@ -107,12 +107,8 @@ class EditDistanceBenchmark(Benchmark):
 
     @property
     def verify_n_rows_2d(self) -> int:
+        # Divisible by the row-blocking factors the sweep tries (2, 4) so blocks tile evenly.
         return 8
-
-    def build_codegen(self) -> CodeGen:
-        # ComputedSignal2D is constructed once and passed into the kernel constructor,
-        # so it only supports single-row blocks (rows_per_iter=1).
-        return CodeGen(rows_per_iter=1)
 
     def _match_signal(self) -> ComputedSignal2D:
         return ComputedSignal2D(

@@ -9,6 +9,7 @@ both the raw signal and a full Levenshtein edit-distance recurrence built on it.
 """
 
 import numpy as np
+import pytest
 
 from vecrec.expr.base import SignalExpr, Type, with_types
 from vecrec.expr.kernel import TVKernel2D
@@ -143,6 +144,26 @@ def test_edit_distance_correctness() -> None:
     n = n_rows * row_size
 
     runner = generate_kernel_executable(CodeGen(rows_per_iter=1), schedule, row_size=row_size)
+    output, _, _ = runner.run({}, n=n)
+
+    expected = _levenshtein_reference(n_rows, row_size)
+    assert np.array_equal(output, expected)
+
+
+@pytest.mark.parametrize("rpi", [2, 4])
+def test_edit_distance_row_blocking(rpi: int) -> None:
+    """Row blocking (rows_per_iter > 1) over a ComputedSignal2D produces the same
+    table as the rpi=1 path. The match signal is block-row aware: codegen replicates
+    it per block-row (baking block_row into the resolved C++ type) and the driver
+    constructs one signal object per block-row."""
+    expr = _edit_distance_expr()
+    schedule = get_candidate_schedules(expr, get_native_bits())[0]
+
+    row_size = 256
+    n_rows = 64  # divisible by rpi so blocks tile the rows evenly
+    n = n_rows * row_size
+
+    runner = generate_kernel_executable(CodeGen(rows_per_iter=rpi), schedule, row_size=row_size)
     output, _, _ = runner.run({}, n=n)
 
     expected = _levenshtein_reference(n_rows, row_size)
