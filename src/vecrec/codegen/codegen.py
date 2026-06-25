@@ -265,15 +265,9 @@ class CodeGen:
                     "offsets and silently produce wrong output. Convert the 1D Vars "
                     "to Var2D, or use rows_per_iter=1."
                 )
-            # A ComputedSignal2D is constructed once in driver scope and passed into the
-            # kernel constructor; row blocking would need one object per block-row, which
-            # the driver does not emit. Restrict computed signals to rows_per_iter=1.
-            if self._contains_computed_signal(expr):
-                raise ValueError(
-                    f"rows_per_iter={self.rows_per_iter} with a ComputedSignal2D input is "
-                    "unsupported: the signal object is constructed once and passed into the "
-                    "kernel constructor. Use rows_per_iter=1."
-                )
+            # ComputedSignal2D is block-row aware (like InputSignal2D): codegen replicates
+            # it per block-row, baking block_row into the resolved type, and the driver
+            # constructs one signal object per block-row. So rpi > 1 is supported.
 
         n_block_rows = self.rows_per_iter
         per_row_results: List[Tuple[List[int], Code]] = []
@@ -1253,20 +1247,6 @@ class CodeGen:
             return True
         for child in expr.children():
             if self._contains_repeater(child, visited):
-                return True
-        return False
-
-    def _contains_computed_signal(self, expr: RecLang, visited: Optional[Set[int]] = None) -> bool:
-        """True if the expression tree contains a ComputedSignal2D leaf."""
-        if visited is None:
-            visited = set()
-        if id(expr) in visited:
-            return False
-        visited.add(id(expr))
-        if isinstance(expr, ComputedSignal2D):
-            return True
-        for child in expr.children():
-            if self._contains_computed_signal(child, visited):
                 return True
         return False
 
