@@ -1,7 +1,7 @@
 from typing import List, Optional, Dict, Set, Tuple, cast
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D, SignalVectorExpr, KernelMatrixExpr, Type
-from vecrec.expr.signal import RVar2D, Var2D
+from vecrec.expr.signal import RVar2D, Var2D, ComputedSignal2D
 from vecrec.expr.signal_ops import (
     Repeater,
     Ith,
@@ -21,6 +21,25 @@ from vecrec.util import ElementType
 from importlib.resources import files
 
 TEMPLATE = files("vecrec.templates") / "common.h"
+
+
+class ComputedSignalDecl:
+    """Descriptor for a ComputedSignal2D lowered into a kernel. The signal struct is
+    constructed in driver scope (from `setup_code`'s buffers) and passed into the
+    kernel constructor by value via the `param_name` parameter."""
+
+    param_name: str
+    resolved_type: str
+    prelude: str
+    setup_code: str
+    make_args: str
+
+    def __init__(self, param_name: str, resolved_type: str, prelude: str, setup_code: str, make_args: str):
+        self.param_name = param_name
+        self.resolved_type = resolved_type
+        self.prelude = prelude
+        self.setup_code = setup_code
+        self.make_args = make_args
 
 
 class Code:
@@ -43,6 +62,7 @@ class KernelProgram:
     element_per_iter: int
     rows_per_iter: int
     custom_semirings: Set[CustomSemiring]
+    computed_signals: List[ComputedSignalDecl]
 
     def __init__(
         self,
@@ -50,12 +70,14 @@ class KernelProgram:
         element_per_iter: int,
         custom_semirings: Optional[Set[CustomSemiring]] = None,
         rows_per_iter: int = 1,
+        computed_signals: Optional[List[ComputedSignalDecl]] = None,
     ):
         assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
         self.text = text
         self.element_per_iter = element_per_iter
         self.rows_per_iter = rows_per_iter
         self.custom_semirings = custom_semirings if custom_semirings is not None else set()
+        self.computed_signals = computed_signals if computed_signals is not None else []
 
 
 class TopoSort(Transform):
@@ -166,6 +188,7 @@ class CodeGen:
         self.rvec_comp_regs = {}
         self._wm_var_map = {}
         self.custom_semirings: Set[CustomSemiring] = set()
+        self.computed_signals: List[ComputedSignalDecl] = []
 
     def clear(self):
         self.current_block_row = 0
@@ -182,6 +205,7 @@ class CodeGen:
         self.rvec_comp_regs = {}
         self._wm_var_map = {}
         self.custom_semirings = set()
+        self.computed_signals = []
 
     def _max_lanes_in_tree(self, expr: RecLang, visited: Optional[set] = None) -> int:
         """Find the maximum lane width across all nodes in the expression tree."""
@@ -241,6 +265,15 @@ class CodeGen:
                     "offsets and silently produce wrong output. Convert the 1D Vars "
                     "to Var2D, or use rows_per_iter=1."
                 )
+            # A ComputedSignal2D is constructed once in driver scope and passed into the
+            # kernel constructor; row blocking would need one object per block-row, which
+            # the driver does not emit. Restrict computed signals to rows_per_iter=1.
+            if self._contains_computed_signal(expr):
+                raise ValueError(
+                    f"rows_per_iter={self.rows_per_iter} with a ComputedSignal2D input is "
+                    "unsupported: the signal object is constructed once and passed into the "
+                    "kernel constructor. Use rows_per_iter=1."
+                )
 
         n_block_rows = self.rows_per_iter
         per_row_results: List[Tuple[List[int], Code]] = []
@@ -249,9 +282,12 @@ class CodeGen:
             per_row_results.append(self.generate_signal(expr))
 
         vars, vars2d = self.collect_input_variables(expr)
+        # ComputedSignal2D objects are constructed in driver scope and passed in by value;
+        # they precede the raw input pointers in the constructor signature.
+        args_computed = [f"{d.resolved_type} {d.param_name}" for d in self.computed_signals]
         args_1d = [f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items())]
         args_2d = [f"const {elt_type.to_str()} *{var}, int {var}_stride" for var, elt_type in sorted(vars2d.items())]
-        all_args = args_1d + args_2d + ["int row_size"]
+        all_args = args_computed + args_1d + args_2d + ["int row_size"]
         args = ", ".join(all_args)
         new_line = "\n            "
         assert expr.lanes is not None
@@ -318,6 +354,7 @@ class CodeGen:
             self.ele_per_iter,
             set(self.custom_semirings),
             rows_per_iter=self.rows_per_iter,
+            computed_signals=list(self.computed_signals),
         )
 
     def _generate_windowmap(self, wm: WindowMap) -> List[int]:
@@ -771,6 +808,27 @@ class CodeGen:
                         vec_type,
                     )
 
+                case ComputedSignal2D(name, cpp_struct, prelude, setup_code, make_args, n_rows):
+                    assert n_rows is not None
+                    block_row = self.current_block_row
+                    block_size = self._block_size_template()
+                    regs = self._new_registers(vec_type, n_slices, n_rows)
+                    resolved_type = f"{cpp_struct}<{vec_type}, {n_rows}, {block_size}, {block_row}>"
+                    # The signal object is constructed in driver scope (from setup_code)
+                    # and passed into the kernel constructor via `param`; the member is
+                    # initialized by copy from that parameter.
+                    param = self._new_var()
+                    self.computed_signals.append(
+                        ComputedSignalDecl(param, resolved_type, prelude, setup_code, make_args)
+                    )
+                    code = self._declare_node(
+                        resolved_type,
+                        param,
+                        [[r] for r in regs],
+                        vec_type,
+                        vec_type,
+                    )
+
                 case Signal2DAt(rv_inner, comp_idx):
                     assert isinstance(
                         rv_inner, RepeaterVec
@@ -1176,6 +1234,20 @@ class CodeGen:
                 return True
         return False
 
+    def _contains_computed_signal(self, expr: RecLang, visited: Optional[Set[int]] = None) -> bool:
+        """True if the expression tree contains a ComputedSignal2D leaf."""
+        if visited is None:
+            visited = set()
+        if id(expr) in visited:
+            return False
+        visited.add(id(expr))
+        if isinstance(expr, ComputedSignal2D):
+            return True
+        for child in expr.children():
+            if self._contains_computed_signal(child, visited):
+                return True
+        return False
+
     def collect_input_variables(
         self,
         expr: RecLang,
@@ -1298,7 +1370,7 @@ class CodeGen:
                 raise ValueError(f"RVar2D '{signal2d.name}' used outside of Repeater context")
             return self.var2d_context[signal2d.name][1]
 
-        if isinstance(signal2d, (Repeater, Var2D)):
+        if isinstance(signal2d, (Repeater, Var2D, ComputedSignal2D)):
             assert signal2d.n_rows is not None, (
                 f"{type(signal2d).__name__} has n_rows=None at codegen time. "
                 "Did you forget to include InferNRows in your schedule before AnnotateLanes?"

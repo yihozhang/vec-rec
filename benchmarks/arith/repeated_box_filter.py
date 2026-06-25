@@ -98,6 +98,9 @@ class RepeatedBoxFilterBenchmark(Benchmark):
     def verify_n_rows_2d(self) -> int:
         # SAT kernel grows like Pascal's triangle; 4 rows keeps values in safe float32 range
         return 4
+    
+    def build_codegen(self) -> CodeGen:
+        return CodeGen(ele_per_iter_multiple=2, rows_per_iter=2)
 
     @property
     def verify_rtol(self) -> float:

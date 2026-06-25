@@ -4,7 +4,7 @@ import copy
 from vecrec.expr import *
 from vecrec.expr import KernelExpr, SignalExpr
 from vecrec.expr.base import KernelExpr2D, SignalExpr2D, KernelMatrixExpr, SignalVectorExpr, SignalExpr2DVec
-from vecrec.expr.signal import RVar2D, Var2D
+from vecrec.expr.signal import RVar2D, Var2D, ComputedSignal2D
 from vecrec.expr.signal_ops import Repeater, Convolve2D, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring
 from vecrec.expr.kernel import TIKernel2D, TVKernel2D
 from vecrec.expr.signal_vec import VectorAt, RecurseV, ConvolveV, SignalVector
@@ -84,7 +84,7 @@ class InferNRows(Transform):
 
     def apply_generic(self, expr):
         # Phase 1: DFS to collect all Var2D/Repeater/RepeaterVec nodes and build rvar maps.
-        all_var2d: list[Var2D] = []
+        all_var2d: list[Var2D | ComputedSignal2D] = []
         all_repeaters: list[Repeater] = []
         all_repeatervecs: list[RepeaterVec] = []
         rvar_to_repeater: dict[str, Repeater] = {}
@@ -95,7 +95,7 @@ class InferNRows(Transform):
             if id(e) in visited_phase1:
                 return
             visited_phase1.add(id(e))
-            if isinstance(e, Var2D):
+            if isinstance(e, (Var2D, ComputedSignal2D)):
                 all_var2d.append(e)
             elif isinstance(e, Repeater):
                 all_repeaters.append(e)
@@ -121,7 +121,7 @@ class InferNRows(Transform):
             visited_phase2.add(id(e))
             if isinstance(e, Ith):
                 x, i = e.a, e.i
-                if isinstance(x, Var2D):
+                if isinstance(x, (Var2D, ComputedSignal2D)):
                     var2d_bounds[x.name] = max(var2d_bounds.get(x.name, 0), i + 1)
                 elif isinstance(x, Repeater):
                     repeater_bounds[x] = max(repeater_bounds.get(x, 0), i + 1)
@@ -147,7 +147,9 @@ class InferNRows(Transform):
 
         # Phase 3: Apply bounds, raise if any node remains unresolved.
         # Pre-compute ALL bounds before any mutation to avoid hash instability.
-        final_var2d: list[tuple[Var2D, int]] = [(v, max(v.n_rows or 0, var2d_bounds.get(v.name, 0))) for v in all_var2d]
+        final_var2d: list[tuple[Var2D | ComputedSignal2D, int]] = [
+            (v, max(v.n_rows or 0, var2d_bounds.get(v.name, 0))) for v in all_var2d
+        ]
         final_repeaters: list[tuple[Repeater, int]] = [
             (r, max(r.n_rows or 0, repeater_bounds.get(r, 0))) for r in all_repeaters
         ]
@@ -159,7 +161,7 @@ class InferNRows(Transform):
             v.n_rows = bound or None
             if not v.n_rows:
                 raise ValueError(
-                    f"Var2D('{v.name}') has no Ith usages — n_rows cannot be inferred. "
+                    f"{type(v).__name__}('{v.name}') has no Ith usages — n_rows cannot be inferred. "
                     "Call InferNRows after Eliminate2DKernels."
                 )
 
@@ -251,6 +253,8 @@ class AnnotateLanes(Transform):
             case RVar2D(_name):
                 return [expr.with_lanes(lanes)]
             case Var2D(_name, _n_rows):
+                return [expr.with_lanes(lanes)]
+            case ComputedSignal2D(_name):
                 return [expr.with_lanes(lanes)]
             case Signal2DAt(vec_expr, _comp_idx):
                 new_vec = self.apply_signal2dvec(vec_expr)[0]
@@ -662,7 +666,7 @@ class PushDownConvertLanesImpl(Transform):
                 if expr.name in subst:
                     return subst[expr.name]
                 return RVar2D(expr.name, expr.ty, expr.element_type).with_lanes(target)
-            if isinstance(expr, Var2D):
+            if isinstance(expr, (Var2D, ComputedSignal2D)):
                 new_var2d = copy.copy(expr)
                 new_var2d.lanes = target
                 return new_var2d
