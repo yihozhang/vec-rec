@@ -6,7 +6,7 @@ from typing import Callable, Sequence
 from vecrec.expr.base import (
     RecLang,
 )
-from vecrec.expr.signal import Num, Impulse, Var, RVar2D, Var2D
+from vecrec.expr.signal import Num, Impulse, Var, RVar2D, Var2D, ComputedSignal2D
 from vecrec.expr.signal_ops import (
     SAdd,
     SSub,
@@ -155,6 +155,9 @@ def _fmt_one(
             return n.lstrip("$")
 
         case Var2D(name=n):
+            return n
+
+        case ComputedSignal2D(name=n):
             return n
 
         # --- Kernels ---

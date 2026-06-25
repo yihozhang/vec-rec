@@ -39,6 +39,7 @@ __all__ = [
     "Recurse2D",
     "Var",
     "Var2D",
+    "ComputedSignal2D",
     "RVar2D",
     "RVec2D",
     "with_types",

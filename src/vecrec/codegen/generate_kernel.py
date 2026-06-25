@@ -1,5 +1,5 @@
 from typing import Any, List, Optional, Sequence, Dict, Tuple, Union
-from vecrec.codegen.codegen import CodeGen, KernelProgram
+from vecrec.codegen.codegen import CodeGen, KernelProgram, ComputedSignalDecl
 from vecrec.expr import *
 from vecrec.expr.base import SignalExpr2D
 from vecrec.util import ElementType
@@ -32,6 +32,15 @@ def instantiate_kernels(path: str, codes: List[KernelProgram] | List[str]) -> No
                 if sem not in seen_semirings:
                     seen_semirings.add(sem)
                     text += "\n" + sem.cpp_preamble()
+    # Emit each ComputedSignal2D prelude (the user-provided signal struct definition)
+    # exactly once, before the kernel structs that reference it.
+    seen_preludes: set = set()
+    for code in codes:
+        if isinstance(code, KernelProgram):
+            for decl in code.computed_signals:
+                if decl.prelude not in seen_preludes:
+                    seen_preludes.add(decl.prelude)
+                    text += "\n" + decl.prelude
     for code in codes:
         text += "\n" + (code.text if isinstance(code, KernelProgram) else code)
     with open(path, "w") as f:
@@ -52,6 +61,7 @@ def generate_benchmark(
     row_size: int = 1024,
     ele_per_iter_list: Optional[List[int]] = None,
     rows_per_iter_list: Optional[List[int]] = None,
+    computed_signals_list: Optional[List[List[ComputedSignalDecl]]] = None,
 ) -> None:
     """
     Generate a C++ benchmarking program for the given kernels.
@@ -90,6 +100,9 @@ def generate_benchmark(
         rows_per_iter_list = [1] * len(exprs)
     assert all(rpi >= 1 for rpi in rows_per_iter_list), "rows_per_iter must be >= 1"
 
+    if computed_signals_list is None:
+        computed_signals_list = [[] for _ in exprs]
+
     benchmark_code = _generate_benchmark_code(
         all_vars,
         all_vars2d,
@@ -104,6 +117,7 @@ def generate_benchmark(
         row_size,
         ele_per_iter_list,
         rows_per_iter_list,
+        computed_signals_list,
     )
 
     with open(output_path, "w") as f:
@@ -124,6 +138,7 @@ def _generate_benchmark_code(
     row_size: int,
     ele_per_iter_list: List[int],
     rows_per_iter_list: List[int],
+    computed_signals_list: List[List[ComputedSignalDecl]],
 ) -> str:
     """Generate the complete C++ benchmark code."""
 
@@ -201,17 +216,35 @@ def _generate_benchmark_code(
     # With causal (look-behind) semantics, N output elements need exactly N input elements.
     _benchmark_row_width = 1024
 
+    # Emit each unique ComputedSignal2D setup block once. These allocate+fill the raw
+    # buffers the computed signals read; all kernels in this binary share them, so the
+    # cross-schedule correctness check compares kernels on identical data.
+    benchmark_text += "    // ComputedSignal2D buffer setup\n"
+    seen_setup: set = set()
+    for sig_list in computed_signals_list:
+        for decl in sig_list:
+            if decl.setup_code not in seen_setup:
+                seen_setup.add(decl.setup_code)
+                for line in decl.setup_code.splitlines():
+                    benchmark_text += f"    {line}\n"
+    benchmark_text += "\n"
+
     # Generate output buffers for each kernel
     benchmark_text += "    // Output buffers for each kernel\n"
     for i, name in enumerate(kernel_names):
         benchmark_text += f"    std::vector<{output_type.to_str()}> output_{name}(N);\n"
     benchmark_text += "\n"
 
-    # Generate benchmark code for each kernel
+    # Generate benchmark code for each kernel. ComputedSignal2D objects are constructed
+    # inline (per kernel, since their resolved C++ type depends on the kernel's lanes)
+    # and prepended to the raw input pointers, matching the constructor signature order.
     var_args_1d = [f"{var}.data()" for var in sorted(all_vars)]
     var_args_2d = [f"{var}.data(), row_size" for var in sorted(all_vars2d)]
-    var_args_list = var_args_1d + var_args_2d + ["row_size"]
-    var_args = ", ".join(var_args_list)
+    var_args_base = var_args_1d + var_args_2d + ["row_size"]
+
+    def kernel_ctor_args(idx: int) -> str:
+        sig_args = [f"{d.resolved_type}({d.make_args})" for d in computed_signals_list[idx]]
+        return ", ".join(sig_args + var_args_base)
 
     benchmark_text += '    std::cout << "{\\n";'
 
@@ -223,7 +256,7 @@ def _generate_benchmark_code(
 
         benchmark_text += "        // Warmup\n"
         benchmark_text += "        {\n"
-        benchmark_text += f"            auto kernel = {name}({var_args});\n"
+        benchmark_text += f"            auto kernel = {name}({kernel_ctor_args(i)});\n"
         benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
         benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
         benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
@@ -241,7 +274,7 @@ def _generate_benchmark_code(
         benchmark_text += "        samples_us.reserve(static_cast<std::size_t>(iterations));\n"
         benchmark_text += "        for (int iter = 0; iter < iterations; iter++) {\n"
         benchmark_text += "            auto start = std::chrono::high_resolution_clock::now();\n"
-        benchmark_text += f"            auto kernel = {name}({var_args});\n"
+        benchmark_text += f"            auto kernel = {name}({kernel_ctor_args(i)});\n"
         benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
         benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
         benchmark_text += "            int row_base = 0;\n"
@@ -472,10 +505,18 @@ class KernelExecutable:
         inputs_2d = {k: v for k, v in inputs.items() if k in all_2d}
         return inputs_1d, inputs_2d
 
-    def run(self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]) -> tuple[np.ndarray, float, float]:
-        inputs_1d, inputs_2d = self._normalize_inputs(inputs)
+    def run(
+        self,
+        inputs: Union[np.ndarray, Dict[str, np.ndarray]],
+        n: Optional[int] = None,
+    ) -> tuple[np.ndarray, float, float]:
+        """Run the compiled kernel.
 
-        n: Optional[int] = None
+        `n` is the output length. It is normally inferred from the input arrays
+        (1D length, or H*stride for 2D), but must be supplied explicitly when the
+        kernel has no materialized inputs — e.g. a ComputedSignal2D whose buffers
+        are owned by the C++ setup code (pass `inputs={}` and an explicit `n`)."""
+        inputs_1d, inputs_2d = self._normalize_inputs(inputs)
 
         # Prepare 1D inputs
         prepared_1d: Dict[str, np.ndarray] = {}
@@ -572,8 +613,10 @@ def _generate_kernel_runner_code(
     header_path: str,
     ele_per_iter: int,
     rows_per_iter: int = 1,
+    computed_signals: Optional[List[ComputedSignalDecl]] = None,
 ) -> str:
     assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
+    computed_signals = computed_signals or []
     var_items = sorted(all_vars.items())
     var2d_items = sorted(all_vars2d.items())
 
@@ -654,10 +697,22 @@ def _generate_kernel_runner_code(
         text += "    }\n"
     text += "\n"
 
-    # Build var_args: 1D args first (sorted), then 2D args (sorted), each as "name.data(), stride_name"
+    # Emit each unique ComputedSignal2D setup block once (allocates+fills its raw
+    # buffers from N / row_size), then construct each signal object inline as the
+    # leading kernel-constructor arguments (matching the constructor signature order).
+    seen_setup: set = set()
+    for decl in computed_signals:
+        if decl.setup_code not in seen_setup:
+            seen_setup.add(decl.setup_code)
+            for line in decl.setup_code.splitlines():
+                text += f"    {line}\n"
+    text += "\n"
+
+    # Build var_args: computed-signal objects first, then 1D args (sorted), then 2D args (sorted).
+    sig_args = [f"{decl.resolved_type}({decl.make_args})" for decl in computed_signals]
     var_args_1d = [f"{name}.data()" for name, _ in var_items]
     var_args_2d = [f"{name}.data(), stride_{name}" for name, _ in var2d_items]
-    var_args = ", ".join(var_args_1d + var_args_2d + ["row_size"])
+    var_args = ", ".join(sig_args + var_args_1d + var_args_2d + ["row_size"])
     output_cpp_type = output_type.to_str()
 
     text += f"    auto kernel = {kernel_name}({var_args});\n"
@@ -764,6 +819,7 @@ def _build_kernel_executable(
         header_path=header_path,
         ele_per_iter=code.element_per_iter,
         rows_per_iter=code.rows_per_iter,
+        computed_signals=code.computed_signals,
     )
     with open(runner_path, "w") as f:
         f.write(runner_code)
@@ -936,6 +992,7 @@ def generate_and_run_benchmark(
             row_size=row_size,
             ele_per_iter_list=[codes_global[i].element_per_iter for i in batch],
             rows_per_iter_list=[codes_global[i].rows_per_iter for i in batch],
+            computed_signals_list=[codes_global[i].computed_signals for i in batch],
         )
 
     # Compile every batch — in parallel by default, sequentially when requested.

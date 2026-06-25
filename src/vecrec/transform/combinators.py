@@ -12,7 +12,7 @@ from vecrec.expr.base import (
     SignalVectorExpr,
     SignalExpr2DVec,
 )
-from vecrec.expr.signal import RVar2D, Var2D
+from vecrec.expr.signal import RVar2D, Var2D, ComputedSignal2D
 from vecrec.expr.signal_ops import Repeater, Ith, Recurse2D, Signal2DAt, RepeaterVec, WindowMap, WindowMapVec, WMVar, ChangeSemiring, SelectMax
 from vecrec.expr.signal_vec import VectorAt
 from . import Transform, _dedup_exprs
@@ -318,7 +318,7 @@ class Preorder(Transform):
         results: List[SignalExpr2D] = []
         for expr in self.transform.apply_generic(expr):
             match expr:
-                case RVar2D(_) | Var2D(_):
+                case RVar2D(_) | Var2D(_) | ComputedSignal2D(_):
                     results.append(expr)
                 case Repeater(_):
                     for new_a in self.apply_generic(expr.a):
@@ -556,7 +556,7 @@ class Postorder(Transform):
 
         results: List[SignalExpr2D] = []
         match expr:
-            case RVar2D(_) | Var2D(_):
+            case RVar2D(_) | Var2D(_) | ComputedSignal2D(_):
                 results = [expr]
             case Repeater(_):
                 for new_a in self.apply_generic(expr.a):

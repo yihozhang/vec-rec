@@ -80,15 +80,19 @@ def allclose(a, b, tol=1e-6):
 
 
 def get_native_bits() -> int:
-    # run lscpu and grep for avx512
+    import platform
     import subprocess
 
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        return 512
+
+    cmd = ["sysctl", "-a"] if platform.system() == "Darwin" else ["lscpu"]
     try:
-        output = subprocess.check_output("lscpu", text=True)
+        output = subprocess.check_output(cmd, text=True)
         for line in output.splitlines():
             if "avx512" in line.lower():
                 return 512
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, FileNotFoundError):
         pass
     return 256
 
