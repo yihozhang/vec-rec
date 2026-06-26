@@ -313,20 +313,31 @@ class CodeGen:
                 )
         memcpy_lines = new_line.join(memcpy_block)
 
+        # The per-run "register file" is declared as a local inside run() rather than
+        # as a struct member. The kernel object is constructed once and mutated across
+        # the driver's inner loop (it carries recurrence state in the operator members),
+        # so a member register file would be treated as loop-carried: every slot stays
+        # live across the loop back-edge and, for large kernels, gets spilled to the
+        # stack instead of promoted by SROA/mem2reg. A run()-local gets lifetime markers
+        # (run() is always-inlined), so the compiler knows the scratch is dead between
+        # iterations and keeps it in registers. The values are pure per-run scratch:
+        # persistent state lives in the operator objects, not here.
+        reg_decls = new_line.join(
+            map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types)
+        )
         text = f"""
         struct {name} {{
             // static array declarations
             {new_line.join(self.prologue)}
             // node declarations
             {new_line.join(map(lambda x: f"{x.class_name} {x.var_name};", self.program))}
-            // register declaration
-            {new_line.join(map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types))}
             inline __attribute__((always_inline)) {name}({args}) :
               {", ".join(map(lambda x: f"{x.var_name}({x.constructor_args})", self.program))}
-              {"".join(map(lambda x: f", reg_{x}()", self.vec_types))}
               {{}}
 
             inline __attribute__((always_inline)) {run_signature} {{
+                // register declaration (per-run scratch; local so SROA can promote it)
+                {reg_decls}
                 {new_line.join(map(generate_run_calls, self.program))}
                 {memcpy_lines}
             }}

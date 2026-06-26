@@ -44,20 +44,32 @@ struct MatchSignal2D {
     using elt_type = typename ElementType<vec_type>::type;   // cost type (e.g. int32)
     static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
 
-    const int8_t *s1;   // row-indexed characters
-    const int8_t *s2;   // column-indexed characters, length >= stride
+    const int8_t *__restrict__ s1;   // row-indexed characters
+    const int8_t *__restrict__ s2;   // column-indexed characters, length >= stride
     int stride;
     elt_type match_cost;
     elt_type mismatch_cost;
     int current_row;
     int my_col;
+    vec_type s1v[n_rows];            // broadcast current-row s1 chars (refreshed per row)
 
     MatchSignal2D() = delete;
-    MatchSignal2D(const int8_t *s1, const int8_t *s2, int stride,
+    MatchSignal2D(const int8_t *__restrict__ s1, const int8_t *__restrict__ s2, int stride,
                   elt_type match_cost, elt_type mismatch_cost)
         : s1(s1), s2(s2), stride(stride),
           match_cost(match_cost), mismatch_cost(mismatch_cost),
-          current_row(block_row), my_col(0) {}
+          current_row(block_row), my_col(0) { load_s1_row(); }
+
+    // s1[current_row - i] is constant across a row (current_row only moves in
+    // reset_and_next_row), so broadcast it into s1v once per row instead of
+    // reloading + broadcasting (and re-evaluating the r>=0 branch) on every run().
+    inline __attribute__((always_inline)) void load_s1_row() {
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
+            int r = current_row - i;
+            elt_type a = (r >= 0) ? (elt_type)s1[r] : (elt_type)(-1);
+            s1v[i] = a;                                 // scalar broadcast to all lanes
+        }
+    }
 
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
@@ -72,10 +84,7 @@ struct MatchSignal2D {
         const vec_type mv = match_cost;                // scalar broadcast to all lanes
         const vec_type mmv = mismatch_cost;
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
-            int r = current_row - i;
-            elt_type a = (r >= 0) ? (elt_type)s1[r] : (elt_type)(-1);
-            vec_type av = a;                           // scalar broadcast to all lanes
-            reg[base + i] = (av == s2v) ? mv : mmv;
+            reg[base + i] = (s1v[i] == s2v) ? mv : mmv;
         }
         my_col += lanes;
     }
@@ -83,6 +92,7 @@ struct MatchSignal2D {
     void reset_and_next_row() {
         current_row++;
         my_col = 0;
+        load_s1_row();
     }
 };
 """
