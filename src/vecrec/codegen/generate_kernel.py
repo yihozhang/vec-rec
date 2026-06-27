@@ -118,6 +118,7 @@ def generate_benchmark(
         ele_per_iter_list,
         rows_per_iter_list,
         computed_signals_list,
+        codegen.band_width,
     )
 
     with open(output_path, "w") as f:
@@ -139,6 +140,7 @@ def _generate_benchmark_code(
     ele_per_iter_list: List[int],
     rows_per_iter_list: List[int],
     computed_signals_list: List[List[ComputedSignalDecl]],
+    band_width: int = 0,
 ) -> str:
     """Generate the complete C++ benchmark code."""
 
@@ -291,8 +293,16 @@ def _generate_benchmark_code(
         benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
         benchmark_text += "            int row_base = 0;\n"
         benchmark_text += "            while (row_base < N) {\n"
-        benchmark_text += "                int col = 0;\n"
-        benchmark_text += "                while (col < row_size) {\n"
+        if band_width > 0:
+            bw = band_width
+            benchmark_text += f"                int _log_row = row_base / row_size;\n"
+            # Left side always 0 (no left restriction — avoids diagonal carry bug).
+            benchmark_text += f"                int col = 0;\n"
+            benchmark_text += f"                int col_end = std::min(row_size, ((_log_row + {rpi} + {bw} + {epi} - 1) / {epi}) * {epi});\n"
+            benchmark_text += "                while (col < col_end) {\n"
+        else:
+            benchmark_text += "                int col = 0;\n"
+            benchmark_text += "                while (col < row_size) {\n"
         benchmark_text += f"                    {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
         benchmark_text += f"                    {name}_vector_type* out_per_row[{rpi}] = {{\n"
         for r in range(rpi):

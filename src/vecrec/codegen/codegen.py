@@ -107,6 +107,8 @@ class Node:
     input_type: str
     output_type: str
     is_pointer: bool
+    seek_col_kind: str      # "no_op" | "my_col" | "row_ptrs" | "sconvolve" | "srecurse"
+    diag_context_var: str   # non-empty only for sconvolve nodes that are z-shifts from a ring buffer
 
     def __init__(
         self,
@@ -117,6 +119,8 @@ class Node:
         input_type: str,
         output_type: str,
         is_pointer: bool = False,
+        seek_col_kind: str = "no_op",
+        diag_context_var: str = "",
     ):
         self.class_name = class_name
         self.var_name = var_name
@@ -125,6 +129,8 @@ class Node:
         self.input_type = input_type
         self.output_type = output_type
         self.is_pointer = is_pointer
+        self.seek_col_kind = seek_col_kind
+        self.diag_context_var = diag_context_var
 
 
 class CodeGen:
@@ -168,12 +174,14 @@ class CodeGen:
     # Shared per-component RepeaterContext per RepeaterVec AST node (id-keyed).
     shared_repeatervec_contexts: Dict[int, List[str]]
 
-    def __init__(self, ele_per_iter_multiple: int = 2, rows_per_iter: Optional[int] = None):
+    def __init__(self, ele_per_iter_multiple: int = 2, rows_per_iter: Optional[int] = None, band_width: int = 0):
         assert ele_per_iter_multiple >= 1, "ele_per_iter_multiple must be >= 1"
         if rows_per_iter is not None:
             assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
+        assert band_width >= 0, "band_width must be >= 0 (0 = no banding)"
         self._ele_per_iter_multiple = ele_per_iter_multiple
         self._rows_per_iter_override = rows_per_iter
+        self.band_width = band_width
         self.current_block_row = 0
         self.reg_counter = {}
         self.var_counter = 0
@@ -189,6 +197,9 @@ class CodeGen:
         self._wm_var_map = {}
         self.custom_semirings: Set[CustomSemiring] = set()
         self.computed_signals: List[ComputedSignalDecl] = []
+        # Map from output register index -> RepeaterContext var name.
+        # Used to prime diagonal SConvolve carry in seek_col.
+        self.reg_to_context: Dict[int, str] = {}
 
     def clear(self):
         self.current_block_row = 0
@@ -206,6 +217,7 @@ class CodeGen:
         self._wm_var_map = {}
         self.custom_semirings = set()
         self.computed_signals = []
+        self.reg_to_context = {}
 
     def _max_lanes_in_tree(self, expr: RecLang, visited: Optional[set] = None) -> int:
         """Find the maximum lane width across all nodes in the expression tree."""
@@ -313,37 +325,45 @@ class CodeGen:
                 )
         memcpy_lines = new_line.join(memcpy_block)
 
-        # The per-run "register file" is declared as a local inside run() rather than
-        # as a struct member. The kernel object is constructed once and mutated across
-        # the driver's inner loop (it carries recurrence state in the operator members),
-        # so a member register file would be treated as loop-carried: every slot stays
-        # live across the loop back-edge and, for large kernels, gets spilled to the
-        # stack instead of promoted by SROA/mem2reg. A run()-local gets lifetime markers
-        # (run() is always-inlined), so the compiler knows the scratch is dead between
-        # iterations and keeps it in registers. The values are pure per-run scratch:
-        # persistent state lives in the operator objects, not here.
-        reg_decls = new_line.join(
-            map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types)
-        )
+        # Generate seek_col method body
+        seek_col_lines = []
+        for node in self.program:
+            v = node.var_name
+            k = node.seek_col_kind
+            connector = "->" if node.is_pointer else "."
+            if k in ("my_col", "row_ptrs", "sconvolve", "srecurse"):
+                seek_col_lines.append(f"{v}{connector}seek_col(col_start);")
+            if k == "sconvolve" and node.diag_context_var:
+                ctx = node.diag_context_var
+                seek_col_lines.append(
+                    f"if (col_start > 0) {{ auto _dv = {ctx}.prev_row_scalar(col_start - 1); {v}{connector}prime_diagonal_carry(_dv); }}"
+                )
+        seek_col_body = new_line.join(seek_col_lines) if seek_col_lines else ""
+
         text = f"""
         struct {name} {{
             // static array declarations
             {new_line.join(self.prologue)}
             // node declarations
             {new_line.join(map(lambda x: f"{x.class_name} {x.var_name};", self.program))}
+            // register declaration
+            {new_line.join(map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types))}
             inline __attribute__((always_inline)) {name}({args}) :
               {", ".join(map(lambda x: f"{x.var_name}({x.constructor_args})", self.program))}
+              {"".join(map(lambda x: f", reg_{x}()", self.vec_types))}
               {{}}
 
             inline __attribute__((always_inline)) {run_signature} {{
-                // register declaration (per-run scratch; local so SROA can promote it)
-                {reg_decls}
                 {new_line.join(map(generate_run_calls, self.program))}
                 {memcpy_lines}
             }}
 
             inline __attribute__((always_inline)) void reset_and_next_row() {{
                 {new_line.join([f"{x.var_name}{connector}reset_and_next_row();" for x in self.program if (connector := "->" if x.is_pointer else ".")])}
+            }}
+
+            inline __attribute__((always_inline)) void seek_col(int col_start) {{
+                {seek_col_body}
             }}
         }};
 
@@ -632,6 +652,11 @@ class CodeGen:
                         vec_type,
                         vec_type,
                     )
+                    # If this is a z-shift (taps==1, idx==1) and the signal comes from a
+                    # ring-buffer Signal2D, set diag_context_var for seek_col carry priming.
+                    if taps == 1 and idxs[0] == 1 and f_regs and f_regs[0] in self.reg_to_context:
+                        ctx_var = self.reg_to_context[f_regs[0]]
+                        self.program[-1].diag_context_var = ctx_var
                 case SelectMax(values, labels):
                     # Argmax selection: emit one SelectMax<sem> node per slice.
                     # Each candidate value occupies one register; the labels are
@@ -802,6 +827,9 @@ class CodeGen:
                         vec_type,
                         vec_type,
                     )
+                    # Track reg -> context for diagonal-carry priming in seek_col.
+                    for s in range(n_slices):
+                        self.reg_to_context[regs[s]] = repeater_context
 
                     # Mov overrides: Signal2D reads offset i+1 from block_row's
                     # current row → row R+block_row-(i+1). If block_row-(i+1) >= 0,
@@ -826,7 +854,7 @@ class CodeGen:
                     block_size = self._block_size_template()
                     regs = self._new_registers(vec_type, n_slices, n_rows)
                     zero_str = expr.element_type.val_to_str(ty.zero(), ty)
-                    is2d_template = f"InputSignal2D<{vec_type}, {n_rows}, {block_size}, {block_row}>"
+                    is2d_template = f"InputSignal2D<{vec_type}, {n_rows}, {block_size}, {block_row}, {self.band_width}, {self._ele_per_iter_multiple}>"
                     code = self._declare_node(
                         is2d_template,
                         f"{name}, {name}_stride, {zero_str}",
@@ -1330,13 +1358,25 @@ class CodeGen:
         # and is passed by reference into Signal2D/Repeater run() calls. Its
         # reset_and_next_row() is invoked alongside other nodes via the value field.
         return self._declare_node(
-            f"RepeaterContext<{vec_type}, {n_rows}>",
+            f"RepeaterContext<{vec_type}, {n_rows}, {self.band_width}, {self._ele_per_iter_multiple}>",
             f"row_size, {zero_str}",
             [],
             vec_type,
             vec_type,
             False,
         )
+
+    def _seek_col_kind_for(self, class_name: str) -> str:
+        """Determine seek_col_kind from class_name prefix."""
+        if class_name.startswith("Signal2D<") or class_name.startswith("Repeater<"):
+            return "my_col"
+        if class_name.startswith("InputSignal2D<") or class_name.startswith("ProfileSignal2D<"):
+            return "row_ptrs"
+        if class_name.startswith("SConvolve"):
+            return "sconvolve"
+        if class_name.startswith("SRecurse"):
+            return "srecurse"
+        return "no_op"
 
     def _declare_node(
         self,
@@ -1349,7 +1389,9 @@ class CodeGen:
     ) -> str:
         var = self._new_var()
         str_run_args_list = [[str(a) for a in run_args] for run_args in run_args_list]
-        node = Node(class_name, var, constructor_args, str_run_args_list, input_type, output_type, is_pointer)
+        seek_kind = self._seek_col_kind_for(class_name)
+        node = Node(class_name, var, constructor_args, str_run_args_list, input_type, output_type, is_pointer,
+                    seek_col_kind=seek_kind)
         self.program.append(node)
         return var
 
