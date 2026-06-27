@@ -775,7 +775,9 @@ struct RepeaterContext {
 
     RepeaterContext &operator=(RepeaterContext &&other) noexcept {
         if (this != &other) {
-            delete[] buffer;
+            // Match the over-aligned new[] in the constructor (elt_type is trivially
+            // destructible, so no element dtors to run).
+            ::operator delete[](buffer, std::align_val_t(32));
             width = other.width;
             current_row = other.current_row;
             buffer = other.buffer;
@@ -785,7 +787,8 @@ struct RepeaterContext {
     }
 
     ~RepeaterContext() {
-        delete[] buffer;
+        // Match the over-aligned new[] in the constructor.
+        ::operator delete[](buffer, std::align_val_t(32));
     }
 };
 

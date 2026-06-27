@@ -259,6 +259,13 @@ def _generate_benchmark_code(
         benchmark_text += f"            auto kernel = {name}({kernel_ctor_args(i)});\n"
         benchmark_text += f"            using elt_type = typename ElementType<{name}_vector_type>::type;\n"
         benchmark_text += f"            constexpr int vec_lanes = sizeof({name}_vector_type) / sizeof(elt_type);\n"
+        # Reset at row boundaries, exactly as the timed loop does. Stateful operators
+        # (Repeater/computed signals) advance an internal column cursor by ele_per_iter
+        # each run() and rely on reset_and_next_row() to wrap it back to 0 at the end of
+        # a row; their buffers are sized for one row. Calling run() warmup times without
+        # this discipline lets the cursor run past row_size and overrun those buffers
+        # (only observable when warmup*ele_per_iter > row_size, e.g. narrow element types).
+        benchmark_text += "            int warm_col = 0;\n"
         benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
         benchmark_text += f"                {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
         benchmark_text += f"                {name}_vector_type* out_per_row[{rpi}] = {{\n"
@@ -266,6 +273,11 @@ def _generate_benchmark_code(
             benchmark_text += f"                    out_buf[{r}],\n"
         benchmark_text += "                };\n"
         benchmark_text += "                kernel.run(out_per_row);\n"
+        benchmark_text += f"                warm_col += {epi};\n"
+        benchmark_text += "                if (warm_col >= row_size) {\n"
+        benchmark_text += f"                    for (int r = 0; r < {rpi}; r++) kernel.reset_and_next_row();\n"
+        benchmark_text += "                    warm_col = 0;\n"
+        benchmark_text += "                }\n"
         benchmark_text += "            }\n"
         benchmark_text += "        }\n\n"
 

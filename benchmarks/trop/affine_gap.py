@@ -101,8 +101,11 @@ struct SubstSignal2D {
 # Allocate + fill the two 1D strings from a deterministic formula so the Python
 # reference can reproduce them exactly. Emitted once in driver scope; `N` and
 # `row_size` are in scope.
+# s1 gets a small halo: load_s1_row() runs on every reset_and_next_row(), including the
+# final one that bumps current_row one row past the last (its result is never read, but
+# the read must stay in bounds). The halo covers that plus any block_row offset.
 SUBST_SIGNAL_SETUP = (
-    f"std::vector<int8_t> s1(N / row_size), s2(row_size);\n"
+    f"std::vector<int8_t> s1(N / row_size + 64), s2(row_size);\n"
     f"for (int i = 0; i < N / row_size; i++) s1[i] = (int8_t)(i % {ALPHA});\n"
     f"for (int j = 0; j < row_size; j++) s2[j] = (int8_t)(j % {ALPHA});\n"
 )
