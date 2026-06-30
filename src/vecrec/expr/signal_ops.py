@@ -324,6 +324,12 @@ class RepeaterVec(SignalExpr2DVec):
     a: SignalVectorExpr
     n_rows: Optional[int]
     prev_vars: Tuple[RVar2D, ...]
+    # Per-component "row -1" boundary value used to initialise each component's
+    # RepeaterContext.  None => the TropMax/semiring zero (-inf) for every
+    # component (the default global-alignment boundary).  Supplying e.g.
+    # (one(), zero()) for a 2-state (H, E) kernel seeds H(-1, j) = 0 for all j,
+    # i.e. a free reference start (semi-global / "glocal" alignment).
+    boundary: Optional[Tuple[int, ...]]
     __match_args__ = ("a", "n_rows", "prev_vars")
 
     var_count: int = 1
@@ -334,6 +340,7 @@ class RepeaterVec(SignalExpr2DVec):
         func: Callable[[RVec2D], SignalVectorExpr],
         ty: Optional[Type] = None,
         element_type: Optional[ElementType] = None,
+        boundary: Optional[Tuple[int, ...]] = None,
     ) -> None:
         resolved_ty, resolved_et = _resolve_types(ty, element_type)
         self.n_rows = None
@@ -341,6 +348,9 @@ class RepeaterVec(SignalExpr2DVec):
         RepeaterVec.var_count += 1
         self.a = func(RVec2D(list(self.prev_vars)))
         assert self.a.n == n, f"RepeaterVec body returned {self.a.n} components, expected {n}"
+        if boundary is not None:
+            assert len(boundary) == n, f"boundary must have {n} entries, got {len(boundary)}"
+        self.boundary = boundary
         super().__init__(resolved_ty, resolved_et, n)
 
     @staticmethod
@@ -349,6 +359,7 @@ class RepeaterVec(SignalExpr2DVec):
         n: int,
         prev_vars: Tuple[RVar2D, ...],
         n_rows: Optional[int],
+        boundary: Optional[Tuple[int, ...]] = None,
     ) -> RepeaterVec:
         rv: RepeaterVec = RepeaterVec.__new__(RepeaterVec)
         super(RepeaterVec, rv).__init__(a.ty, a.element_type, n)
@@ -356,6 +367,7 @@ class RepeaterVec(SignalExpr2DVec):
         rv.n = n
         rv.n_rows = n_rows
         rv.prev_vars = prev_vars
+        rv.boundary = boundary
         return rv
 
     def children(

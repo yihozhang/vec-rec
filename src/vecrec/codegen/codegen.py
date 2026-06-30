@@ -346,14 +346,17 @@ class CodeGen:
             {new_line.join(self.prologue)}
             // node declarations
             {new_line.join(map(lambda x: f"{x.class_name} {x.var_name};", self.program))}
-            // register declaration
-            {new_line.join(map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types))}
+            // (The register file is declared as a per-call local inside run()
+            //  below, NOT as a struct member. The struct is heap-allocated and
+            //  passed by pointer, so a member Reg array escapes and the compiler
+            //  must spill every access to memory. As a local with constant
+            //  indices it stays scalar-replaceable and lives in SIMD registers.)
             inline __attribute__((always_inline)) {name}({args}) :
               {", ".join(map(lambda x: f"{x.var_name}({x.constructor_args})", self.program))}
-              {"".join(map(lambda x: f", reg_{x}()", self.vec_types))}
               {{}}
 
             inline __attribute__((always_inline)) {run_signature} {{
+                {new_line.join(map(lambda vt: f"Reg<{vt}, {self.reg_counter[vt]}> reg_{vt};", self.vec_types))}
                 {new_line.join(map(generate_run_calls, self.program))}
                 {memcpy_lines}
             }}
@@ -1111,11 +1114,20 @@ class CodeGen:
         self.vec_types.add(vec_type)
 
         # One RepeaterContext per component, shared across all block-rows.
+        # Each component's "row -1" boundary defaults to the semiring zero
+        # (-inf); rv.boundary lets a kernel request a different init per
+        # component (e.g. 0 == free reference start for semi-global alignment).
         rv_id = id(rv)
         if rv_id not in self.shared_repeatervec_contexts:
-            zero_str = rv.element_type.val_to_str(rv.ty.zero(), rv.ty)
+            boundary = getattr(rv, "boundary", None)
+            inits = [
+                rv.element_type.val_to_str(
+                    boundary[i] if boundary is not None else rv.ty.zero(), rv.ty
+                )
+                for i in range(n)
+            ]
             self.shared_repeatervec_contexts[rv_id] = [
-                self._declare_repeater_context(vec_type, zero_str, n_rows) for _ in range(n)
+                self._declare_repeater_context(vec_type, inits[i], n_rows) for i in range(n)
             ]
         contexts = self.shared_repeatervec_contexts[rv_id]
 
@@ -1372,6 +1384,8 @@ class CodeGen:
             return "my_col"
         if class_name.startswith("InputSignal2D<") or class_name.startswith("ProfileSignal2D<"):
             return "row_ptrs"
+        if class_name.startswith("SubstSignal2D<"):
+            return "my_col"
         if class_name.startswith("SConvolve"):
             return "sconvolve"
         if class_name.startswith("SRecurse"):

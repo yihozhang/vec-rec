@@ -716,7 +716,8 @@ class PushDownConvertLanesImpl(Transform):
                 for old_pv, new_pv in zip(expr.prev_vars, new_prev_vars):
                     body_subst_rv[old_pv.name] = new_pv
                 new_body_rv = cast(SignalVectorExpr, self._relane(expr.a, target, body_subst_rv))
-                rv = RepeaterVec.make(new_body_rv, expr.n, new_prev_vars, expr.n_rows)
+                rv = RepeaterVec.make(new_body_rv, expr.n, new_prev_vars, expr.n_rows,
+                                      getattr(expr, "boundary", None))
                 rv.lanes = target
                 return rv
             raise AssertionError(f"relane unsupported for SignalExpr2DVec: {type(expr)}")

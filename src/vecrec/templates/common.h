@@ -76,6 +76,14 @@ typedef int16_t int16_vec4  __attribute__((ext_vector_type(4)));
 typedef int16_t int16_vec8  __attribute__((ext_vector_type(8)));
 typedef int16_t int16_vec16 __attribute__((ext_vector_type(16)));
 typedef int16_t int16_vec32 __attribute__((ext_vector_type(32)));
+// Oversized logical vectors (wider than one physical register): clang lowers
+// ops on these by splitting across multiple SIMD registers. Used by wide-epi
+// schedules (epi_multiple > native_lanes) to keep more vectors in flight.
+typedef int16_t int16_vec64  __attribute__((ext_vector_type(64)));
+typedef int16_t int16_vec128 __attribute__((ext_vector_type(128)));
+typedef int32_t int32_vec32  __attribute__((ext_vector_type(32)));
+typedef int32_t int32_vec64  __attribute__((ext_vector_type(64)));
+typedef int8_t  int8_vec128  __attribute__((ext_vector_type(128)));
 
 constexpr int vec_lanes_of(float)        { return 1; }
 constexpr int vec_lanes_of(float_vec2)   { return 2; }
@@ -104,6 +112,11 @@ constexpr int vec_lanes_of(int16_vec4)   { return 4; }
 constexpr int vec_lanes_of(int16_vec8)   { return 8; }
 constexpr int vec_lanes_of(int16_vec16)  { return 16; }
 constexpr int vec_lanes_of(int16_vec32)  { return 32; }
+constexpr int vec_lanes_of(int16_vec64)  { return 64; }
+constexpr int vec_lanes_of(int16_vec128) { return 128; }
+constexpr int vec_lanes_of(int32_vec32)  { return 32; }
+constexpr int vec_lanes_of(int32_vec64)  { return 64; }
+constexpr int vec_lanes_of(int8_vec128)  { return 128; }
 
 #else  // GCC or other: no distinct vector types; kernel runs scalar/SSE intrinsics via -march=native
 // GCC ignores ext_vector_type so we alias the multi-lane types to the scalar.
@@ -198,6 +211,11 @@ template <> struct ElementType<int16_vec4>  { using type = int16_t; };
 template <> struct ElementType<int16_vec8>  { using type = int16_t; };
 template <> struct ElementType<int16_vec16> { using type = int16_t; };
 template <> struct ElementType<int16_vec32> { using type = int16_t; };
+template <> struct ElementType<int16_vec64>  { using type = int16_t; };
+template <> struct ElementType<int16_vec128> { using type = int16_t; };
+template <> struct ElementType<int32_vec32>  { using type = int32_t; };
+template <> struct ElementType<int32_vec64>  { using type = int32_t; };
+template <> struct ElementType<int8_vec128>  { using type = int8_t; };
 #endif  // __clang__
 
 #ifdef __clang__
@@ -478,7 +496,9 @@ EXTRACT_SLICE_16(int16_vec16)
 #ifdef __clang__
 EXTRACT_SLICE_32(int8_vec32)
 EXTRACT_SLICE_32(int16_vec32)
+EXTRACT_SLICE_32(int32_vec32)
 EXTRACT_SLICE_64(int8_vec64)
+EXTRACT_SLICE_64(int16_vec64)
 #endif  // __clang__
 
 // from https://stackoverflow.com/questions/37602057/why-isnt-a-for-loop-a-compile-time-expression
@@ -601,7 +621,7 @@ struct TimeInvariantKernel {
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
         _Pragma("unroll") for (int i = 0; i < taps; i++) {
-            asm volatile("" :::);
+            /* fence removed */
             reg[base + i] = vals[i];
         }
     }
@@ -620,7 +640,7 @@ struct TimeVaryingKernel {
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base, const int args[taps]) {
         _Pragma("unroll") for (int i = 0; i < taps; i++) {
-            asm volatile("" :::);
+            /* fence removed */
             reg[base + i] = reg[args[i]];
         }
     }
@@ -821,7 +841,7 @@ struct Signal2D {
     template <typename Reg_t, typename Ctx>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base, Ctx &context) {
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
-            asm volatile("" :::);
+            /* fence removed */
             reg[base + i] = context.get_at(i + 1, my_col, block_row, false);
         }
         my_col += lanes;
@@ -1040,7 +1060,7 @@ struct Repeater {
         inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int kernel, int signal) { \
             curr_output = (zero_init);                                                                 \
             _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {                              \
-                asm volatile("" :::);                                                                  \
+                /* fence removed */                                                                  \
                 prev_input[i] = prev_input[i + 1];                                                     \
             }                                                                                          \
             prev_input[buffer_size - 1] = reg[signal];                                                 \
@@ -1114,7 +1134,7 @@ SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::lowest() / 2, [](auto a, 
                 curr_output = add_op(curr_output, contrib);                                            \
             }                                                                                          \
             _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {                              \
-                asm volatile("" :::);                                                                  \
+                /* fence removed */                                                                  \
                 prev_output[i] = prev_output[i + 1];                                                   \
             }                                                                                          \
             prev_output[buffer_size - 1] = curr_output;                                                \
@@ -1344,7 +1364,7 @@ struct ConvertN2One {
         // inner_base is the first of `factor` contiguous narrow-lane registers to merge
         vec_type_in out[factor];
         _Pragma("unroll") for (int i = 0; i < factor; i++) {
-            asm volatile("" :::);
+            /* fence removed */
             out[i] = reg_in[inner_base + i];
         }
         memcpy(&reg_out[base], out, sizeof(vec_type_out));
