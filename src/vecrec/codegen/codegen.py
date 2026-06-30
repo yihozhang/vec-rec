@@ -327,6 +327,12 @@ class CodeGen:
         )
         text = f"""
         struct {name} {{
+            // harness metadata: lets an external C++ benchmark harness drive this
+            // kernel generically (read K::ele_per_iter / K::rows_per_iter / K::vector_type)
+            // without a per-kernel calling template.
+            static constexpr int ele_per_iter = {self.ele_per_iter};
+            static constexpr int rows_per_iter = {self.rows_per_iter};
+            using vector_type = {result_vec_type};
             // static array declarations
             {new_line.join(self.prologue)}
             // node declarations

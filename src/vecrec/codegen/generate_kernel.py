@@ -18,6 +18,7 @@ __all__ = [
     "generate_kernel_executable",
     "generate_and_run_benchmark",
     "sweep_codegen_setup",
+    "find_best_schedule_and_emit_header",
 ]
 TEMPLATE = files("vecrec.templates") / "common.h"
 
@@ -1271,3 +1272,109 @@ def sweep_codegen_setup(
         )
 
     return results
+
+
+def find_best_schedule_and_emit_header(
+    expr: Union[SignalExpr, SignalExpr2D],
+    header_path: str,
+    kernel_name: str,
+    baseline_kernel_name: Optional[str] = None,
+    max_bits: Optional[int] = None,
+    ele_per_iter_multiples: Sequence[int] = (1, 2, 4),
+    rows_per_iter_options: Sequence[int] = (1, 2, 4),
+    debug: bool = False,
+) -> Dict[str, Any]:
+    """Find the best schedule + codegen config for ``expr`` and emit a single
+    self-contained C++ header for it at ``header_path`` with struct ``kernel_name``.
+
+    This mirrors the ranking logic in ``benchmarks/benchmark.py::Benchmark.run()``:
+    enumerate candidate schedules, time them all (with a cross-schedule
+    correctness check), sweep ``(ele_per_iter_multiple, rows_per_iter)`` over the
+    top ~10% (always including the reference schedule k0), and pick the
+    highest-throughput ``(schedule, epi, rpi)``. The winning kernel is written as
+    a standalone header via :func:`instantiate_kernels` (which inlines
+    ``templates/common.h``), so the result compiles with only a C++ compiler.
+
+    It also emits a *baseline* kernel: the reference (un-optimized) schedule
+    ``schedules[0]`` — the minimal-lowering branch with no dilation/factorization —
+    with its own best ``(epi, rpi)`` found by the same sweep. This is the baseline
+    ``vec-rec/benchmarks/*`` always reports; it is a stronger comparison point than a
+    naive serial loop because it still benefits from codegen's register tiling and
+    unrolling, isolating the gain attributable to the optimization itself. The baseline
+    struct is written into the same header as ``baseline_kernel_name`` (default
+    ``<kernel_name>_baseline``).
+
+    Returns a dict with the best schedule's ``kernel_name`` / ``best_*`` / ``ele_per_iter``
+    / ``rows_per_iter`` and the baseline's ``baseline_kernel_name`` / ``baseline_*``, plus
+    ``header_path`` and ``num_schedules``.
+    """
+    # Imported lazily to avoid a circular import (optimize -> codegen).
+    import math
+    from vecrec.optimize import get_candidate_schedules
+    from vecrec.util import get_native_bits
+
+    if max_bits is None:
+        max_bits = get_native_bits()
+
+    schedules = get_candidate_schedules(expr, max_bits, debug=debug)
+    assert len(schedules) > 0, "No candidate schedules were generated"
+
+    # Time every schedule with the default codegen, cross-checking correctness.
+    raw = generate_and_run_benchmark(CodeGen(), schedules, include_correctness_check=True)
+    output = raw["output"]
+    timing_keys = [k for k in output if k != "validation"]
+
+    # Sweep the top ~10% schedules (always include the reference schedule k0).
+    n = len(schedules)
+    n_top = min(n, max(2, math.ceil(0.1 * n)))
+    sorted_keys = sorted(timing_keys, key=lambda k: output[k], reverse=True)
+    top_indices = [int(k[1:]) for k in sorted_keys[:n_top]]
+    if 0 not in top_indices:
+        top_indices.append(0)
+    top_exprs = [schedules[i] for i in top_indices]
+
+    sweep_results = sweep_codegen_setup(
+        top_exprs,
+        ele_per_iter_multiples=ele_per_iter_multiples,
+        rows_per_iter_options=rows_per_iter_options,
+    )
+    best_local_idx, best_result = max(
+        enumerate(sweep_results),
+        key=lambda kv: kv[1]["best_throughput_mbs"],
+    )
+    best_idx = top_indices[best_local_idx]
+    best_expr = schedules[best_idx]
+    best_epi = best_result["best_ele_per_iter_multiple"]
+    best_rpi = best_result["best_rows_per_iter"]
+
+    # Baseline = reference schedule (schedules[0]) with its own best (epi, rpi).
+    # It is always present in top_indices, so the sweep already measured it.
+    if baseline_kernel_name is None:
+        baseline_kernel_name = kernel_name + "_baseline"
+    base_local_idx = top_indices.index(0)
+    base_result = sweep_results[base_local_idx]
+    base_epi = base_result["best_ele_per_iter_multiple"]
+    base_rpi = base_result["best_rows_per_iter"]
+    base_expr = schedules[0]
+
+    # Emit both kernels into one self-contained header.
+    best_kp = CodeGen(ele_per_iter_multiple=best_epi, rows_per_iter=best_rpi).generate(best_expr, kernel_name)
+    base_kp = CodeGen(ele_per_iter_multiple=base_epi, rows_per_iter=base_rpi).generate(base_expr, baseline_kernel_name)
+    instantiate_kernels(header_path, [best_kp, base_kp])
+
+    return {
+        "kernel_name": kernel_name,
+        "baseline_kernel_name": baseline_kernel_name,
+        "header_path": header_path,
+        "best_ele_per_iter_multiple": best_epi,
+        "best_rows_per_iter": best_rpi,
+        "best_throughput_mbs": float(best_result["best_throughput_mbs"]),
+        "ele_per_iter": best_kp.element_per_iter,
+        "rows_per_iter": best_kp.rows_per_iter,
+        "baseline_ele_per_iter_multiple": base_epi,
+        "baseline_rows_per_iter": base_rpi,
+        "baseline_throughput_mbs": float(base_result["best_throughput_mbs"]),
+        "baseline_ele_per_iter": base_kp.element_per_iter,
+        "baseline_is_best": best_idx == 0,
+        "num_schedules": n,
+    }

@@ -732,7 +732,7 @@ class PushDownConvertLanesImpl(Transform):
         assert expr.lanes is not None and expr.a.lanes is not None
         pushed = cast(KernelExpr, self.relane(expr.a, expr.lanes))
         if _count_adapters(pushed) < _count_adapters(expr):
-            return [expr, pushed]
+            return [pushed, expr]
         return [expr]
 
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
@@ -741,7 +741,7 @@ class PushDownConvertLanesImpl(Transform):
         assert expr.lanes is not None and expr.a.lanes is not None
         pushed = cast(SignalExpr, self.relane(expr.a, expr.lanes))
         if _count_adapters(pushed) < _count_adapters(expr):
-            return [expr, pushed]
+            return [pushed, expr]
         return [expr]
 
     def apply_signal_vector(self, expr: SignalVectorExpr) -> Sequence[SignalVectorExpr]:
@@ -750,7 +750,7 @@ class PushDownConvertLanesImpl(Transform):
         assert expr.lanes is not None and expr.a.lanes is not None
         pushed = cast(SignalVectorExpr, self.relane(expr.a, expr.lanes))
         if _count_adapters(pushed) < _count_adapters(expr):
-            return [expr, pushed]
+            return [pushed, expr]
         return [expr]
 
     def apply_signal2d(self, expr: SignalExpr2D) -> Sequence[SignalExpr2D]:

@@ -8,4 +8,5 @@ __all__ = [
     "generate_kernel_executable",
     "generate_and_run_benchmark",
     "sweep_codegen_setup",
+    "find_best_schedule_and_emit_header",
 ]
