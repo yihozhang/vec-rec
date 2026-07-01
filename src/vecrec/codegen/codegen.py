@@ -276,9 +276,12 @@ class CodeGen:
             per_row_results.append(self.generate_signal(expr))
 
         vars, vars2d = self.collect_input_variables(expr)
-        # ComputedSignal2D objects are constructed in driver scope and passed in by value;
-        # they precede the raw input pointers in the constructor signature.
-        args_computed = [f"{d.resolved_type} {d.param_name}" for d in self.computed_signals]
+        # ComputedSignal2D objects that read external buffers are constructed in driver
+        # scope and passed in by value, preceding the raw input pointers. Buffer-less
+        # signals (empty make_args) are default-constructed as members, not parameters.
+        args_computed = [
+            f"{d.resolved_type} {d.param_name}" for d in self.computed_signals if d.make_args.strip()
+        ]
         args_1d = [f"const {elt_type.to_str()} *{var}" for var, elt_type in sorted(vars.items())]
         args_2d = [f"const {elt_type.to_str()} *{var}, int {var}_stride" for var, elt_type in sorted(vars2d.items())]
         all_args = args_computed + args_1d + args_2d + ["int row_size"]
@@ -847,16 +850,21 @@ class CodeGen:
                     block_size = self._block_size_template()
                     regs = self._new_registers(vec_type, n_slices, n_rows)
                     resolved_type = f"{cpp_struct}<{vec_type}, {n_rows}, {block_size}, {block_row}>"
-                    # The signal object is constructed in driver scope (from setup_code)
-                    # and passed into the kernel constructor via `param`; the member is
-                    # initialized by copy from that parameter.
+                    # A signal that reads external buffers is constructed in driver scope
+                    # (from setup_code) and passed into the kernel constructor via `param`;
+                    # the member is initialized by copy from that parameter. A signal with
+                    # no constructor args (make_args == "") carries no external state, so we
+                    # default-construct the member directly and omit the constructor
+                    # parameter — this also lets a signal used at several lane widths appear
+                    # as several members without forcing the caller to name/pass each type.
                     param = self._new_var()
                     self.computed_signals.append(
                         ComputedSignalDecl(param, resolved_type, prelude, setup_code, make_args)
                     )
+                    member_ctor_args = param if make_args.strip() else ""
                     code = self._declare_node(
                         resolved_type,
-                        param,
+                        member_ctor_args,
                         [[r] for r in regs],
                         vec_type,
                         vec_type,

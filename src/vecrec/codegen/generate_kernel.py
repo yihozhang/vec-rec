@@ -249,7 +249,9 @@ def _generate_benchmark_code(
     var_args_base = var_args_1d + var_args_2d + ["row_size"]
 
     def kernel_ctor_args(idx: int) -> str:
-        sig_args = [f"{d.resolved_type}({d.make_args})" for d in computed_signals_list[idx]]
+        # Buffer-less computed signals (empty make_args) are default-constructed as
+        # kernel members, so they are not passed as constructor arguments.
+        sig_args = [f"{d.resolved_type}({d.make_args})" for d in computed_signals_list[idx] if d.make_args.strip()]
         return ", ".join(sig_args + var_args_base)
 
     benchmark_text += '    std::cout << "{\\n";'
@@ -739,7 +741,8 @@ def _generate_kernel_runner_code(
     text += "\n"
 
     # Build var_args: computed-signal objects first, then 1D args (sorted), then 2D args (sorted).
-    sig_args = [f"{decl.resolved_type}({decl.make_args})" for decl in computed_signals]
+    # Buffer-less computed signals (empty make_args) are default-constructed kernel members.
+    sig_args = [f"{decl.resolved_type}({decl.make_args})" for decl in computed_signals if decl.make_args.strip()]
     var_args_1d = [f"{name}.data()" for name, _ in var_items]
     var_args_2d = [f"{name}.data(), stride_{name}" for name, _ in var2d_items]
     var_args = ", ".join(sig_args + var_args_1d + var_args_2d + ["row_size"])
