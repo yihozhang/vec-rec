@@ -1303,6 +1303,8 @@ class CodeGen:
         match element_type:
             case ElementType.Float:
                 return f"float_vec{lanes}"
+            case ElementType.Double:
+                return f"double_vec{lanes}"
             case ElementType.I32:
                 return f"int32_vec{lanes}"
             case ElementType.I64:

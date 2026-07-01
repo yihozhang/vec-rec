@@ -180,6 +180,7 @@ def _generate_benchmark_code(
     # Determine which distributions are needed
     all_elt_types = list(all_vars.values()) + list(all_vars2d.values())
     needs_float = any(elt_type == ElementType.Float for elt_type in all_elt_types)
+    needs_double = any(elt_type == ElementType.Double for elt_type in all_elt_types)
     needs_int8 = any(elt_type == ElementType.I8 for elt_type in all_elt_types)
     needs_int16 = any(elt_type == ElementType.I16 for elt_type in all_elt_types)
     needs_int32 = any(elt_type == ElementType.I32 for elt_type in all_elt_types)
@@ -187,6 +188,8 @@ def _generate_benchmark_code(
 
     if needs_float:
         benchmark_text += "    std::uniform_real_distribution<float> float_dis(-1.0f, 1.0f);\n"
+    if needs_double:
+        benchmark_text += "    std::uniform_real_distribution<double> double_dis(-1.0, 1.0);\n"
     if needs_int8:
         benchmark_text += "    std::uniform_int_distribution<int32_t> int8_dis(-1, 1);\n"
     if needs_int16:
@@ -203,6 +206,8 @@ def _generate_benchmark_code(
         benchmark_text += "    for (int i = 0; i < N; i++) {\n"
         if elt_type == ElementType.Float:
             benchmark_text += f"        {var}[i] = float_dis(gen);\n"
+        elif elt_type == ElementType.Double:
+            benchmark_text += f"        {var}[i] = double_dis(gen);\n"
         elif elt_type == ElementType.I8:
             benchmark_text += f"        {var}[i] = static_cast<int8_t>(int8_dis(gen));\n"
         elif elt_type == ElementType.I16:
@@ -374,6 +379,16 @@ int arrays_equal(const std::vector<float>& a, const std::vector<float>& b, float
     return a.size();
 }}
 
+int arrays_equal(const std::vector<double>& a, const std::vector<double>& b, double tolerance = {tolerance}) {{
+    if (a.size() != b.size()) return -1;
+    for (size_t i = 0; i < a.size(); i++) {{
+        if (std::abs(a[i] - b[i]) > tolerance) {{
+            return i;
+        }}
+    }}
+    return a.size();
+}}
+
 int arrays_equal(const std::vector<int8_t>& a, const std::vector<int8_t>& b) {{
     if (a.size() != b.size()) return -1;
     for (size_t i = 0; i < a.size(); i++) {{
@@ -452,6 +467,8 @@ def _numpy_dtype_for_element_type(element_type: ElementType) -> np.dtype:
     match element_type:
         case ElementType.Float:
             return np.dtype(np.float32)
+        case ElementType.Double:
+            return np.dtype(np.float64)
         case ElementType.I32:
             return np.dtype(np.int32)
         case ElementType.I64:

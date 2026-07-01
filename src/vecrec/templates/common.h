@@ -15,6 +15,12 @@ typedef float float_vec4 __attribute__((ext_vector_type(4)));
 typedef float float_vec8 __attribute__((ext_vector_type(8)));
 typedef float float_vec16 __attribute__((ext_vector_type(16)));
 
+typedef double double_vec1;
+typedef double double_vec2 __attribute__((ext_vector_type(2)));
+typedef double double_vec4 __attribute__((ext_vector_type(4)));
+typedef double double_vec8 __attribute__((ext_vector_type(8)));
+typedef double double_vec16 __attribute__((ext_vector_type(16)));
+
 typedef int32_t int32_vec1;
 typedef int32_t int32_vec2 __attribute__((ext_vector_type(2)));
 typedef int32_t int32_vec4 __attribute__((ext_vector_type(4)));
@@ -46,6 +52,12 @@ constexpr int vec_lanes_of(float_vec2) { return 2; }
 constexpr int vec_lanes_of(float_vec4) { return 4; }
 constexpr int vec_lanes_of(float_vec8) { return 8; }
 constexpr int vec_lanes_of(float_vec16) { return 16; }
+
+constexpr int vec_lanes_of(double) { return 1; }
+constexpr int vec_lanes_of(double_vec2) { return 2; }
+constexpr int vec_lanes_of(double_vec4) { return 4; }
+constexpr int vec_lanes_of(double_vec8) { return 8; }
+constexpr int vec_lanes_of(double_vec16) { return 16; }
 
 constexpr int vec_lanes_of(int32_t) { return 1; }
 constexpr int vec_lanes_of(int32_vec2) { return 2; }
@@ -133,6 +145,27 @@ struct ElementType<float_vec8> {
 template <>
 struct ElementType<float_vec16> {
     using type = float;
+};
+
+template <>
+struct ElementType<double> {
+    using type = double;
+};
+template <>
+struct ElementType<double_vec2> {
+    using type = double;
+};
+template <>
+struct ElementType<double_vec4> {
+    using type = double;
+};
+template <>
+struct ElementType<double_vec8> {
+    using type = double;
+};
+template <>
+struct ElementType<double_vec16> {
+    using type = double;
 };
 
 template <>
@@ -362,6 +395,11 @@ EXTRACT_SLICE_2(float_vec2)
 EXTRACT_SLICE_4(float_vec4)
 EXTRACT_SLICE_8(float_vec8)
 EXTRACT_SLICE_16(float_vec16)
+EXTRACT_SLICE_1(double)
+EXTRACT_SLICE_2(double_vec2)
+EXTRACT_SLICE_4(double_vec4)
+EXTRACT_SLICE_8(double_vec8)
+EXTRACT_SLICE_16(double_vec16)
 EXTRACT_SLICE_1(int32_vec1)
 EXTRACT_SLICE_2(int32_vec2)
 EXTRACT_SLICE_4(int32_vec4)
@@ -560,6 +598,10 @@ EXTRACT_SUB_VECTOR1(float)
 EXTRACT_SUB_VECTOR2(float_vec2)
 EXTRACT_SUB_VECTOR4(float_vec4)
 EXTRACT_SUB_VECTOR8(float_vec8)
+EXTRACT_SUB_VECTOR1(double)
+EXTRACT_SUB_VECTOR2(double_vec2)
+EXTRACT_SUB_VECTOR4(double_vec4)
+EXTRACT_SUB_VECTOR8(double_vec8)
 EXTRACT_SUB_VECTOR1(int32_t)
 EXTRACT_SUB_VECTOR2(int32_vec2)
 EXTRACT_SUB_VECTOR4(int32_vec4)

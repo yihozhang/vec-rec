@@ -131,6 +131,59 @@ def test_generate_kernel_executable_fibonacci_sum() -> None:
     assert np.array_equal(output, fib_sum_expected)
 
 
+def test_generate_kernel_executable_double() -> None:
+    """float64/double element type: second-order IIR matches a float64 reference
+    to full double precision (exercises double_vecN typedefs + get_vec_type)."""
+    with with_types(Type.Arith, ElementType.Double):
+        expr = Recurse(TIKernel([0, 1.8, -0.9]), Var("g"))
+
+    results = get_candidate_schedules(expr, get_native_bits())
+    assert len(results) > 0
+
+    n = 512
+    runner = generate_kernel_executable(CodeGen(), results[0], row_size=n)
+
+    rng = np.random.default_rng(0)
+    g = rng.uniform(-1.0, 1.0, size=n).astype(np.float64)
+    output, _, _ = runner.run(g)
+
+    f = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        f1 = f[i - 1] if i >= 1 else 0.0
+        f2 = f[i - 2] if i >= 2 else 0.0
+        f[i] = 1.8 * f1 - 0.9 * f2 + g[i]
+
+    assert output.dtype == np.float64
+    # double precision keeps the error near machine epsilon, unlike float32
+    assert np.allclose(output, f, atol=1e-10, rtol=1e-10), (
+        f"double mismatch: maxerr={np.max(np.abs(output - f)):.3e}"
+    )
+
+
+def test_generate_and_run_benchmark_double() -> None:
+    """The full search/compile/cross-schedule-correctness path works in double
+    (exercises arrays_equal(std::vector<double>) and the double_dis input fill)."""
+    with with_types(Type.Arith, ElementType.Double):
+        expr = Recurse(TIKernel([0, 1.8, -0.9]), Var("x"))
+
+    schedule = Seq(
+        Optional(Seq(Dilate(), Dilate(), Any(Dilate(), Delay()), SaturatePreorder(ConstantFold))),
+        AnnotateLanes(get_native_bits()),
+        PushDownConvertLanes(),
+    )
+    results = schedule.apply_signal(expr)
+
+    result = generate_and_run_benchmark(
+        codegen=CodeGen(),
+        exprs=results[:3],
+        include_correctness_check=True,
+        input_size=1 << 14,
+        warmup_iterations=2,
+        benchmark_iterations=5,
+    )
+    assert result["return_code"] == 0, f"double benchmark failed: {result.get('error')}\n{result.get('output')}"
+
+
 def test_generate_kernel_executable_continued_fraction() -> None:
     with with_types(Type.Arith, ElementType.Float):
         a = Var("a")
