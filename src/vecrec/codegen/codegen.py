@@ -340,6 +340,42 @@ class CodeGen:
                 )
         seek_col_body = new_line.join(seek_col_lines) if seek_col_lines else ""
 
+        # Generate tiling-support method bodies (column / 2D block tiling drivers).
+        #   * save/restore_col_state: the SConvolve (diagonal shift) and SRecurse
+        #     (in-row left) carries — the only state that crosses a *column* panel
+        #     boundary. Saving the real internal carry means it works even when the
+        #     value is not recoverable from the written output (e.g. affine's F/E).
+        #   * save/load_ring_row + seek_row: the RepeaterContext previous-row slot,
+        #     the only state that crosses a *row* band boundary (2D block tiling).
+        col_save_lines: list[str] = []
+        col_restore_lines: list[str] = []
+        ring_save_lines: list[str] = []
+        ring_load_lines: list[str] = []
+        seek_row_lines: list[str] = []
+        n_ring = 0
+        for node in self.program:
+            v = node.var_name
+            connector = "->" if node.is_pointer else "."
+            cn = node.class_name
+            if cn.startswith("SConvolve") or cn.startswith("SRecurse"):
+                col_save_lines.append(f"{v}{connector}save_state(_p);")
+                col_restore_lines.append(f"{v}{connector}restore_state(_p);")
+            if cn.startswith("RepeaterContext"):
+                ring_save_lines.append(
+                    f"{v}{connector}save_prev_row(_dst + {n_ring} * ring_stride, col, n);")
+                ring_load_lines.append(
+                    f"{v}{connector}load_prev_row(_src + {n_ring} * ring_stride, col, n);")
+                seek_row_lines.append(f"{v}{connector}seek_row(row_start);")
+                n_ring += 1
+            elif (cn.startswith("ProfileSignal2D") or cn.startswith("InputSignal2D")
+                  or cn.startswith("SubstSignal2D")):
+                seek_row_lines.append(f"{v}{connector}seek_row(row_start);")
+        col_save_body = new_line.join(col_save_lines)
+        col_restore_body = new_line.join(col_restore_lines)
+        ring_save_body = new_line.join(ring_save_lines)
+        ring_load_body = new_line.join(ring_load_lines)
+        seek_row_body = new_line.join(seek_row_lines)
+
         text = f"""
         struct {name} {{
             // static array declarations
@@ -367,6 +403,37 @@ class CodeGen:
 
             inline __attribute__((always_inline)) void seek_col(int col_start) {{
                 {seek_col_body}
+            }}
+
+            // ---- Tiling support: column-panel / row-band restart primitives -------
+            // Reposition the logical row counter (2D block tiling starts mid-matrix).
+            inline void seek_row(int row_start) {{
+                {seek_row_body}
+            }}
+            // Number of RepeaterContext ring buffers (recurrence feedback signals).
+            static constexpr int num_ring_buffers = {n_ring};
+            // Checkpoint / restore the column-crossing carries (diagonal + in-row).
+            inline void save_col_state(char *&_p) const {{
+                {col_save_body}
+            }}
+            inline void restore_col_state(const char *&_p) {{
+                {col_restore_body}
+            }}
+            // One-shot query of the byte size written by save_col_state().
+            inline std::size_t col_state_bytes() const {{
+                char _tmp[65536]; char *_p = _tmp; save_col_state(_p);
+                return static_cast<std::size_t>(_p - _tmp);
+            }}
+            // Checkpoint / restore the previous-row slot of every ring buffer for
+            // columns [col, col+n); _dst/_src hold num_ring_buffers rows of stride
+            // `ring_stride` (indexed by absolute column).
+            template <class _ET>
+            inline void save_ring_row(_ET *_dst, int ring_stride, int col, int n) const {{
+                {ring_save_body}
+            }}
+            template <class _ET>
+            inline void load_ring_row(const _ET *_src, int ring_stride, int col, int n) {{
+                {ring_load_body}
             }}
         }};
 

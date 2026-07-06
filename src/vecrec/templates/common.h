@@ -801,6 +801,26 @@ struct RepeaterContext {
     }
     void seek_col(int /* col_start */) {}  // no column state; present for uniform seek dispatch
 
+    // ---- Tiling support (2D / row-strip restart) ----------------------------------
+    // Reposition the logical row counter to `row_start` without touching buffer data.
+    // Used by block tiling so a kernel restarted at the top of a row-band computes
+    // with the correct row phase (matters when combined with load_prev_row below).
+    void seek_row(int row_start) {
+        logical_row = row_start;
+        current_row = ((row_start % (n_rows - 1)) + (n_rows - 1)) % (n_rows - 1);
+    }
+    // Copy the previous-row slot's columns [col, col+n) into dst[col, col+n).
+    // (dst is indexed by absolute column so multiple panels share one buffer.)
+    void save_prev_row(elt_type *dst, int col, int n) const {
+        int row_idx = (current_row + 2 * (n_rows - 1) - 1) % (n_rows - 1);
+        memcpy(dst + col, &buffer[row_idx * width + col], (size_t)n * sizeof(elt_type));
+    }
+    // Inverse of save_prev_row: preload the previous-row slot from src[col, col+n).
+    void load_prev_row(const elt_type *src, int col, int n) {
+        int row_idx = (current_row + 2 * (n_rows - 1) - 1) % (n_rows - 1);
+        memcpy(&buffer[row_idx * width + col], src + col, (size_t)n * sizeof(elt_type));
+    }
+
     
     RepeaterContext(const RepeaterContext &) = delete;
     RepeaterContext &operator=(const RepeaterContext &) = delete;
@@ -942,6 +962,10 @@ struct InputSignal2D {
                           + col_start - lanes;
         }
     }
+
+    // Tiling support: reposition the row counter (block tiling restarts mid-matrix).
+    // A subsequent seek_col() recomputes row_ptrs from this current_row.
+    void seek_row(int row_start) { current_row = row_start; }
 };
 
 // ProfileSignal2D: a drop-in InputSignal2D replacement that reads a row from a
@@ -1010,6 +1034,10 @@ struct ProfileSignal2D {
             row_ptrs[i] = base + col_start - lanes;
         }
     }
+
+    // Tiling support: reposition the row counter (block tiling restarts mid-matrix).
+    // A subsequent seek_col() recomputes row_ptrs from this current_row.
+    void seek_row(int row_start) { current_row = row_start; }
 };
 
 template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
@@ -1089,6 +1117,14 @@ struct Repeater {
         void prime_diagonal_carry(elt_type val) {                                                      \
             reinterpret_cast<elt_type *>(&prev_input[buffer_size - 1])[vec_lanes - 1] = val;           \
         }                                                                                              \
+        /* Tiling support: checkpoint/restore the diagonal shift carry at a column   */                \
+        /* boundary so a tiled driver can restart the recurrence mid-matrix.         */                \
+        void save_state(char *&dst) const {                                                            \
+            memcpy(dst, prev_input, sizeof(prev_input)); dst += sizeof(prev_input);                    \
+        }                                                                                              \
+        void restore_state(const char *&src) {                                                         \
+            memcpy(prev_input, src, sizeof(prev_input)); src += sizeof(prev_input);                    \
+        }                                                                                              \
     };                                                                                                 \
     // template <typename vec_type>                                                                           \
     // auto make_s_convolve##suffix(int base, int kernel, int signal) {                                       \
@@ -1147,6 +1183,17 @@ SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::lowest() / 2, [](auto a, 
             }                                                                                          \
         }                                                                                              \
         void seek_col(int /* col_start */) {}                                                          \
+        /* Tiling support: checkpoint/restore the left-dependency (in-row) carry at a */                \
+        /* column boundary so a tiled driver can restart the recurrence mid-matrix.  */                \
+        void prime_left_carry(elt_type val) {                                                          \
+            reinterpret_cast<elt_type *>(&prev_output[buffer_size - 1])[vec_lanes - 1] = val;          \
+        }                                                                                              \
+        void save_state(char *&dst) const {                                                            \
+            memcpy(dst, prev_output, sizeof(prev_output)); dst += sizeof(prev_output);                 \
+        }                                                                                              \
+        void restore_state(const char *&src) {                                                         \
+            memcpy(prev_output, src, sizeof(prev_output)); src += sizeof(prev_output);                 \
+        }                                                                                              \
     };
 
 SRecurseOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
@@ -1254,6 +1301,13 @@ struct SRecurseV##suffix {                                                      
         }                                                                                                 \
     }                                                                                                     \
     void seek_col(int /* col_start */) {}                                                                 \
+    /* Tiling support: checkpoint/restore all per-component left carries.        */                      \
+    void save_state(char *&dst) const {                                                                  \
+        memcpy(dst, prev_output, sizeof(prev_output)); dst += sizeof(prev_output);                       \
+    }                                                                                                     \
+    void restore_state(const char *&src) {                                                               \
+        memcpy(prev_output, src, sizeof(prev_output)); src += sizeof(prev_output);                       \
+    }                                                                                                     \
 };
 
 
