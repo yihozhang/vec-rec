@@ -12,6 +12,7 @@ from vecrec.expr.signal_ops import (
     SSub,
     PointwiseMul,
     PointwiseDiv,
+    CustomPointwiseOp,
     SNeg,
     Convolve,
     Convolve2D,
@@ -60,6 +61,8 @@ def _prec(expr: RecLang) -> int:
         case SelectMax():
             return _PREC_ATOM
         case PointwiseMul() | PointwiseDiv():
+            return _PREC_MUL - 5
+        case CustomPointwiseOp():
             return _PREC_MUL - 5
         case SAdd() | SSub() | KAdd() | KSub():
             return _PREC_ADD
@@ -195,6 +198,10 @@ def _fmt_one(
         case PointwiseDiv(a, b):
             p = _PREC_MUL
             return f"{w(a, p)} / {w(b, p, right=True)}"
+
+        case CustomPointwiseOp(a, b):
+            # Render user-defined pointwise ops by their C++ struct name.
+            return f"{expr.cpp_struct}({fmt(a)}, {fmt(b)})"
 
         case SNeg(a):
             return f"-{w(a, _PREC_UNARY)}"

@@ -33,6 +33,15 @@ def instantiate_kernels(path: str, codes: List[KernelProgram] | List[str]) -> No
                 if sem not in seen_semirings:
                     seen_semirings.add(sem)
                     text += "\n" + sem.cpp_preamble()
+    # Emit each CustomPointwiseOp struct definition (the user-provided operator
+    # struct) exactly once, before the kernel structs that reference it.
+    seen_op_preludes: set = set()
+    for code in codes:
+        if isinstance(code, KernelProgram):
+            for prelude in code.custom_op_preludes:
+                if prelude not in seen_op_preludes:
+                    seen_op_preludes.add(prelude)
+                    text += "\n" + prelude
     # Emit each ComputedSignal2D prelude (the user-provided signal struct definition)
     # exactly once, before the kernel structs that reference it.
     seen_preludes: set = set()

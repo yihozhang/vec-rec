@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from functools import reduce
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Callable, ClassVar, List, Optional, Sequence, Tuple
 
 from vecrec.expr.signal import RVar2D, RVec2D
 from vecrec.util import ElementType
@@ -48,6 +48,64 @@ class PointwiseDiv(SignalExprBinOp):
     def __init__(self, a: SignalExpr, b: SignalExpr) -> None:
         super().__init__(a, b)
         assert self.ty == Type.Arith, "Division is only defined for arithmetic type"
+
+
+class CustomPointwiseOp(SignalExprBinOp):
+    """Base class for a user-defined binary pointwise (elementwise) operator.
+
+    Extends the built-in pointwise ops (SAdd, SSub, PointwiseMul, PointwiseDiv)
+    with operators whose C++ implementation lives in a benchmark-owned struct
+    rather than in the template library — the same self-describing pattern as
+    ComputedSignal2D, but for a binary operation on two signals instead of a leaf
+    input. Because it subclasses SignalExprBinOp it inherits the ``(a, b)``
+    constructor and ``children() == [a, b]``, so it flows through every
+    transform/schedule/lane-annotation pass exactly like a built-in binop; only
+    codegen lowering differs.
+
+    Subclass and set the two class attributes:
+
+      cpp_struct:  name of a C++ struct template implementing the BinOp interface —
+                   a default constructor, a
+                   ``run(Reg_t &reg, int base, int s1, int s2)`` that writes
+                   ``reg[base] = op(reg[s1], reg[s2])``, and a no-op
+                   ``reset_and_next_row()``. Codegen instantiates it as
+                   ``cpp_struct<vec_type>``.
+      cpp_prelude: the full C++ definition of that struct, appended to the
+                   generated header exactly once (before the kernels that use it).
+
+    Unlike the built-in ops, no semiring suffix is appended to ``cpp_struct``: a
+    custom pointwise op defines its own elementwise behavior directly and is
+    semiring-independent. Operands must share ty/element_type (enforced by
+    SignalExprBinOp); the op is only valid for element types its C++ body
+    supports.
+    """
+
+    cpp_struct: ClassVar[str]
+    cpp_prelude: ClassVar[str]
+
+
+class PointwiseModulo(CustomPointwiseOp):
+    """Elementwise modulo ``a % b`` — an example custom pointwise operator.
+
+    Implemented purely as a benchmark-owned C++ struct using the vector ``%``
+    operator, so it is valid for the integer element types (I8/I16/I32/I64).
+    Division by zero is undefined, so the second operand must be nonzero.
+    """
+
+    cpp_struct = "PointwiseModulo"
+    cpp_prelude = r"""
+template <typename vec_type>
+struct PointwiseModulo {
+    PointwiseModulo() = default;
+
+    template <typename Reg_t>
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int s1, int s2) {
+        reg[base] = reg[s1] % reg[s2];
+    }
+
+    void reset_and_next_row() {}
+};
+"""
 
 
 @dataclass(unsafe_hash=True)
