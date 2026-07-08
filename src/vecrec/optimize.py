@@ -25,9 +25,6 @@ def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
                 ),
                 SaturatePreorder(ConstantFold),
 
-                # SaturatePreorder(DilateTVWithSingleOddOrder()),
-                # SaturatePreorder(ConstantFold),
-
                 Preorder(Try(DilateLTVHalfPoints(max_bits))),
                 SaturatePreorder(ConstantFold),
                 Preorder(Try(DilateLTVHalfPointsVec(max_bits))),

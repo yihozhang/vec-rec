@@ -206,7 +206,6 @@ __all__ = [
     "ComposeRecurse",
     "Factorize",
     "Factorize2D",
-    "DilateTVWithSingleOddOrder",
     "InlinePointwiseOps",
     "PushDownAndFuseConvolve",
     "EliminateDegenerate2Dkernels",

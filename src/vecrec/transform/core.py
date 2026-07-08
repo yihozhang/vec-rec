@@ -20,7 +20,6 @@ __all__ = [
     "ComposeRecurse",
     "Factorize",
     "Factorize2D",
-    "DilateTVWithSingleOddOrder",
     "DilateLTVArith",
     "DilateLTVTrop",
     "DilateLTVHalfPoints",
@@ -227,67 +226,33 @@ class Factorize2D(Transform):
                 return []
 
 
-@ArithTransform
-class DilateTVWithSingleOddOrder(Transform):
-    def all_nonzeros(self, a: Sequence[SignalExpr]) -> List[int]:
-        inzs = []
-        for i, v in enumerate(a):
-            if not (isinstance(v, Num) and v.ty.is_zero(v.value)):
-                inzs.append(i)
-        return inzs
-
-    def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
-        match expr:
-            case Recurse(TVKernel(a) as kernel, g):
-                # This transformation is at least correct for second order LTV IIR.
-                # However, because of the division by zero error in the initial condition. I can't really get it to work
-                with with_types(Type.Arith, kernel.element_type):
-                    even: List[SignalExpr] = [Num(0)] * len(a)
-                    odd: List[SignalExpr] = [Num(0)] * len(a)
-                    even[0::2] = a[0::2]
-                    odd[1::2] = a[1::2]
-                    inzs = self.all_nonzeros(odd)
-                    if len(inzs) == 1:
-                        inz = inzs[0]
-                        A = TVKernel(even)
-                        B = TVKernel(odd)
-                        C = TVKernel(
-                            [
-                                (
-                                    PointwiseDiv(
-                                        PointwiseMul(odd[inz], Convolve(TIKernel.z(n=-1), even[2])),
-                                        Convolve(TIKernel.z(n=-i), odd[inz]),
-                                    )
-                                    if a != Num(0)
-                                    else Num(0)
-                                )
-                                for i, a in enumerate(even)
-                            ]
-                        )
-                        new_numer = [TIKernel.i(), B, KNeg(C)]
-                        new_denom = [
-                            KConvolve(B, B),
-                            A,
-                            KConvolve(
-                                C,
-                                (TIKernel.i() - A),
-                            ),
-                        ]
-                        expr = Recurse(KAdd.of(new_denom), Convolve(KAdd.of(new_numer), g))
-                        return [expr]
-                    elif len(inzs) == 0:
-                        # TODO: dilate with stride greater than two
-                        raise NotImplementedError()
-                    else:
-                        return []
-
-            case _:
-                return []
-
-
 # ---------------------------------------------------------------------------
 # LTV (linear time-varying) tower decomposition: dk/fk algorithm
 # ---------------------------------------------------------------------------
+
+
+def _pad_ltv_first_order(
+    data: Sequence[SignalExpr], ty: Type, et: ElementType
+) -> List[SignalExpr]:
+    """HACK: embed a 1st-order LTV recurrence into the 2nd-order code path.
+
+    The LTV dilations below (the dk/fk tower and the half-points scan) are
+    written for a 2nd-order kernel ``TVKernel([0, a(x), b(x)])`` and hard-require
+    ``len == 3``.  A 1st-order recurrence ``M(x) = a(x)*M(x-1) + g(x)`` is exactly
+    the special case ``b(x) == 0``, so we pad ``[0, a] -> [0, a, 0]`` and let
+    ConstantFold drop the (now-zero) b-terms.  Padding with ``ty.zero()`` is the
+    additive identity in both the arithmetic and tropical semirings, so the
+    b-paths vanish correctly under either algebra.  The tower is division-free,
+    so ``b == 0`` is safe here (unlike the removed DilateTVWithSingleOddOrder,
+    which divided by a coefficient and blew up in the initial condition).
+
+    FIXME: this is a stopgap.  A 1st-order LTV is just a 2x2 affine prefix scan;
+    it deserves a first-class transform that emits that smaller scan directly
+    instead of paying for the 3x3 second-order machinery with a zero row/column.
+    """
+    if len(data) == 2:
+        return list(data) + [Num(ty.zero(), ty, et)]
+    return list(data)
 
 
 def _ltv_delay(sig: SignalExpr, n: int, ty: Type, et: ElementType) -> SignalExpr:
@@ -465,6 +430,10 @@ class DilateLTVArith(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(TVKernel(data) as kernel, g):
+                # HACK: pad a 1st-order kernel [0, a] -> [0, a, 0] so it takes the
+                # 2nd-order path (b(x)=0). See _pad_ltv_first_order for why this is
+                # safe and why it should eventually be a first-class transform.
+                data = _pad_ltv_first_order(data, kernel.ty, kernel.element_type)
                 if len(data) != 3:
                     return []
                 if not (isinstance(data[0], Num) and kernel.ty.is_zero(data[0].value)):
@@ -509,6 +478,10 @@ class DilateLTVHalfPoints(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(TVKernel(data) as kernel, g):
+                # HACK: pad a 1st-order kernel [0, a] -> [0, a, 0] so it takes the
+                # 2nd-order path (b(x)=0). See _pad_ltv_first_order for why this is
+                # safe and why it should eventually be a first-class transform.
+                data = _pad_ltv_first_order(data, kernel.ty, kernel.element_type)
                 if len(data) != 3:
                     return []
                 if not (isinstance(data[0], Num) and kernel.ty.is_zero(data[0].value)):
@@ -612,6 +585,10 @@ class DilateLTVTrop(Transform):
     def apply_signal(self, expr: SignalExpr) -> Sequence[SignalExpr]:
         match expr:
             case Recurse(TVKernel(data) as kernel, g):
+                # HACK: pad a 1st-order kernel [0, a] -> [0, a, 0] so it takes the
+                # 2nd-order path (b(x)=0). See _pad_ltv_first_order for why this is
+                # safe and why it should eventually be a first-class transform.
+                data = _pad_ltv_first_order(data, kernel.ty, kernel.element_type)
                 if len(data) != 3:
                     return []
                 if not (isinstance(data[0], Num) and kernel.ty.is_zero(data[0].value)):
