@@ -1326,7 +1326,8 @@ def find_best_schedule_and_emit_header(
 
     Returns a dict with the best schedule's ``kernel_name`` / ``best_*`` / ``ele_per_iter``
     / ``rows_per_iter`` and the baseline's ``baseline_kernel_name`` / ``baseline_*``, plus
-    ``header_path`` and ``num_schedules``.
+    ``header_path`` and ``num_schedules``. It also returns the chosen schedule ASTs as
+    ``best_expr`` / ``baseline_expr`` (VecRec IR objects, not JSON-serializable).
     """
     # Imported lazily to avoid a circular import (optimize -> codegen).
     import math
@@ -1386,6 +1387,10 @@ def find_best_schedule_and_emit_header(
         "kernel_name": kernel_name,
         "baseline_kernel_name": baseline_kernel_name,
         "header_path": header_path,
+        # The chosen schedule ASTs (VecRec IR). Not JSON-serializable; callers that
+        # persist the metadata should render them (e.g. via ``vecrec.expr.pp``) first.
+        "best_expr": best_expr,
+        "baseline_expr": base_expr,
         "best_ele_per_iter_multiple": best_epi,
         "best_rows_per_iter": best_rpi,
         "best_throughput_mbs": float(best_result["best_throughput_mbs"]),
