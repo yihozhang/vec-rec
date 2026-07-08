@@ -33,6 +33,15 @@ def instantiate_kernels(path: str, codes: List[KernelProgram] | List[str]) -> No
                 if sem not in seen_semirings:
                     seen_semirings.add(sem)
                     text += "\n" + sem.cpp_preamble()
+    # Emit each CustomPointwiseOp struct definition (the user-provided operator
+    # struct) exactly once, before the kernel structs that reference it.
+    seen_op_preludes: set = set()
+    for code in codes:
+        if isinstance(code, KernelProgram):
+            for prelude in code.custom_op_preludes:
+                if prelude not in seen_op_preludes:
+                    seen_op_preludes.add(prelude)
+                    text += "\n" + prelude
     # Emit each ComputedSignal2D prelude (the user-provided signal struct definition)
     # exactly once, before the kernel structs that reference it.
     seen_preludes: set = set()
@@ -1326,7 +1335,8 @@ def find_best_schedule_and_emit_header(
 
     Returns a dict with the best schedule's ``kernel_name`` / ``best_*`` / ``ele_per_iter``
     / ``rows_per_iter`` and the baseline's ``baseline_kernel_name`` / ``baseline_*``, plus
-    ``header_path`` and ``num_schedules``.
+    ``header_path`` and ``num_schedules``. It also returns the chosen schedule ASTs as
+    ``best_expr`` / ``baseline_expr`` (VecRec IR objects, not JSON-serializable).
     """
     # Imported lazily to avoid a circular import (optimize -> codegen).
     import math
@@ -1386,6 +1396,10 @@ def find_best_schedule_and_emit_header(
         "kernel_name": kernel_name,
         "baseline_kernel_name": baseline_kernel_name,
         "header_path": header_path,
+        # The chosen schedule ASTs (VecRec IR). Not JSON-serializable; callers that
+        # persist the metadata should render them (e.g. via ``vecrec.expr.pp``) first.
+        "best_expr": best_expr,
+        "baseline_expr": base_expr,
         "best_ele_per_iter_multiple": best_epi,
         "best_rows_per_iter": best_rpi,
         "best_throughput_mbs": float(best_result["best_throughput_mbs"]),

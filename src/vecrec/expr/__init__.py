@@ -31,6 +31,8 @@ __all__ = [
     "SSub",
     "PointwiseMul",
     "PointwiseDiv",
+    "CustomPointwiseOp",
+    "PointwiseModulo",
     "SNeg",
     "Convolve",
     "Convolve2D",

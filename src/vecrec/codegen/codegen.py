@@ -11,6 +11,7 @@ from vecrec.expr.signal_ops import (
     WindowMapVec,
     WMVar,
     ChangeSemiring,
+    CustomPointwiseOp,
 )
 from vecrec.expr.kernel import TIKernel, TVKernel
 from vecrec.expr.kernel_matrix import KernelMatrix
@@ -63,6 +64,9 @@ class KernelProgram:
     rows_per_iter: int
     custom_semirings: Set[CustomSemiring]
     computed_signals: List[ComputedSignalDecl]
+    # C++ struct definitions for CustomPointwiseOp operators used by this kernel.
+    # Emitted (deduplicated) into the header before the kernel structs.
+    custom_op_preludes: List[str]
 
     def __init__(
         self,
@@ -71,6 +75,7 @@ class KernelProgram:
         custom_semirings: Optional[Set[CustomSemiring]] = None,
         rows_per_iter: int = 1,
         computed_signals: Optional[List[ComputedSignalDecl]] = None,
+        custom_op_preludes: Optional[List[str]] = None,
     ):
         assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
         self.text = text
@@ -78,6 +83,7 @@ class KernelProgram:
         self.rows_per_iter = rows_per_iter
         self.custom_semirings = custom_semirings if custom_semirings is not None else set()
         self.computed_signals = computed_signals if computed_signals is not None else []
+        self.custom_op_preludes = custom_op_preludes if custom_op_preludes is not None else []
 
 
 class TopoSort(Transform):
@@ -189,6 +195,7 @@ class CodeGen:
         self._wm_var_map = {}
         self.custom_semirings: Set[CustomSemiring] = set()
         self.computed_signals: List[ComputedSignalDecl] = []
+        self.custom_op_preludes: List[str] = []
 
     def clear(self):
         self.current_block_row = 0
@@ -206,6 +213,7 @@ class CodeGen:
         self._wm_var_map = {}
         self.custom_semirings = set()
         self.computed_signals = []
+        self.custom_op_preludes = []
 
     def _max_lanes_in_tree(self, expr: RecLang, visited: Optional[set] = None) -> int:
         """Find the maximum lane width across all nodes in the expression tree."""
@@ -369,6 +377,7 @@ class CodeGen:
             set(self.custom_semirings),
             rows_per_iter=self.rows_per_iter,
             computed_signals=list(self.computed_signals),
+            custom_op_preludes=list(self.custom_op_preludes),
         )
 
     def _generate_windowmap(self, wm: WindowMap) -> List[int]:
@@ -602,6 +611,23 @@ class CodeGen:
                     regs = self._new_registers(vec_type, n_slices)
                     code = self._declare_node(
                         f"Signal1D<{vec_type}>", f"{name}", [[r] for r in regs], vec_type, vec_type
+                    )
+
+                case CustomPointwiseOp(a, b):
+                    # User-defined pointwise op: lowered like a built-in binop, but the
+                    # C++ struct name and definition are benchmark-owned (no semiring
+                    # suffix). The struct definition is emitted into the header once.
+                    a_regs = self.generate_signal(a)[0]
+                    b_regs = self.generate_signal(b)[0]
+                    regs = self._new_registers(vec_type, n_slices)
+                    if expr.cpp_prelude not in self.custom_op_preludes:
+                        self.custom_op_preludes.append(expr.cpp_prelude)
+                    code = self._declare_node(
+                        f"{expr.cpp_struct}<{vec_type}>",
+                        "",
+                        [[regs[i], a_regs[i], b_regs[i]] for i in range(n_slices)],
+                        vec_type,
+                        vec_type,
                     )
 
                 case SignalExprBinOp(a, b):
