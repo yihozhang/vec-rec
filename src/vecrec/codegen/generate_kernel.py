@@ -19,8 +19,17 @@ __all__ = [
     "generate_and_run_benchmark",
     "sweep_codegen_setup",
     "find_best_schedule_and_emit_header",
+    "MAX_SWEEP_SCHEDULES",
 ]
 TEMPLATE = files("vecrec.templates") / "common.h"
+
+# Upper bound on the number of non-baseline schedules fed into the (epi, rpi)
+# sweep. The sweep takes the top ~10% of candidate schedules by default, but
+# each schedule fans out over a grid of codegen configs, so a large candidate
+# count makes the sweep's compile budget blow up. Cap the non-baseline count so
+# at most this many optimized schedules are swept (the reference schedule k0 is
+# always kept in addition, as the baseline).
+MAX_SWEEP_SCHEDULES = 40
 
 
 def instantiate_kernels(path: str, codes: List[KernelProgram] | List[str]) -> None:
@@ -1354,13 +1363,21 @@ def find_best_schedule_and_emit_header(
     output = raw["output"]
     timing_keys = [k for k in output if k != "validation"]
 
-    # Sweep the top ~10% schedules (always include the reference schedule k0).
+    # Sweep the top ~10% schedules (always include the reference schedule k0),
+    # but never more than MAX_SWEEP_SCHEDULES non-baseline schedules.
     n = len(schedules)
     n_top = min(n, max(2, math.ceil(0.1 * n)))
     sorted_keys = sorted(timing_keys, key=lambda k: output[k], reverse=True)
     top_indices = [int(k[1:]) for k in sorted_keys[:n_top]]
     if 0 not in top_indices:
         top_indices.append(0)
+    # Cap non-baseline schedules at MAX_SWEEP_SCHEDULES, keeping the
+    # highest-throughput ones (top_indices is throughput-sorted). Schedule 0
+    # (the baseline) is always retained regardless of the cap.
+    non_baseline = [i for i in top_indices if i != 0]
+    if len(non_baseline) > MAX_SWEEP_SCHEDULES:
+        kept = set(non_baseline[:MAX_SWEEP_SCHEDULES]) | {0}
+        top_indices = [i for i in top_indices if i in kept]
     top_exprs = [schedules[i] for i in top_indices]
 
     sweep_results = sweep_codegen_setup(

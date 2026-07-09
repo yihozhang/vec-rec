@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from vecrec.codegen import (
+    MAX_SWEEP_SCHEDULES,
     CodeGen,
     generate_and_run_benchmark,
     generate_kernel_executable,
@@ -194,6 +195,13 @@ class Benchmark(ABC):
         top_indices = [int(k[1:]) for k in top_keys]
         if 0 not in top_indices:
             top_indices.append(0)
+        # Cap non-baseline schedules at MAX_SWEEP_SCHEDULES, keeping the
+        # highest-throughput ones (top_indices is throughput-sorted). Schedule 0
+        # (the baseline) is always retained regardless of the cap.
+        non_baseline = [i for i in top_indices if i != 0]
+        if len(non_baseline) > MAX_SWEEP_SCHEDULES:
+            kept = set(non_baseline[:MAX_SWEEP_SCHEDULES]) | {0}
+            top_indices = [i for i in top_indices if i in kept]
         top_exprs = [schedules[i] for i in top_indices]
 
         sweep_results = sweep_codegen_setup(top_exprs)
