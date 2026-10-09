@@ -1,3 +1,11 @@
+// Allow callers to skip re-including common.h if it was already embedded by
+// another VecRec kernel header in the same translation unit.
+#ifdef VECREC_COMMON_H_ALREADY_INCLUDED
+// Nothing — all types and functions are already defined.
+#else
+#define VECREC_COMMON_H_ALREADY_INCLUDED
+
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -6,10 +14,42 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <tuple>
 #include <vector>
+
+// GCC compatibility shims for Clang-specific elementwise builtins.
+// __builtin_elementwise_max/min/add_sat are Clang 15+ extensions.
+// GCC 12+ supports them via __builtin_reduce_max/__builtin_ia32_* intrinsics,
+// but the simplest portable fallback is std::max/std::min + manual saturation.
+#ifndef __clang__
+#  include <type_traits>
+template<typename T>
+static inline T __builtin_elementwise_max(T a, T b) { return a > b ? a : b; }
+template<typename T>
+static inline T __builtin_elementwise_min(T a, T b) { return a < b ? a : b; }
+template<typename T>
+static inline T __builtin_elementwise_add_sat(T a, T b) {
+    using U = typename std::make_unsigned<T>::type;
+    static constexpr T lo = std::numeric_limits<T>::lowest();
+    static constexpr T hi = std::numeric_limits<T>::max();
+    T result;
+    // Detect overflow: if signs of a and b are the same and result differs, saturate
+    if (__builtin_add_overflow(a, b, &result)) {
+        return (a < 0) ? lo : hi;
+    }
+    return result;
+}
+#endif
 typedef float float_vec1;
+typedef int32_t int32_vec1;
+typedef int64_t int64_vec1;
+typedef int8_t  int8_vec1;
+typedef int16_t int16_vec1;
+
+#ifdef __clang__
+// Clang ext_vector_type: creates distinct SIMD vector types.
 typedef float float_vec2 __attribute__((ext_vector_type(2)));
 typedef float float_vec4 __attribute__((ext_vector_type(4)));
 typedef float float_vec8 __attribute__((ext_vector_type(8)));
@@ -21,18 +61,15 @@ typedef double double_vec4 __attribute__((ext_vector_type(4)));
 typedef double double_vec8 __attribute__((ext_vector_type(8)));
 typedef double double_vec16 __attribute__((ext_vector_type(16)));
 
-typedef int32_t int32_vec1;
 typedef int32_t int32_vec2 __attribute__((ext_vector_type(2)));
 typedef int32_t int32_vec4 __attribute__((ext_vector_type(4)));
 typedef int32_t int32_vec8 __attribute__((ext_vector_type(8)));
 typedef int32_t int32_vec16 __attribute__((ext_vector_type(16)));
 
-typedef int64_t int64_vec1;
 typedef int64_t int64_vec2 __attribute__((ext_vector_type(2)));
 typedef int64_t int64_vec4 __attribute__((ext_vector_type(4)));
 typedef int64_t int64_vec8 __attribute__((ext_vector_type(8)));
 
-typedef int8_t int8_vec1;
 typedef int8_t int8_vec2  __attribute__((ext_vector_type(2)));
 typedef int8_t int8_vec4  __attribute__((ext_vector_type(4)));
 typedef int8_t int8_vec8  __attribute__((ext_vector_type(8)));
@@ -40,50 +77,75 @@ typedef int8_t int8_vec16 __attribute__((ext_vector_type(16)));
 typedef int8_t int8_vec32 __attribute__((ext_vector_type(32)));
 typedef int8_t int8_vec64 __attribute__((ext_vector_type(64)));
 
-typedef int16_t int16_vec1;
 typedef int16_t int16_vec2  __attribute__((ext_vector_type(2)));
 typedef int16_t int16_vec4  __attribute__((ext_vector_type(4)));
 typedef int16_t int16_vec8  __attribute__((ext_vector_type(8)));
 typedef int16_t int16_vec16 __attribute__((ext_vector_type(16)));
 typedef int16_t int16_vec32 __attribute__((ext_vector_type(32)));
+// Oversized logical vectors (wider than one physical register): clang lowers
+// ops on these by splitting across multiple SIMD registers. Used by wide-epi
+// schedules (epi_multiple > native_lanes) to keep more vectors in flight.
+typedef int16_t int16_vec64  __attribute__((ext_vector_type(64)));
+typedef int16_t int16_vec128 __attribute__((ext_vector_type(128)));
+typedef int32_t int32_vec32  __attribute__((ext_vector_type(32)));
+typedef int32_t int32_vec64  __attribute__((ext_vector_type(64)));
+typedef int8_t  int8_vec128  __attribute__((ext_vector_type(128)));
 
-constexpr int vec_lanes_of(float) { return 1; }
-constexpr int vec_lanes_of(float_vec2) { return 2; }
-constexpr int vec_lanes_of(float_vec4) { return 4; }
-constexpr int vec_lanes_of(float_vec8) { return 8; }
-constexpr int vec_lanes_of(float_vec16) { return 16; }
-
-constexpr int vec_lanes_of(double) { return 1; }
-constexpr int vec_lanes_of(double_vec2) { return 2; }
-constexpr int vec_lanes_of(double_vec4) { return 4; }
-constexpr int vec_lanes_of(double_vec8) { return 8; }
+constexpr int vec_lanes_of(float)        { return 1; }
+constexpr int vec_lanes_of(float_vec2)   { return 2; }
+constexpr int vec_lanes_of(float_vec4)   { return 4; }
+constexpr int vec_lanes_of(float_vec8)   { return 8; }
+constexpr int vec_lanes_of(float_vec16)  { return 16; }
+constexpr int vec_lanes_of(double)       { return 1; }
+constexpr int vec_lanes_of(double_vec2)  { return 2; }
+constexpr int vec_lanes_of(double_vec4)  { return 4; }
+constexpr int vec_lanes_of(double_vec8)  { return 8; }
 constexpr int vec_lanes_of(double_vec16) { return 16; }
-
-constexpr int vec_lanes_of(int32_t) { return 1; }
-constexpr int vec_lanes_of(int32_vec2) { return 2; }
-constexpr int vec_lanes_of(int32_vec4) { return 4; }
-constexpr int vec_lanes_of(int32_vec8) { return 8; }
-constexpr int vec_lanes_of(int32_vec16) { return 16; }
-
-constexpr int vec_lanes_of(int64_t) { return 1; }
-constexpr int vec_lanes_of(int64_vec2) { return 2; }
-constexpr int vec_lanes_of(int64_vec4) { return 4; }
-constexpr int vec_lanes_of(int64_vec8) { return 8; }
-
-constexpr int vec_lanes_of(int8_t)     { return 1; }
-constexpr int vec_lanes_of(int8_vec2)  { return 2; }
-constexpr int vec_lanes_of(int8_vec4)  { return 4; }
-constexpr int vec_lanes_of(int8_vec8)  { return 8; }
-constexpr int vec_lanes_of(int8_vec16) { return 16; }
-constexpr int vec_lanes_of(int8_vec32) { return 32; }
-constexpr int vec_lanes_of(int8_vec64) { return 64; }
-
+constexpr int vec_lanes_of(int32_t)      { return 1; }
+constexpr int vec_lanes_of(int32_vec2)   { return 2; }
+constexpr int vec_lanes_of(int32_vec4)   { return 4; }
+constexpr int vec_lanes_of(int32_vec8)   { return 8; }
+constexpr int vec_lanes_of(int32_vec16)  { return 16; }
+constexpr int vec_lanes_of(int64_t)      { return 1; }
+constexpr int vec_lanes_of(int64_vec2)   { return 2; }
+constexpr int vec_lanes_of(int64_vec4)   { return 4; }
+constexpr int vec_lanes_of(int64_vec8)   { return 8; }
+constexpr int vec_lanes_of(int8_t)       { return 1; }
+constexpr int vec_lanes_of(int8_vec2)    { return 2; }
+constexpr int vec_lanes_of(int8_vec4)    { return 4; }
+constexpr int vec_lanes_of(int8_vec8)    { return 8; }
+constexpr int vec_lanes_of(int8_vec16)   { return 16; }
+constexpr int vec_lanes_of(int8_vec32)   { return 32; }
+constexpr int vec_lanes_of(int8_vec64)   { return 64; }
 constexpr int vec_lanes_of(int16_t)      { return 1; }
 constexpr int vec_lanes_of(int16_vec2)   { return 2; }
 constexpr int vec_lanes_of(int16_vec4)   { return 4; }
 constexpr int vec_lanes_of(int16_vec8)   { return 8; }
 constexpr int vec_lanes_of(int16_vec16)  { return 16; }
 constexpr int vec_lanes_of(int16_vec32)  { return 32; }
+constexpr int vec_lanes_of(int16_vec64)  { return 64; }
+constexpr int vec_lanes_of(int16_vec128) { return 128; }
+constexpr int vec_lanes_of(int32_vec32)  { return 32; }
+constexpr int vec_lanes_of(int32_vec64)  { return 64; }
+constexpr int vec_lanes_of(int8_vec128)  { return 128; }
+
+#else  // GCC or other: no distinct vector types; kernel runs scalar/SSE intrinsics via -march=native
+// GCC ignores ext_vector_type so we alias the multi-lane types to the scalar.
+// The kernel schedules with epi=1 work correctly with scalar fallback.
+typedef float   float_vec2, float_vec4, float_vec8, float_vec16;
+typedef double  double_vec2, double_vec4, double_vec8, double_vec16;
+typedef int32_t int32_vec2, int32_vec4, int32_vec8, int32_vec16;
+typedef int64_t int64_vec2, int64_vec4, int64_vec8;
+typedef int8_t  int8_vec2, int8_vec4, int8_vec8, int8_vec16, int8_vec32, int8_vec64;
+typedef int16_t int16_vec2, int16_vec4, int16_vec8, int16_vec16, int16_vec32;
+
+constexpr int vec_lanes_of(float)   { return 1; }
+constexpr int vec_lanes_of(double)  { return 1; }
+constexpr int vec_lanes_of(int32_t) { return 1; }
+constexpr int vec_lanes_of(int64_t) { return 1; }
+constexpr int vec_lanes_of(int8_t)  { return 1; }
+constexpr int vec_lanes_of(int16_t) { return 1; }
+#endif  // __clang__
 
 #include <cmath>
 template <typename Vec>
@@ -127,139 +189,56 @@ template <typename T>
 struct ElementType {};
 
 template <>
-struct ElementType<float> {
-    using type = float;
-};
+struct ElementType<float> { using type = float; };
 template <>
-struct ElementType<float_vec2> {
-    using type = float;
-};
+struct ElementType<int32_t> { using type = int32_t; };
 template <>
-struct ElementType<float_vec4> {
-    using type = float;
-};
-template <>
-struct ElementType<float_vec8> {
-    using type = float;
-};
-template <>
-struct ElementType<float_vec16> {
-    using type = float;
-};
+struct ElementType<int64_t> { using type = int64_t; };
 
 template <>
-struct ElementType<double> {
-    using type = double;
-};
-template <>
-struct ElementType<double_vec2> {
-    using type = double;
-};
-template <>
-struct ElementType<double_vec4> {
-    using type = double;
-};
-template <>
-struct ElementType<double_vec8> {
-    using type = double;
-};
-template <>
-struct ElementType<double_vec16> {
-    using type = double;
-};
+struct ElementType<double> { using type = double; };
 
-template <>
-struct ElementType<int32_t> {
-    using type = int32_t;
-};
-template <>
-struct ElementType<int32_vec2> {
-    using type = int32_t;
-};
-template <>
-struct ElementType<int32_vec4> {
-    using type = int32_t;
-};
-template <>
-struct ElementType<int32_vec8> {
-    using type = int32_t;
-};
-template <>
-struct ElementType<int32_vec16> {
-    using type = int32_t;
-};
+#ifdef __clang__
+template <> struct ElementType<float_vec2>  { using type = float; };
+template <> struct ElementType<float_vec4>  { using type = float; };
+template <> struct ElementType<float_vec8>  { using type = float; };
+template <> struct ElementType<float_vec16> { using type = float; };
+template <> struct ElementType<double_vec2>  { using type = double; };
+template <> struct ElementType<double_vec4>  { using type = double; };
+template <> struct ElementType<double_vec8>  { using type = double; };
+template <> struct ElementType<double_vec16> { using type = double; };
+template <> struct ElementType<int32_vec2>  { using type = int32_t; };
+template <> struct ElementType<int32_vec4>  { using type = int32_t; };
+template <> struct ElementType<int32_vec8>  { using type = int32_t; };
+template <> struct ElementType<int32_vec16> { using type = int32_t; };
+template <> struct ElementType<int64_vec2>  { using type = int64_t; };
+template <> struct ElementType<int64_vec4>  { using type = int64_t; };
+template <> struct ElementType<int64_vec8>  { using type = int64_t; };
+#endif  // __clang__
 
-template <>
-struct ElementType<int64_t> {
-    using type = int64_t;
-};
-template <>
-struct ElementType<int64_vec2> {
-    using type = int64_t;
-};
-template <>
-struct ElementType<int64_vec4> {
-    using type = int64_t;
-};
-template <>
-struct ElementType<int64_vec8> {
-    using type = int64_t;
-};
+template <> struct ElementType<int8_t>  { using type = int8_t; };
+template <> struct ElementType<int16_t> { using type = int16_t; };
 
-template <>
-struct ElementType<int8_t> {
-    using type = int8_t;
-};
-template <>
-struct ElementType<int8_vec2> {
-    using type = int8_t;
-};
-template <>
-struct ElementType<int8_vec4> {
-    using type = int8_t;
-};
-template <>
-struct ElementType<int8_vec8> {
-    using type = int8_t;
-};
-template <>
-struct ElementType<int8_vec16> {
-    using type = int8_t;
-};
-template <>
-struct ElementType<int8_vec32> {
-    using type = int8_t;
-};
-template <>
-struct ElementType<int8_vec64> {
-    using type = int8_t;
-};
+#ifdef __clang__
+template <> struct ElementType<int8_vec2>   { using type = int8_t; };
+template <> struct ElementType<int8_vec4>   { using type = int8_t; };
+template <> struct ElementType<int8_vec8>   { using type = int8_t; };
+template <> struct ElementType<int8_vec16>  { using type = int8_t; };
+template <> struct ElementType<int8_vec32>  { using type = int8_t; };
+template <> struct ElementType<int8_vec64>  { using type = int8_t; };
+template <> struct ElementType<int16_vec2>  { using type = int16_t; };
+template <> struct ElementType<int16_vec4>  { using type = int16_t; };
+template <> struct ElementType<int16_vec8>  { using type = int16_t; };
+template <> struct ElementType<int16_vec16> { using type = int16_t; };
+template <> struct ElementType<int16_vec32> { using type = int16_t; };
+template <> struct ElementType<int16_vec64>  { using type = int16_t; };
+template <> struct ElementType<int16_vec128> { using type = int16_t; };
+template <> struct ElementType<int32_vec32>  { using type = int32_t; };
+template <> struct ElementType<int32_vec64>  { using type = int32_t; };
+template <> struct ElementType<int8_vec128>  { using type = int8_t; };
+#endif  // __clang__
 
-template <>
-struct ElementType<int16_t> {
-    using type = int16_t;
-};
-template <>
-struct ElementType<int16_vec2> {
-    using type = int16_t;
-};
-template <>
-struct ElementType<int16_vec4> {
-    using type = int16_t;
-};
-template <>
-struct ElementType<int16_vec8> {
-    using type = int16_t;
-};
-template <>
-struct ElementType<int16_vec16> {
-    using type = int16_t;
-};
-template <>
-struct ElementType<int16_vec32> {
-    using type = int16_t;
-};
-
+#ifdef __clang__
 inline std::string string_of(float_vec4 x) {
     return std::to_string(x[0]) + ", " + std::to_string(x[1]) + ", " + std::to_string(x[2]) + ", " + std::to_string(x[3]);
 }
@@ -277,6 +256,7 @@ inline std::string string_of(int64_vec8 x) {
     return std::to_string(x[0]) + ", " + std::to_string(x[1]) + ", " + std::to_string(x[2]) + ", " + std::to_string(x[3]) + ", " +
            std::to_string(x[5]) + ", " + std::to_string(x[6]) + ", " + std::to_string(x[7]) + ", " + std::to_string(x[8]);
 }
+#endif  // __clang__
 
 #define EXTRACT_SLICE_1(type)                               \
     inline type extract_slice(type a, type b, int offset) { \
@@ -391,6 +371,12 @@ inline std::string string_of(int64_vec8 x) {
     }
 
 EXTRACT_SLICE_1(float)
+EXTRACT_SLICE_1(int32_vec1)
+EXTRACT_SLICE_1(int64_vec1)
+EXTRACT_SLICE_1(int8_vec1)
+EXTRACT_SLICE_1(int16_vec1)
+
+#ifdef __clang__
 EXTRACT_SLICE_2(float_vec2)
 EXTRACT_SLICE_4(float_vec4)
 EXTRACT_SLICE_8(float_vec8)
@@ -400,29 +386,22 @@ EXTRACT_SLICE_2(double_vec2)
 EXTRACT_SLICE_4(double_vec4)
 EXTRACT_SLICE_8(double_vec8)
 EXTRACT_SLICE_16(double_vec16)
-EXTRACT_SLICE_1(int32_vec1)
 EXTRACT_SLICE_2(int32_vec2)
 EXTRACT_SLICE_4(int32_vec4)
 EXTRACT_SLICE_8(int32_vec8)
 EXTRACT_SLICE_16(int32_vec16)
-EXTRACT_SLICE_1(int64_vec1)
 EXTRACT_SLICE_2(int64_vec2)
 EXTRACT_SLICE_4(int64_vec4)
 EXTRACT_SLICE_8(int64_vec8)
-
-// int8 extract_slice instantiations reuse existing macros for sizes ≤ 16
-EXTRACT_SLICE_1(int8_vec1)
 EXTRACT_SLICE_2(int8_vec2)
 EXTRACT_SLICE_4(int8_vec4)
 EXTRACT_SLICE_8(int8_vec8)
 EXTRACT_SLICE_16(int8_vec16)
-
-// int16 extract_slice instantiations (≤ 16 lane macros already defined above)
-EXTRACT_SLICE_1(int16_vec1)
 EXTRACT_SLICE_2(int16_vec2)
 EXTRACT_SLICE_4(int16_vec4)
 EXTRACT_SLICE_8(int16_vec8)
 EXTRACT_SLICE_16(int16_vec16)
+#endif  // __clang__
 
 // EXTRACT_SLICE_32 and EXTRACT_SLICE_64 for int8_vec32 / int8_vec64
 #define EXTRACT_SLICE_32(type_vec32)                                                                                                              \
@@ -539,9 +518,13 @@ EXTRACT_SLICE_16(int16_vec16)
         return type_vec64{};                                                                                                                                                                                                          \
     }
 
+#ifdef __clang__
 EXTRACT_SLICE_32(int8_vec32)
 EXTRACT_SLICE_32(int16_vec32)
+EXTRACT_SLICE_32(int32_vec32)
 EXTRACT_SLICE_64(int8_vec64)
+EXTRACT_SLICE_64(int16_vec64)
+#endif  // __clang__
 
 // from https://stackoverflow.com/questions/37602057/why-isnt-a-for-loop-a-compile-time-expression
 template <std::size_t N>
@@ -667,12 +650,13 @@ struct TimeInvariantKernel {
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
         _Pragma("unroll") for (int i = 0; i < taps; i++) {
-            asm volatile("" :::);
+            /* fence removed */
             reg[base + i] = vals[i];
         }
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 template <int _taps, typename vec_type, const int indices[_taps]>
@@ -685,12 +669,13 @@ struct TimeVaryingKernel {
     template <typename Reg_t>
     inline __attribute__((always_inline)) void run(Reg_t &reg, int base, const int args[taps]) {
         _Pragma("unroll") for (int i = 0; i < taps; i++) {
-            asm volatile("" :::);
+            /* fence removed */
             reg[base + i] = reg[args[i]];
         }
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 template <typename vec_type>
@@ -707,6 +692,7 @@ struct Signal1DConstant {
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 // Signal1DImpulse: produces `value` in lane 0 at time 0, then `zero` (broadcast) thereafter.
@@ -742,6 +728,7 @@ struct Signal1DImpulse {
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 template <typename vec_type>
@@ -761,23 +748,45 @@ struct Signal1D {
     // Signal1D streams through contiguous data. Between rows the pointer
     // is already at the start of the next row, so this is a no-op.
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
-// Context struct to share state between Repeater and Signal2D
-template <typename vec_type, int n_rows>
+// Context struct to share state between Repeater and Signal2D.
+//
+// When band_width > 0, each row only writes columns [col_start, col_end) to
+// the buffer. Positions 0..col_start-1 are never updated and would retain the
+// PREVIOUS row's values, which would then be read as the current row's values
+// by the next row — a correctness bug. reset_and_next_row() zeroes those
+// positions after every row so the buffer always represents M[row][j] = 0
+// for j < col_start (the banded-DP "not reached" sentinel). This zeroing is
+// O(col_start) ≈ O(band_width) per row and is compiled away when band_width == 0.
+//
+// epi_multiple: the ratio epi/lanes (= ele_per_iter_multiple in CodeGen). col_start
+// must be aligned to epi = lanes * epi_multiple to avoid buffer overflow when the
+// last vector group in a row extends past phys_w. Default 1 = align to lanes only.
+template <typename vec_type, int n_rows, int band_width = 0, int epi_multiple = 1>
 struct RepeaterContext {
     using elt_type = typename ElementType<vec_type>::type;
+    static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
+    static constexpr int epi = lanes * epi_multiple;
     int width;
     elt_type *buffer;
-    int current_row;
-    // When you write a value, the old value gets evicted, yet 
+    int current_row;       // ring-buffer slot index
+    int logical_row;       // monotonic row counter used to compute col_start
+    elt_type zero_val;     // semiring zero; used to fill skipped positions
+    // When you write a value, the old value gets evicted, yet
     // Repeater still needs to return it.
     vec_type overwritten_value;
 
     RepeaterContext() = delete;
-    RepeaterContext(int row_size, elt_type zero_value) : width(row_size), current_row(0) {
-        buffer = new (std::align_val_t(32)) elt_type[(n_rows - 1) * width];
-        for (int i = 0; i < (n_rows - 1) * width; i++) {
+    RepeaterContext(int row_size, elt_type zero_value)
+        : width(row_size), current_row(0), logical_row(0), zero_val(zero_value) {
+        // Allocate extra elements beyond (n_rows-1)*width so the kernel's
+        // vec_type look-ahead reads within Signal2D and SConvolve don't overflow.
+        // We add 2*epi (= 2*lanes*epi_multiple) extra elements as a safe margin.
+        const int alloc_size = (n_rows - 1) * width + 2 * epi;
+        buffer = new (std::align_val_t(32)) elt_type[alloc_size];
+        for (int i = 0; i < alloc_size; i++) {
             buffer[i] = zero_value;
         }
     }
@@ -803,7 +812,42 @@ struct RepeaterContext {
     }
 
     void reset_and_next_row() {
+        if constexpr (band_width > 0) {
+            // Zero positions the just-completed row (logical_row) did not write.
+            // Align to epi (not just lanes) to match the runner and avoid buffer overflow.
+            // Left side always starts at col=0, so no stale-buffer positions exist
+            // on the left.  No zeroing needed (the buffer is always written from 0).
+            (void)logical_row;  // suppress unused-variable warning
+        }
         current_row = (current_row + 1) % (n_rows - 1);
+        logical_row++;
+    }
+
+    // Read one element from the previous row's buffer (row_offset=1) for diagonal priming.
+    elt_type prev_row_scalar(int col) const {
+        int row_idx = (current_row + 2 * (n_rows - 1) - 1) % (n_rows - 1);
+        return buffer[row_idx * width + col];
+    }
+    void seek_col(int /* col_start */) {}  // no column state; present for uniform seek dispatch
+
+    // ---- Tiling support (2D / row-strip restart) ----------------------------------
+    // Reposition the logical row counter to `row_start` without touching buffer data.
+    // Used by block tiling so a kernel restarted at the top of a row-band computes
+    // with the correct row phase (matters when combined with load_prev_row below).
+    void seek_row(int row_start) {
+        logical_row = row_start;
+        current_row = ((row_start % (n_rows - 1)) + (n_rows - 1)) % (n_rows - 1);
+    }
+    // Copy the previous-row slot's columns [col, col+n) into dst[col, col+n).
+    // (dst is indexed by absolute column so multiple panels share one buffer.)
+    void save_prev_row(elt_type *dst, int col, int n) const {
+        int row_idx = (current_row + 2 * (n_rows - 1) - 1) % (n_rows - 1);
+        memcpy(dst + col, &buffer[row_idx * width + col], (size_t)n * sizeof(elt_type));
+    }
+    // Inverse of save_prev_row: preload the previous-row slot from src[col, col+n).
+    void load_prev_row(const elt_type *src, int col, int n) {
+        int row_idx = (current_row + 2 * (n_rows - 1) - 1) % (n_rows - 1);
+        memcpy(&buffer[row_idx * width + col], src + col, (size_t)n * sizeof(elt_type));
     }
 
     
@@ -811,17 +855,18 @@ struct RepeaterContext {
     RepeaterContext &operator=(const RepeaterContext &) = delete;
 
     RepeaterContext(RepeaterContext &&other) noexcept
-        : width(other.width), buffer(other.buffer), current_row(other.current_row) {
+        : width(other.width), buffer(other.buffer), current_row(other.current_row),
+          logical_row(other.logical_row), zero_val(other.zero_val) {
         other.buffer = nullptr;
     }
 
     RepeaterContext &operator=(RepeaterContext &&other) noexcept {
         if (this != &other) {
-            // Match the over-aligned new[] in the constructor (elt_type is trivially
-            // destructible, so no element dtors to run).
-            ::operator delete[](buffer, std::align_val_t(32));
+            delete[] buffer;
             width = other.width;
             current_row = other.current_row;
+            logical_row = other.logical_row;
+            zero_val = other.zero_val;
             buffer = other.buffer;
             other.buffer = nullptr;
         }
@@ -829,8 +874,7 @@ struct RepeaterContext {
     }
 
     ~RepeaterContext() {
-        // Match the over-aligned new[] in the constructor.
-        ::operator delete[](buffer, std::align_val_t(32));
+        delete[] buffer;
     }
 };
 
@@ -843,10 +887,10 @@ struct Signal2D {
 
     Signal2D() : my_col(0) {}
 
-    template <typename Reg_t>
-    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, RepeaterContext<vec_type, n_rows + 1> &context) {
+    template <typename Reg_t, typename Ctx>
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, Ctx &context) {
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
-            asm volatile("" :::);
+            /* fence removed */
             reg[base + i] = context.get_at(i + 1, my_col, block_row, false);
         }
         my_col += lanes;
@@ -855,6 +899,8 @@ struct Signal2D {
     void reset_and_next_row() {
         my_col = 0;
     }
+
+    void seek_col(int col_start) { my_col = col_start; }
 };
 
 // InputSignal2D: reads from a user-provided 2D array with causal (look-behind) semantics.
@@ -862,10 +908,19 @@ struct Signal2D {
 // Rows before row 0 are treated as zero (zero-padding).
 // Row pointers are kept as elt_type* to avoid alignment assumptions; memcpy
 // is used for the actual load so that unaligned input data is handled safely.
-template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
+//
+// When band_width > 0, only columns in [max(0, first_row_of_block - band_width),
+// min(stride, first_row_of_block + block_size + band_width)] are visited per row.
+// The runner loop is responsible for restricting column iteration; this struct
+// initialises row pointers to the block's col_start so the first run() lands there.
+// epi_multiple = ele_per_iter / lanes = how many SIMD loads per kernel.run() call.
+// col_start must align to epi = lanes * epi_multiple so that the last vector group in
+// a row does not spill beyond phys_w and corrupt adjacent rows.
+template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0, int band_width = 0, int epi_multiple = 1>
 struct InputSignal2D {
     using elt_type = typename ElementType<vec_type>::type;
     static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
+    static constexpr int epi = lanes * epi_multiple;
 
     const elt_type *data;
     int stride;
@@ -874,19 +929,36 @@ struct InputSignal2D {
     // points into data for valid rows, or zero_row.get() for zero-padding rows
     const elt_type *row_ptrs[n_rows];
 
+    // Returns the column start for the current block (shared by all block_rows).
+    // first_row = current_row - block_row (the first logical row of this block).
+    //
+    // FIX — diagonal carry bug: after reset_and_next_row() all SIMD carry registers
+    // are 0.  If the col loop starts at col_start > 0, the diagonal TIKernel carry
+    // (which should hold M(i-1, col_start - lanes)) is 0, giving wrong scores.
+    //
+    // Fix: never restrict the LEFT side.  Always start from col = 0 so the carry is
+    // the correct boundary value (0 = before sequence start).  Only col_end is
+    // restricted (right/diagonal side).  This is a triangular band — the semantically
+    // correct shape for sequence extension (alignment always starts at position 0).
+    inline int _block_col_start() const {
+        return 0;  // left side always starts at 0; only col_end (right side) is clipped
+    }
+
     InputSignal2D() = delete;
     InputSignal2D(const elt_type *data, int stride, elt_type zero)
         : data(data),
           stride(stride),
           current_row(block_row),
-          zero_row(new elt_type[stride]) {
-        _Pragma("unroll") for (int i = 0; i < stride; i++) {
+          zero_row(new elt_type[stride + 2 * lanes]) {   // +2*lanes: prevents read-past-end in run()
+        _Pragma("unroll") for (int i = 0; i < stride + 2 * lanes; i++) {
             zero_row[i] = zero;
         }
-        // d[i] = row (block_row - i), zero-padded for rows before 0
+        int cs = _block_col_start();
+        // d[i] = row (block_row - i), zero-padded for rows before 0.
+        // Pointers start one step before cs so the first run() += lanes lands at cs.
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             int src_row = block_row - i;
-            row_ptrs[i] = ((src_row >= 0) ? data + (size_t)src_row * stride : zero_row) - lanes;
+            row_ptrs[i] = ((src_row >= 0) ? data + (size_t)src_row * stride + cs : zero_row) - lanes;
         }
     }
 
@@ -904,12 +976,97 @@ struct InputSignal2D {
         // per-block-row InputSignal2D instances advance by `block_size` total
         // (matching the way RepeaterContext::current_row is bumped).
         current_row++;
+        int cs = _block_col_start();
         // d[i] = row (current_row - i), zero-padded for rows before 0
         _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
             int src_row = current_row - i;
-            row_ptrs[i] = ((src_row >= 0) ? data + (size_t)src_row * stride : zero_row) - lanes;
+            row_ptrs[i] = ((src_row >= 0) ? data + (size_t)src_row * stride + cs : zero_row) - lanes;
         }
     }
+
+    void seek_col(int col_start) {
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
+            int src_row = current_row - i;
+            row_ptrs[i] = ((src_row >= 0) ? data + (size_t)src_row * stride : zero_row)
+                          + col_start - lanes;
+        }
+    }
+
+    // Tiling support: reposition the row counter (block tiling restarts mid-matrix).
+    // A subsequent seek_col() recomputes row_ptrs from this current_row.
+    void seek_row(int row_start) { current_row = row_start; }
+};
+
+// ProfileSignal2D: a drop-in InputSignal2D replacement that reads a row from a
+// small per-symbol PROFILE instead of a full O(rows x cols) matrix. For row r it
+// uses profile[sym[r]] (one of `alphabet` precomputed reference score-vectors),
+// the parasail-style "query profile" approach. This lets the alignment kernels
+// avoid materializing the O(N^2) substitution matrix: the driver builds only the
+// O(alphabet*cols) profile + the O(rows) symbol-index table `sym`.
+//
+// band_width > 0 mirrors InputSignal2D banding: row pointers are initialised to
+// the block's col_start so the column loop can start there instead of column 0.
+// epi_multiple matches InputSignal2D's parameter; col_start is aligned to epi.
+template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0, int band_width = 0, int epi_multiple = 1>
+struct ProfileSignal2D {
+    using elt_type = typename ElementType<vec_type>::type;
+    static constexpr int lanes = sizeof(vec_type) / sizeof(elt_type);
+    static constexpr int epi = lanes * epi_multiple;
+
+    const elt_type *profile;   // alphabet rows of length `stride`
+    const int *sym;            // sym[r] selects which profile row logical row r uses
+    int stride;
+    int current_row;
+    elt_type *zero_row;
+    const elt_type *row_ptrs[n_rows];
+
+    // Same fix as InputSignal2D: no left restriction.
+    inline int _block_col_start() const {
+        return 0;
+    }
+
+    ProfileSignal2D() = delete;
+    ProfileSignal2D(const elt_type *profile, const int *sym, int stride, elt_type zero)
+        : profile(profile), sym(sym), stride(stride),
+          current_row(block_row), zero_row(new elt_type[stride + 2 * lanes]) {  // +2*lanes: prevents read-past-end
+        _Pragma("unroll") for (int i = 0; i < stride + 2 * lanes; i++) zero_row[i] = zero;
+        int cs = _block_col_start();
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
+            int src_row = block_row - i;
+            row_ptrs[i] = ((src_row >= 0) ? profile + (size_t)sym[src_row] * stride + cs : zero_row) - lanes;
+        }
+    }
+
+    template <typename Reg_t>
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int base) {
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
+            row_ptrs[i] += lanes;
+            memcpy(&reg[base + i], row_ptrs[i], sizeof(vec_type));
+        }
+    }
+
+    void reset_and_next_row() {
+        current_row++;
+        int cs = _block_col_start();
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
+            int src_row = current_row - i;
+            row_ptrs[i] = ((src_row >= 0) ? profile + (size_t)sym[src_row] * stride + cs : zero_row) - lanes;
+        }
+    }
+
+    void seek_col(int col_start) {
+        _Pragma("unroll") for (int i = 0; i < n_rows; i++) {
+            int src_row = current_row - i;
+            const elt_type *base = (src_row >= 0)
+                ? profile + (size_t)sym[src_row] * stride
+                : zero_row;
+            row_ptrs[i] = base + col_start - lanes;
+        }
+    }
+
+    // Tiling support: reposition the row counter (block tiling restarts mid-matrix).
+    // A subsequent seek_col() recomputes row_ptrs from this current_row.
+    void seek_row(int row_start) { current_row = row_start; }
 };
 
 template <typename vec_type, int n_rows, int block_size = 1, int block_row = 0>
@@ -921,8 +1078,8 @@ struct Repeater {
 
     Repeater() : my_col(0) {}
 
-    template <typename Reg_t>
-    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int inner, RepeaterContext<vec_type, n_rows> &context) {
+    template <typename Reg_t, typename Ctx>
+    inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int inner, Ctx &context) {
         vec_type curr_output = reg[inner];
         // Skip the cache write for the first (block_size - n_rows) block-rows,
         // since their values are dead before any future block reads them.
@@ -938,6 +1095,8 @@ struct Repeater {
     void reset_and_next_row() {
         my_col = 0;
     }
+
+    void seek_col(int col_start) { my_col = col_start; }
 };
 
 #define SConvolveOp(suffix, zero_init, mul_op, add_op)                                                 \
@@ -958,7 +1117,7 @@ struct Repeater {
         inline __attribute__((always_inline)) void run(Reg_t &reg, int base, int kernel, int signal) { \
             curr_output = (zero_init);                                                                 \
             _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {                              \
-                asm volatile("" :::);                                                                  \
+                /* fence removed */                                                                  \
                 prev_input[i] = prev_input[i + 1];                                                     \
             }                                                                                          \
             prev_input[buffer_size - 1] = reg[signal];                                                 \
@@ -983,6 +1142,18 @@ struct Repeater {
                 prev_input[i] = (zero_init);                                                           \
             }                                                                                          \
         }                                                                                              \
+        void seek_col(int /* col_start */) {}                                                          \
+        void prime_diagonal_carry(elt_type val) {                                                      \
+            reinterpret_cast<elt_type *>(&prev_input[buffer_size - 1])[vec_lanes - 1] = val;           \
+        }                                                                                              \
+        /* Tiling support: checkpoint/restore the diagonal shift carry at a column   */                \
+        /* boundary so a tiled driver can restart the recurrence mid-matrix.         */                \
+        void save_state(char *&dst) const {                                                            \
+            memcpy(dst, prev_input, sizeof(prev_input)); dst += sizeof(prev_input);                    \
+        }                                                                                              \
+        void restore_state(const char *&src) {                                                         \
+            memcpy(prev_input, src, sizeof(prev_input)); src += sizeof(prev_input);                    \
+        }                                                                                              \
     };                                                                                                 \
     // template <typename vec_type>                                                                           \
     // auto make_s_convolve##suffix(int base, int kernel, int signal) {                                       \
@@ -992,10 +1163,10 @@ struct Repeater {
 SConvolveOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 // SConvolveOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
 SConvolveOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SConvolveOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SConvolveOp(TropMax, std::numeric_limits<elt_type>::lowest() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 // Saturating variants for int8: use min/2 sentinel and saturating add to prevent overflow
 SConvolveOp(TropMinSat, std::numeric_limits<elt_type>::max() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::lowest() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 #define SRecurseOp(suffix, zero_init, mul_op, add_op)                                                  \
     template <typename vec_type, int taps, const int idxs[taps]>                                       \
@@ -1028,7 +1199,7 @@ SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, aut
                 curr_output = add_op(curr_output, contrib);                                            \
             }                                                                                          \
             _Pragma("unroll") for (int i = 0; i + 1 < buffer_size; i++) {                              \
-                asm volatile("" :::);                                                                  \
+                /* fence removed */                                                                  \
                 prev_output[i] = prev_output[i + 1];                                                   \
             }                                                                                          \
             prev_output[buffer_size - 1] = curr_output;                                                \
@@ -1040,14 +1211,26 @@ SConvolveOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, aut
                 prev_output[i] = (zero_init);                                                          \
             }                                                                                          \
         }                                                                                              \
+        void seek_col(int /* col_start */) {}                                                          \
+        /* Tiling support: checkpoint/restore the left-dependency (in-row) carry at a */                \
+        /* column boundary so a tiled driver can restart the recurrence mid-matrix.  */                \
+        void prime_left_carry(elt_type val) {                                                          \
+            reinterpret_cast<elt_type *>(&prev_output[buffer_size - 1])[vec_lanes - 1] = val;          \
+        }                                                                                              \
+        void save_state(char *&dst) const {                                                            \
+            memcpy(dst, prev_output, sizeof(prev_output)); dst += sizeof(prev_output);                 \
+        }                                                                                              \
+        void restore_state(const char *&src) {                                                         \
+            memcpy(prev_output, src, sizeof(prev_output)); src += sizeof(prev_output);                 \
+        }                                                                                              \
     };
 
 SRecurseOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 // SRecurseOp(, 0, [](auto a, auto b) { return safe_mul(a, b); }, [](auto acc, auto x) { return acc + x; });
 SRecurseOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SRecurseOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseOp(TropMax, std::numeric_limits<elt_type>::lowest() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 SRecurseOp(TropMinSat, std::numeric_limits<elt_type>::max() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SRecurseOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseOp(TropMaxSat, std::numeric_limits<elt_type>::lowest() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 // SRecurseV: vectorised n-component IIR recurrence.
 //
@@ -1146,6 +1329,14 @@ struct SRecurseV##suffix {                                                      
             prev_output[i] = (zero_init);                                                                 \
         }                                                                                                 \
     }                                                                                                     \
+    void seek_col(int /* col_start */) {}                                                                 \
+    /* Tiling support: checkpoint/restore all per-component left carries.        */                      \
+    void save_state(char *&dst) const {                                                                  \
+        memcpy(dst, prev_output, sizeof(prev_output)); dst += sizeof(prev_output);                       \
+    }                                                                                                     \
+    void restore_state(const char *&src) {                                                               \
+        memcpy(prev_output, src, sizeof(prev_output)); src += sizeof(prev_output);                       \
+    }                                                                                                     \
 };
 
 
@@ -1154,9 +1345,9 @@ struct SRecurseV##suffix {                                                      
 
 SRecurseVOp(, 0, [](auto a, auto b) { return a * b; }, [](auto acc, auto x) { return acc + x; });
 SRecurseVOp(TropMin, std::numeric_limits<elt_type>::max() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SRecurseVOp(TropMax, std::numeric_limits<elt_type>::min() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseVOp(TropMax, std::numeric_limits<elt_type>::lowest() / 8, [](auto a, auto b) { return a + b; }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 SRecurseVOp(TropMinSat, std::numeric_limits<elt_type>::max() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_min(acc, x); });
-SRecurseVOp(TropMaxSat, std::numeric_limits<elt_type>::min() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
+SRecurseVOp(TropMaxSat, std::numeric_limits<elt_type>::lowest() / 2, [](auto a, auto b) { return __builtin_elementwise_add_sat(a, b); }, [](auto acc, auto x) { return __builtin_elementwise_max(acc, x); });
 
 // Tuple<vec_type, n>: copy n independently-allocated signals into n consecutive registers.
 // After run(), component i is at reg[base + i].
@@ -1173,6 +1364,7 @@ struct Tuple {
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 // SelectMax##suffix: argmax/argmin selection over n candidate registers.
@@ -1208,7 +1400,8 @@ struct Tuple {
             }                                                                                      \
             reg[base] = idx;                                                                       \
         }                                                                                          \
-        void reset_and_next_row() {}                                                               \
+        void reset_and_next_row() {}                                                                    \
+        void seek_col(int /* col_start */) {}                                                          \
     };
 
 SelectMaxOp(TropMax, [](auto cand, auto best) { return cand > best; }, [](auto a, auto b) { return __builtin_elementwise_max(a, b); });
@@ -1238,6 +1431,7 @@ struct KConvertN2One {
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 template <typename vec_type_in, typename vec_type_out>
@@ -1253,13 +1447,14 @@ struct ConvertN2One {
         // inner_base is the first of `factor` contiguous narrow-lane registers to merge
         vec_type_in out[factor];
         _Pragma("unroll") for (int i = 0; i < factor; i++) {
-            asm volatile("" :::);
+            /* fence removed */
             out[i] = reg_in[inner_base + i];
         }
         memcpy(&reg_out[base], out, sizeof(vec_type_out));
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 template <typename vec_type_in, typename vec_type_out, int taps, int offset>
@@ -1280,6 +1475,7 @@ struct KConvertOne2N {
 
     void reset_and_next_row() {
     }
+    void seek_col(int /* col_start */) {}
 };
 
 template <typename vec_type_in, typename vec_type_out, int offset>
@@ -1298,6 +1494,7 @@ struct ConvertOne2N {
 
     void reset_and_next_row() {
     }
+    void seek_col(int /* col_start */) {}
 };
 
 // ConvertN2OneV / ConvertOne2NV: like ConvertN2One / ConvertOne2N but for
@@ -1325,6 +1522,7 @@ struct ConvertN2OneV {
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 template <typename vec_type_in, typename vec_type_out, int n_vec, int offset>
@@ -1343,6 +1541,7 @@ struct ConvertOne2NV {
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 #define BinOp(name, operator)                                                                  \
@@ -1357,6 +1556,7 @@ struct ConvertOne2NV {
                                                                                                \
         void reset_and_next_row() {                                                            \
         }                                                                                      \
+        void seek_col(int /* col_start */) {}                                                  \
     };
 
 BinOp(SAdd, [](auto left, auto right) { return left + right; });
@@ -1387,6 +1587,7 @@ struct SNeg {
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 // template <typename vec_type>
@@ -1425,6 +1626,7 @@ struct Mov {
         reg[dst] = reg[src];
     }
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 // IthRow: Extract the ith row from a 2D signal (Signal2D) as a 1D signal
@@ -1442,6 +1644,7 @@ struct IthRow {
     }
     void reset_and_next_row() {
     }
+    void seek_col(int /* col_start */) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -1461,11 +1664,12 @@ struct VectorAt {
     }
 
     void reset_and_next_row() {}
+    void seek_col(int /* col_start */) {}
 };
 
 // Primary templates — specializations below for each concrete vec_type.
-template <typename vec_type> struct Unzip2 { void reset_and_next_row() {} };
-template <typename vec_type> struct Zip2   { void reset_and_next_row() {} };
+template <typename vec_type> struct Unzip2 { void reset_and_next_row() {} void seek_col(int /* col_start */) {} };
+template <typename vec_type> struct Zip2   { void reset_and_next_row() {} void seek_col(int /* col_start */) {} };
 
 #define VECREC_DEFINE_UNZIP2_ZIP2_K1(vec_type) \
 template <> struct Unzip2<vec_type> { \
@@ -1476,7 +1680,8 @@ template <> struct Unzip2<vec_type> { \
         reg[out_even] = lo; \
         reg[out_odd]  = hi; \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 }; \
 template <> struct Zip2<vec_type> { \
     template <typename Reg_t> \
@@ -1486,7 +1691,8 @@ template <> struct Zip2<vec_type> { \
         reg[out_lo] = e; \
         reg[out_hi] = o; \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 };
 
 VECREC_DEFINE_UNZIP2_ZIP2_K1(float_vec1)
@@ -1509,7 +1715,8 @@ template <> struct Unzip2<vec_type> { \
         reg[out_even] = __builtin_shufflevector(lo, hi, 0, 2); \
         reg[out_odd]  = __builtin_shufflevector(lo, hi, 1, 3); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 }; \
 template <> struct Zip2<vec_type> { \
     template <typename Reg_t> \
@@ -1519,7 +1726,8 @@ template <> struct Zip2<vec_type> { \
         reg[out_lo] = __builtin_shufflevector(e, o, 0, 2); \
         reg[out_hi] = __builtin_shufflevector(e, o, 1, 3); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 };
 
 VECREC_DEFINE_UNZIP2_ZIP2_K2(float_vec2)
@@ -1542,7 +1750,8 @@ template <> struct Unzip2<vec_type> { \
         reg[out_even] = __builtin_shufflevector(lo, hi, 0, 2, 4, 6); \
         reg[out_odd]  = __builtin_shufflevector(lo, hi, 1, 3, 5, 7); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 }; \
 template <> struct Zip2<vec_type> { \
     template <typename Reg_t> \
@@ -1552,7 +1761,8 @@ template <> struct Zip2<vec_type> { \
         reg[out_lo] = __builtin_shufflevector(e, o, 0, 4, 1, 5); \
         reg[out_hi] = __builtin_shufflevector(e, o, 2, 6, 3, 7); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 };
 
 VECREC_DEFINE_UNZIP2_ZIP2_K4(float_vec4)
@@ -1575,7 +1785,8 @@ template <> struct Unzip2<vec_type> { \
         reg[out_even] = __builtin_shufflevector(lo, hi, 0, 2, 4, 6, 8, 10, 12, 14); \
         reg[out_odd]  = __builtin_shufflevector(lo, hi, 1, 3, 5, 7, 9, 11, 13, 15); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 }; \
 template <> struct Zip2<vec_type> { \
     template <typename Reg_t> \
@@ -1585,7 +1796,8 @@ template <> struct Zip2<vec_type> { \
         reg[out_lo] = __builtin_shufflevector(e, o, 0, 8, 1, 9, 2, 10, 3, 11); \
         reg[out_hi] = __builtin_shufflevector(e, o, 4, 12, 5, 13, 6, 14, 7, 15); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 };
 
 VECREC_DEFINE_UNZIP2_ZIP2_K8(float_vec8)
@@ -1610,7 +1822,8 @@ template <> struct Unzip2<vec_type> { \
         reg[out_odd]  = __builtin_shufflevector(lo, hi, \
             1,  3,  5,  7,  9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 }; \
 template <> struct Zip2<vec_type> { \
     template <typename Reg_t> \
@@ -1622,7 +1835,8 @@ template <> struct Zip2<vec_type> { \
         reg[out_hi] = __builtin_shufflevector(e, o, \
             8, 24,  9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 };
 
 VECREC_DEFINE_UNZIP2_ZIP2_K16(float_vec16)
@@ -1648,7 +1862,8 @@ template <> struct Unzip2<vec_type> { \
              1,  3,  5,  7,  9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, \
             33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 }; \
 template <> struct Zip2<vec_type> { \
     template <typename Reg_t> \
@@ -1662,7 +1877,8 @@ template <> struct Zip2<vec_type> { \
             16, 48, 17, 49, 18, 50, 19, 51, 20, 52, 21, 53, 22, 54, 23, 55, \
             24, 56, 25, 57, 26, 58, 27, 59, 28, 60, 29, 61, 30, 62, 31, 63); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 };
 
 VECREC_DEFINE_UNZIP2_ZIP2_K32(int8_vec32)
@@ -1689,7 +1905,8 @@ template <> struct Unzip2<vec_type> { \
              65,  67,  69,  71,  73,  75,  77,  79,  81,  83,  85,  87,  89,  91,  93,  95, \
              97,  99, 101, 103, 105, 107, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 }; \
 template <> struct Zip2<vec_type> { \
     template <typename Reg_t> \
@@ -1707,9 +1924,12 @@ template <> struct Zip2<vec_type> { \
              48, 112,  49, 113,  50, 114,  51, 115,  52, 116,  53, 117,  54, 118,  55, 119, \
              56, 120,  57, 121,  58, 122,  59, 123,  60, 124,  61, 125,  62, 126,  63, 127); \
     } \
-    void reset_and_next_row() {} \
+    void reset_and_next_row() {}                                                                           \
+        void seek_col(int /* col_start */) {}                                                          \
 };
 
 VECREC_DEFINE_UNZIP2_ZIP2_K64(int8_vec64)
 #undef VECREC_DEFINE_UNZIP2_ZIP2_K64
+
+#endif  // VECREC_COMMON_H_ALREADY_INCLUDED
 
