@@ -441,6 +441,22 @@ class AnnotateLanes(Transform):
             new_signals = [self.convert_lanes(self.apply_signal(s)[0], lanes) for s in expr.data]
             new_sv = SignalVector(new_signals).with_lanes(lanes)
             return [new_sv]
+        elif isinstance(expr, WindowMapVec):
+            # Same annotation as the VectorAt(WindowMapVec) case in apply_signal,
+            # needed when a WindowMapVec is the (tuple-output) root itself.
+            wmv = expr
+            probe = self.apply_signal_vector(wmv.body)[0]
+            K = probe.lanes or lanes
+            k_ann = AnnotateLanes(K * expr.element_type.bit_width())
+            new_body = k_ann.apply_signal_vector(wmv.body)[0]
+            new_inputs = tuple(k_ann.apply_signal(inp)[0] for inp in wmv.inputs)
+            new_ivars = tuple(
+                tuple(cast(WMVar, wv.with_lanes(K)) for wv in ivars)
+                for ivars in wmv.input_vars
+            )
+            new_wmv = WindowMapVec.make(wmv.n_interleave, wmv.n, new_inputs, new_body, new_ivars)
+            new_wmv.lanes = K
+            return [new_wmv]
         else:
             return [expr.with_lanes(lanes)]
 

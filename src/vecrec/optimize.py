@@ -1,6 +1,6 @@
 from typing import overload
 
-from vecrec.expr.base import SignalExpr, SignalExpr2D
+from vecrec.expr.base import SignalExpr, SignalExpr2D, SignalVectorExpr
 from vecrec.transform import *
 from vecrec.transform.core import DilateLTVTrop, DilateLTVArithVec, DilateLTVTropVec, DilateLTVHalfPointsVec
 
@@ -76,9 +76,13 @@ def get_candidate_schedules(expr: SignalExpr, max_bits: int, debug: bool) -> lis
 @overload
 def get_candidate_schedules(expr: SignalExpr2D, max_bits: int, debug: bool) -> list[SignalExpr2D]: ...
 @overload
+def get_candidate_schedules(expr: SignalVectorExpr, max_bits: int, debug: bool) -> list[SignalVectorExpr]: ...
+@overload
 def get_candidate_schedules(expr: SignalExpr, max_bits: int) -> list[SignalExpr]: ...
 @overload
 def get_candidate_schedules(expr: SignalExpr2D, max_bits: int) -> list[SignalExpr2D]: ...
+@overload
+def get_candidate_schedules(expr: SignalVectorExpr, max_bits: int) -> list[SignalVectorExpr]: ...
 
 
 def get_candidate_schedules(expr, max_bits, debug=False):

@@ -24,3 +24,7 @@ prof/
 /*.txt
 /scratch/
 .DS_Store
+
+# Tridiagonal benchmark: generated header and compiled driver
+benchmarks/tridiagonal/tridiagonal_kernels.h
+benchmarks/tridiagonal/tridiagonal_benchmark

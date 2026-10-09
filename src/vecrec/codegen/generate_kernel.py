@@ -1,7 +1,7 @@
 from typing import Any, List, Optional, Sequence, Dict, Tuple, Union
 from vecrec.codegen.codegen import CodeGen, KernelProgram, ComputedSignalDecl
 from vecrec.expr import *
-from vecrec.expr.base import SignalExpr2D
+from vecrec.expr.base import SignalExpr2D, SignalVectorExpr
 from vecrec.util import ElementType
 import concurrent.futures
 import json
@@ -49,7 +49,7 @@ def instantiate_kernels(path: str, codes: List[KernelProgram] | List[str]) -> No
 
 def generate_benchmark(
     codegen: CodeGen,
-    exprs: Sequence[SignalExpr | SignalExpr2D],
+    exprs: Sequence[SignalExpr | SignalExpr2D | SignalVectorExpr],
     kernel_names: Sequence[str],
     kernel_header_path: str,
     output_path: str,
@@ -103,6 +103,9 @@ def generate_benchmark(
     if computed_signals_list is None:
         computed_signals_list = [[] for _ in exprs]
 
+    # Tuple-output kernels (SignalVectorExpr roots) write n component streams.
+    n_outputs_list = [e.n if isinstance(e, SignalVectorExpr) else 1 for e in exprs]
+
     benchmark_code = _generate_benchmark_code(
         all_vars,
         all_vars2d,
@@ -118,6 +121,7 @@ def generate_benchmark(
         ele_per_iter_list,
         rows_per_iter_list,
         computed_signals_list,
+        n_outputs_list,
     )
 
     with open(output_path, "w") as f:
@@ -139,8 +143,12 @@ def _generate_benchmark_code(
     ele_per_iter_list: List[int],
     rows_per_iter_list: List[int],
     computed_signals_list: List[List[ComputedSignalDecl]],
+    n_outputs_list: Optional[List[int]] = None,
 ) -> str:
     """Generate the complete C++ benchmark code."""
+
+    if n_outputs_list is None:
+        n_outputs_list = [1] * len(kernel_names)
 
     # Start with includes
     benchmark_text = f'#include "{header_path}"\n'
@@ -229,10 +237,13 @@ def _generate_benchmark_code(
                     benchmark_text += f"    {line}\n"
     benchmark_text += "\n"
 
-    # Generate output buffers for each kernel
+    # Generate output buffers for each kernel. Tuple-output kernels store
+    # component c at output_{name}[c*N .. (c+1)*N).
     benchmark_text += "    // Output buffers for each kernel\n"
     for i, name in enumerate(kernel_names):
-        benchmark_text += f"    std::vector<{output_type.to_str()}> output_{name}(N);\n"
+        benchmark_text += (
+            f"    std::vector<{output_type.to_str()}> output_{name}((size_t)N * {n_outputs_list[i]});\n"
+        )
     benchmark_text += "\n"
 
     # Generate benchmark code for each kernel. ComputedSignal2D objects are constructed
@@ -251,6 +262,8 @@ def _generate_benchmark_code(
     for i, name in enumerate(kernel_names):
         epi = ele_per_iter_list[i]
         rpi = rows_per_iter_list[i]
+        n_out = n_outputs_list[i]
+        n_bufs = rpi * n_out
         benchmark_text += f"    // Benchmark {name}\n"
         benchmark_text += "    {\n"
 
@@ -267,9 +280,9 @@ def _generate_benchmark_code(
         # (only observable when warmup*ele_per_iter > row_size, e.g. narrow element types).
         benchmark_text += "            int warm_col = 0;\n"
         benchmark_text += "            for (int i = 0; i < warmup; i++) {\n"
-        benchmark_text += f"                {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
-        benchmark_text += f"                {name}_vector_type* out_per_row[{rpi}] = {{\n"
-        for r in range(rpi):
+        benchmark_text += f"                {name}_vector_type out_buf[{n_bufs}][{epi}/vec_lanes];\n"
+        benchmark_text += f"                {name}_vector_type* out_per_row[{n_bufs}] = {{\n"
+        for r in range(n_bufs):
             benchmark_text += f"                    out_buf[{r}],\n"
         benchmark_text += "                };\n"
         benchmark_text += "                kernel.run(out_per_row);\n"
@@ -293,9 +306,9 @@ def _generate_benchmark_code(
         benchmark_text += "            while (row_base < N) {\n"
         benchmark_text += "                int col = 0;\n"
         benchmark_text += "                while (col < row_size) {\n"
-        benchmark_text += f"                    {name}_vector_type out_buf[{rpi}][{epi}/vec_lanes];\n"
-        benchmark_text += f"                    {name}_vector_type* out_per_row[{rpi}] = {{\n"
-        for r in range(rpi):
+        benchmark_text += f"                    {name}_vector_type out_buf[{n_bufs}][{epi}/vec_lanes];\n"
+        benchmark_text += f"                    {name}_vector_type* out_per_row[{n_bufs}] = {{\n"
+        for r in range(n_bufs):
             benchmark_text += f"                        out_buf[{r}],\n"
         benchmark_text += "                    };\n"
         benchmark_text += "                    kernel.run(out_per_row);\n"
@@ -303,7 +316,12 @@ def _generate_benchmark_code(
         benchmark_text += "                        int dst = row_base + r * row_size + col;\n"
         benchmark_text += "                        if (dst >= N) break;\n"
         benchmark_text += f"                        int copy_count = ((N - dst) < {epi}) ? (N - dst) : {epi};\n"
-        benchmark_text += f"                        memcpy(&output_{name}[dst], out_buf[r], sizeof({output_type.to_str()}) * copy_count);\n"
+        benchmark_text += f"                        for (int c = 0; c < {n_out}; c++) {{\n"
+        benchmark_text += (
+            f"                            memcpy(&output_{name}[(size_t)c * N + dst], "
+            f"out_buf[r * {n_out} + c], sizeof({output_type.to_str()}) * copy_count);\n"
+        )
+        benchmark_text += "                        }\n"
         benchmark_text += "                    }\n"
         benchmark_text += f"                    col += {epi};\n"
         benchmark_text += "                }\n"
@@ -317,7 +335,7 @@ def _generate_benchmark_code(
         benchmark_text += "        \n"
         benchmark_text += "        // XOR sum to prevent optimization of output array\n"
         benchmark_text += "        uint64_t xor_sum = 0;\n"
-        benchmark_text += "        for (int i = 0; i < N; i++) {\n"
+        benchmark_text += f"        for (size_t i = 0; i < (size_t)N * {n_out}; i++) {{\n"
         benchmark_text += f"            xor_sum ^= static_cast<uint64_t>(output_{name}[i]);\n"
         benchmark_text += "        }\n"
         benchmark_text += f"        volatile uint64_t xor_result_{name} = xor_sum;  // Prevent optimization\n"
@@ -469,6 +487,8 @@ class KernelExecutable:
     vars2d_order: List[str]
     output_type: ElementType
     row_size: int
+    # Number of output component streams (> 1 for tuple-output kernels).
+    n_outputs: int
 
     def __init__(
         self,
@@ -478,6 +498,7 @@ class KernelExecutable:
         output_type: ElementType,
         vars2d_info: Dict[str, ElementType],
         row_size: int = 1024,
+        n_outputs: int = 1,
     ):
         self.executable_path = executable_path
         self.variable_order = variable_order
@@ -486,6 +507,7 @@ class KernelExecutable:
         self.vars2d_order = sorted(self.vars2d_info.keys())
         self.output_type = output_type
         self.row_size = row_size
+        self.n_outputs = n_outputs
 
     def _normalize_inputs(
         self, inputs: Union[np.ndarray, Dict[str, np.ndarray]]
@@ -607,9 +629,13 @@ class KernelExecutable:
             throughput_mbs = float(metadata.get("throughput_mbs", 0.0))
 
             output_dtype = _numpy_dtype_for_element_type(self.output_type)
-            output = np.fromfile(output_path, dtype=output_dtype, count=n)
-            if int(output.shape[0]) != n:
-                raise RuntimeError(f"Output size mismatch: expected {n}, got {output.shape[0]}")
+            n_total = n * self.n_outputs
+            output = np.fromfile(output_path, dtype=output_dtype, count=n_total)
+            if int(output.shape[0]) != n_total:
+                raise RuntimeError(f"Output size mismatch: expected {n_total}, got {output.shape[0]}")
+            if self.n_outputs > 1:
+                # Component c of a tuple-output kernel is output[c].
+                output = output.reshape(self.n_outputs, n)
 
             return output, elapsed_us, throughput_mbs
 
@@ -626,8 +652,10 @@ def _generate_kernel_runner_code(
     ele_per_iter: int,
     rows_per_iter: int = 1,
     computed_signals: Optional[List[ComputedSignalDecl]] = None,
+    n_outputs: int = 1,
 ) -> str:
     assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
+    assert n_outputs >= 1, "n_outputs must be >= 1"
     computed_signals = computed_signals or []
     var_items = sorted(all_vars.items())
     var2d_items = sorted(all_vars2d.items())
@@ -728,7 +756,8 @@ def _generate_kernel_runner_code(
     output_cpp_type = output_type.to_str()
 
     text += f"    auto kernel = {kernel_name}({var_args});\n"
-    text += f"    std::vector<{output_cpp_type}> output(N);\n\n"
+    # Tuple-output kernels write component c at output[c*N .. (c+1)*N).
+    text += f"    std::vector<{output_cpp_type}> output((size_t)N * {n_outputs});\n\n"
 
     text += "    auto start = std::chrono::high_resolution_clock::now();\n"
     # Process rows_per_iter rows per kernel.run call.
@@ -736,15 +765,16 @@ def _generate_kernel_runner_code(
     # `col` scans the columns of one row; we advance `row_base` by k*row_size
     # after each block of k rows is fully scanned.
     k = rows_per_iter
+    n_bufs = k * n_outputs
     text += f"    using elt_type = typename ElementType<{kernel_name}_vector_type>::type;\n"
     text += f"    constexpr int vec_lanes = sizeof({kernel_name}_vector_type) / sizeof(elt_type);\n"
     text += "    int row_base = 0;\n"
     text += "    while (row_base < N) {\n"
     text += "        int col = 0;\n"
     text += "        while (col < row_size) {\n"
-    text += f"            {kernel_name}_vector_type out_buf[{k}][{ele_per_iter}/vec_lanes];\n"
-    text += f"            {kernel_name}_vector_type* out_per_row[{k}] = {{\n"
-    for r in range(k):
+    text += f"            {kernel_name}_vector_type out_buf[{n_bufs}][{ele_per_iter}/vec_lanes];\n"
+    text += f"            {kernel_name}_vector_type* out_per_row[{n_bufs}] = {{\n"
+    for r in range(n_bufs):
         text += f"                out_buf[{r}],\n"
     text += "            };\n"
     text += "            kernel.run(out_per_row);\n"
@@ -752,9 +782,12 @@ def _generate_kernel_runner_code(
     text += "                int dst = row_base + r * row_size + col;\n"
     text += "                if (dst >= N) break;\n"
     text += f"                int copy_count = ((N - dst) < {ele_per_iter}) ? (N - dst) : {ele_per_iter};\n"
+    text += f"                for (int c = 0; c < {n_outputs}; c++) {{\n"
     text += (
-        f"                std::memcpy(output.data() + dst, out_buf[r], sizeof({output_cpp_type}) * copy_count);\n"
+        f"                    std::memcpy(output.data() + (size_t)c * N + dst, "
+        f"out_buf[r * {n_outputs} + c], sizeof({output_cpp_type}) * copy_count);\n"
     )
+    text += "                }\n"
     text += "            }\n"
     text += f"            col += {ele_per_iter};\n"
     text += "        }\n"
@@ -765,7 +798,10 @@ def _generate_kernel_runner_code(
     text += "\n"
 
     output_arg_idx = len(var_items) + 2 * len(var2d_items) + 3
-    text += f"    if (!write_binary<{output_cpp_type}>(argv[{output_arg_idx}], output.data(), N)) {{\n"
+    text += (
+        f"    if (!write_binary<{output_cpp_type}>(argv[{output_arg_idx}], output.data(), "
+        f"N * {n_outputs})) {{\n"
+    )
     text += '        std::cerr << "Failed to write output" << std::endl;\n'
     text += "        return 3;\n"
     text += "    }\n"
@@ -832,6 +868,7 @@ def _build_kernel_executable(
         ele_per_iter=code.element_per_iter,
         rows_per_iter=code.rows_per_iter,
         computed_signals=code.computed_signals,
+        n_outputs=code.n_outputs,
     )
     with open(runner_path, "w") as f:
         f.write(runner_code)
@@ -854,12 +891,13 @@ def _build_kernel_executable(
         vars2d_info=all_vars2d,
         output_type=output_type,
         row_size=row_size,
+        n_outputs=code.n_outputs,
     )
 
 
 def generate_kernel_executable(
     codegen: CodeGen,
-    expr: SignalExpr | SignalExpr2D,
+    expr: SignalExpr | SignalExpr2D | SignalVectorExpr,
     compiler: str = "clang++",
     compiler_flags: Optional[List[str]] = None,
     row_size: int = 1024,
@@ -888,7 +926,7 @@ def generate_kernel_executable(
 
 def generate_and_run_benchmark(
     codegen: Union[CodeGen, Sequence[CodeGen]],
-    exprs: Sequence[SignalExpr | SignalExpr2D],
+    exprs: Sequence[SignalExpr | SignalExpr2D | SignalVectorExpr],
     include_correctness_check: bool = True,
     correctness_tolerance: float = 1e-3,
     input_size: int = (1 << 20),

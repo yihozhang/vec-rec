@@ -829,12 +829,17 @@ def _normalize_km_entry(
     """Normalize a TIKernel or TVKernel entry into (d0, d1, d2) as SignalExpr.
 
     For TIKernel, accepts length 2 (1st-order) or 3 (2nd-order); missing d2
-    defaults to zero. TVKernel must be exactly length 3 — accepting length-2
+    defaults to zero. The empty TIKernel (the canonical zero kernel, e.g. what
+    ConstantFold produces from an all-zero TVKernel entry) normalizes to
+    (0, 0, 0). TVKernel must be exactly length 3 — accepting length-2
     TVKernels would re-trigger on K=1 DilateLTVHalfPointsVec body outputs.
     Returns None if the entry doesn't match. d0 must be the ty zero element.
     """
     zero_val = ty.zero()
     if isinstance(entry, TIKernel):
+        if len(entry.data) == 0:
+            zero_num = Num(zero_val, ty, et)
+            return zero_num, zero_num, zero_num
         if len(entry.data) < 2:
             return None
         if not ty.is_zero(entry.data[0]):

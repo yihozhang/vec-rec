@@ -61,6 +61,10 @@ class KernelProgram:
     text: str
     element_per_iter: int
     rows_per_iter: int
+    # Number of output streams. 1 for SignalExpr/SignalExpr2D kernels; n for a
+    # SignalVectorExpr root (tuple output). kernel.run(out) writes component c
+    # of block-row br into out[br * n_outputs + c].
+    n_outputs: int
     custom_semirings: Set[CustomSemiring]
     computed_signals: List[ComputedSignalDecl]
 
@@ -71,11 +75,14 @@ class KernelProgram:
         custom_semirings: Optional[Set[CustomSemiring]] = None,
         rows_per_iter: int = 1,
         computed_signals: Optional[List[ComputedSignalDecl]] = None,
+        n_outputs: int = 1,
     ):
         assert rows_per_iter >= 1, "rows_per_iter must be >= 1"
+        assert n_outputs >= 1, "n_outputs must be >= 1"
         self.text = text
         self.element_per_iter = element_per_iter
         self.rows_per_iter = rows_per_iter
+        self.n_outputs = n_outputs
         self.custom_semirings = custom_semirings if custom_semirings is not None else set()
         self.computed_signals = computed_signals if computed_signals is not None else []
 
@@ -227,7 +234,7 @@ class CodeGen:
             max_l = max(max_l, self._max_lanes_in_tree(child, visited))
         return max_l
 
-    def generate(self, expr: SignalExpr | SignalExpr2D, name: str) -> KernelProgram:
+    def generate(self, expr: SignalExpr | SignalExpr2D | SignalVectorExpr, name: str) -> KernelProgram:
 
         self.clear()
         assert expr.lanes is not None
@@ -301,16 +308,22 @@ class CodeGen:
         # Per-block-row output regs (each per_row_results[br][0] is a list of slice regs).
         n_out_slices = len(per_row_results[0][0])
 
+        # Tuple output: a SignalVectorExpr root produces n output streams. Every
+        # SignalVectorExpr codegen case allocates component c of slice s at
+        # register regs[s] + c, so the memcpy below just offsets by c.
+        n_outputs = expr.n if isinstance(expr, SignalVectorExpr) else 1
+
         # kernel.run(T** out_per_row) writes ele_per_iter elements per block-row
-        # into out_per_row[br].
+        # per component into out_per_row[br * n_outputs + c].
         run_signature = f"void run({result_vec_type} **out_per_row)"
         memcpy_block = []
         for br in range(n_block_rows):
-            for i in range(n_out_slices):
-                memcpy_block.append(
-                    f"memcpy(out_per_row[{br}] + {i}, reg_{result_vec_type}.data + "
-                    f"{per_row_results[br][0][i]}, sizeof({result_vec_type}));"
-                )
+            for c in range(n_outputs):
+                for i in range(n_out_slices):
+                    memcpy_block.append(
+                        f"memcpy(out_per_row[{br * n_outputs + c}] + {i}, reg_{result_vec_type}.data + "
+                        f"{per_row_results[br][0][i] + c}, sizeof({result_vec_type}));"
+                    )
         memcpy_lines = new_line.join(memcpy_block)
 
         # The per-run "register file" is declared as a local inside run() rather than
@@ -360,6 +373,7 @@ class CodeGen:
             set(self.custom_semirings),
             rows_per_iter=self.rows_per_iter,
             computed_signals=list(self.computed_signals),
+            n_outputs=n_outputs,
         )
 
     def _generate_windowmap(self, wm: WindowMap) -> List[int]:
