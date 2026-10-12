@@ -585,21 +585,14 @@ class PushDownConvertLanesImpl(Transform):
                 new_vec_at.lanes = target
                 return new_vec_at
             if isinstance(expr, WindowMap):
-                new_input_vars: tuple[tuple[WMVar, ...], ...] = tuple(
-                    tuple(cast(WMVar, WMVar(wv.name, wv.ty, wv.element_type).with_lanes(target)) for wv in row)
-                    for row in expr.input_vars
-                )
-                body_subst: dict[str, RecLang] = dict(subst)
-                for old_row, new_row in zip(expr.input_vars, new_input_vars):
-                    for old, new in zip(old_row, new_row):
-                        body_subst[old.name] = new
-                new_body = cast(SignalVectorExpr, self._relane(expr.body, target, body_subst))
-                new_inputs: tuple[SignalExpr, ...] = tuple(
-                    cast(SignalExpr, self._relane(inp, target, subst)) for inp in expr.inputs
-                )
-                wm = WindowMap.make(expr.n, new_inputs, new_body, new_input_vars)
-                wm.lanes = target
-                return wm
+                # Fixed barrier (like Recurse): a WindowMap's lane width K is
+                # pinned by its body's RecurseV kernel, which carries exactly K
+                # leading zeros so time_delay(K)=K. The WMVars are consumed behind
+                # that RecurseV barrier — _relane wraps it rather than descending —
+                # so relane'ing the WindowMap's binding vars to a new target would
+                # leave the WMVar *uses* at the old lanes, corrupting codegen's
+                # Unzip2/Zip2 slice accounting. Wrap in an adapter instead.
+                return expr if expr.lanes == target else _wrap_signal(expr, target)
             if isinstance(expr, WMVar):
                 if expr.name in subst:
                     return subst[expr.name]
@@ -638,21 +631,10 @@ class PushDownConvertLanesImpl(Transform):
             if isinstance(expr, RecurseV):
                 return expr if expr.lanes == target else _wrap_vec(expr, target)
             if isinstance(expr, WindowMapVec):
-                new_input_vars_v: tuple[tuple[WMVar, ...], ...] = tuple(
-                    tuple(cast(WMVar, WMVar(wv.name, wv.ty, wv.element_type).with_lanes(target)) for wv in row)
-                    for row in expr.input_vars
-                )
-                body_subst_v: dict[str, RecLang] = dict(subst)
-                for old_row, new_row in zip(expr.input_vars, new_input_vars_v):
-                    for old, new in zip(old_row, new_row):
-                        body_subst_v[old.name] = new
-                new_body_v = cast(SignalVectorExpr, self._relane(expr.body, target, body_subst_v))
-                new_inputs_v: tuple[SignalExpr, ...] = tuple(
-                    cast(SignalExpr, self._relane(inp, target, subst)) for inp in expr.inputs
-                )
-                wmv = WindowMapVec.make(expr.n_interleave, expr.n, new_inputs_v, new_body_v, new_input_vars_v)
-                wmv.lanes = target
-                return wmv
+                # Fixed barrier for the same reason as WindowMap above: K is
+                # pinned by the body's RecurseV kernel and the WMVars are consumed
+                # behind that barrier, so the binding vars can't be relane'd.
+                return expr if expr.lanes == target else _wrap_vec(expr, target)
             if isinstance(expr, SignalVector):
                 new_data_sv = [cast(SignalExpr, self._relane(s, target, subst)) for s in expr.data]
                 new_sv = SignalVector(new_data_sv)
@@ -716,7 +698,8 @@ class PushDownConvertLanesImpl(Transform):
                 for old_pv, new_pv in zip(expr.prev_vars, new_prev_vars):
                     body_subst_rv[old_pv.name] = new_pv
                 new_body_rv = cast(SignalVectorExpr, self._relane(expr.a, target, body_subst_rv))
-                rv = RepeaterVec.make(new_body_rv, expr.n, new_prev_vars, expr.n_rows)
+                rv = RepeaterVec.make(new_body_rv, expr.n, new_prev_vars, expr.n_rows,
+                                      getattr(expr, "boundary", None))
                 rv.lanes = target
                 return rv
             raise AssertionError(f"relane unsupported for SignalExpr2DVec: {type(expr)}")

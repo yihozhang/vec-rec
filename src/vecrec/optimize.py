@@ -24,6 +24,9 @@ def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
                         Try(EliminateDegenerate2Dkernels()))
                 ),
                 SaturatePreorder(ConstantFold),
+                
+                Preorder(Try(Eliminate2DKernels())),
+                SaturatePreorder(ConstantFold),
 
                 Preorder(Try(DilateLTVHalfPoints(max_bits))),
                 SaturatePreorder(ConstantFold),
@@ -38,9 +41,6 @@ def get_optimizing_schedule(max_bits: int, debug: bool = False) -> Transform:
                 Preorder(Try(DilateLTVArith(max_bits))),
                 SaturatePreorder(ConstantFold),
                 Preorder(Try(DilateLTVArithVec(max_bits))),
-                SaturatePreorder(ConstantFold),
-                
-                Preorder(Try(Eliminate2DKernels())),
                 SaturatePreorder(ConstantFold),
 
                 Optional(Preorder(Try(Factorize()))),
